@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>业务能力地图 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>业务能力地图</h1>
+    <p class="subtitle">按业务域拆解平台能力：商品、会员卡券、订单履约、POS、营销活动、结算，及其归属服务。</p>
+    <p class="meta">最后更新：2026-07-31 · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html" class="active">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <section class="card">
+      <h2><span class="num">00</span>业务域总览</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph D1["商品 / 库存"]
+    G1["商品·SKU·分类"]
+    G2["门店商品关系"]
+    G3["库存·价格·价签"]
+    G4["购物车"]
+  end
+  subgraph D2["会员 / 卡券"]
+    M1["会员·等级·会员码"]
+    M2["优惠券"]
+    M3["储值卡·礼品卡"]
+    M4["积分·权益·公益"]
+  end
+  subgraph D3["订单 / 履约"]
+    O1["下单·计算·支付"]
+    O2["状态机·渠道接入"]
+    O3["逆向退款"]
+    O4["履约·结算·检索"]
+  end
+  subgraph D4["POS / 门店"]
+    P1["收银·结算·班次"]
+    P2["促销·调价"]
+    P3["盘点·采购供应链"]
+  end
+  subgraph D5["营销 / 活动"]
+    A1["活动编排"]
+    A2["抽奖·拼团·任务"]
+    A3["榜单·虚拟资产"]
+  end
+  subgraph D7["评价（新增）"]
+    V1["评价资格"]
+    V2["商品·门店评价"]
+    V3["待评提醒·风控·统计"]
+  end
+  subgraph D6["平台 / 支撑"]
+    S1["鉴权 iAuth"]
+    S2["路由·灰度"]
+    S3["三方网关·IM·CMS"]
+  end
+  D1 --- SVC1["xlb-retail-bff-goods<br/>goods_cart / goods_consumer<br/>retail"]
+  D2 --- SVC2["retail-new<br/>member-c / member-pos"]
+  D3 --- SVC3["retail-new/oms<br/>oms-plateform<br/>rust-for-order"]
+  D4 --- SVC4["retail<br/>retail-new/retail-c<br/>bff_pos"]
+  D5 --- SVC5["marketing-activity-center<br/>retail-new/marketing·lottery"]
+  D6 --- SVC6["auth-server · route-center<br/>thirdpart-gateway · cms-server"]
+  D7 --- SVC7["retail-review-center<br/>review-c / review-b / 7 worker"]
+        </pre>
+        <p class="arch-title">图 1 · 七大业务域与归属服务映射</p>
+      </div>
+      <div class="grid cols-3">
+        <a class="tile" href="#goods"><h3>商品 / 库存</h3><p>商品主数据、SKU、分类、渠道、库存、价格、电子价签、外卖/电商商品。</p></a>
+        <a class="tile" href="#member"><h3>会员 / 卡券</h3><p>会员、等级、优惠券、储值卡、礼品卡、积分、权益、发票、公益福利。</p></a>
+        <a class="tile" href="#order"><h3>订单 / 履约</h3><p>下单、支付、退款逆向、自提/同城/物流履约、多渠道接入、结算对账。</p></a>
+        <a class="tile" href="#pos"><h3>POS / 门店</h3><p>收银机、结算、班次、促销、调价、盘点、门店主数据、采购配送。</p></a>
+        <a class="tile" href="#marketing"><h3>营销 / 活动</h3><p>活动编排、抽奖、拼团、任务、榜单、裂变邀请、领券中心。</p></a>
+        <a class="tile" href="#platform"><h3>平台 / 支撑</h3><p>鉴权 iAuth、Token 代理、路由灰度、第三方网关、IM、CMS 装修。</p></a>
+        <a class="tile" href="#review"><h3>评价 <span class="badge new">新增</span></h3><p>评价资格、商品与门店评价、首页待评提醒、风控与统计、后管标签星级配置。</p></a>
+      </div>
+    </section>
+
+    <section class="card" id="goods">
+      <h2><span class="num">01</span>商品 / 库存域</h2>
+      <p>主责：<code>xlb-retail-bff-goods</code>（门店商品库存服务，Java 迁移版，MongoDB/ES）、<code>xlb_retail_bff_pc</code>（同一服务的遗留 Node 版，业务能力一致）、<code>retail</code>（ERP 商品主数据）、<code>goods_cart</code>、<code>goods_consumer</code>。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th><th>归属</th></tr></thead>
+          <tbody>
+            <tr><td>商品/SKU 管理</td><td>商品创建/编辑/详情/列表、条码、组合商品、多规格。</td><td>goods-b、retail(Item)</td></tr>
+            <tr><td>分类与目录</td><td>ERP 分类、目录树、商品-目录关系、排序。</td><td>goods-b(Category/Catalog)</td></tr>
+            <tr><td>门店商品关系</td><td>门店-商品关系维护、批量改价/上下架/库存、门店商品汇总报表。</td><td>goods-b(StoreProduct)、pc-bff</td></tr>
+            <tr><td>渠道商品</td><td>电商商品、外卖商品（导入导出、批量上下架）、积分商品、官方商城商品。</td><td>goods-b(ECommerce/TakeAway/Point)</td></tr>
+            <tr><td>库存同步</td><td>ERP 库存明细 → Redis(Lua) + MongoDB，跨渠道可售量重算（官方/积分/美团/淘宝/京东/viola），售罄事件下发。</td><td>goods_consumer(erp_stock_sync)</td></tr>
+            <tr><td>价格 / 电子价签</td><td>零售价模板、门店零售价、固定价、价签任务、官方门店零售价 DTS 同步。</td><td>retail(PriceTag)、goods-b、price-dts 消费者</td></tr>
+            <tr><td>购物车</td><td>多渠道购物车增删改查/选中，Redis 存储。</td><td>goods_cart(Rust)</td></tr>
+            <tr><td>商品搜索</td><td>官方商品 ES 索引同步与检索、首页搜索。</td><td>es-official-product 消费者、goods-b(HomeSearch)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="member">
+      <h2><span class="num">02</span>会员 / 卡券域</h2>
+      <p>主责：<code>retail-new</code>（member-c / member-pos / member 模块，最大域）、<code>xlb-mp-bff</code>（C 端聚合）、<code>rust-for-order</code>（会员动态码）。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>会员</td><td>会员基础、等级、渠道、VIP 卡、会员码（Rust 时间片动态码 + 小程序 WASM）。</td></tr>
+            <tr><td>优惠券</td><td>券类型/批次/领券中心/组合券/直发券/平台券/额度券/微信商户券/支付宝商户券；发放、核销、反核销、同步。</td></tr>
+            <tr><td>储值卡</td><td>卡类型、充值(deposit)、消费、退款、交易流水、储值权益、充值活动。</td></tr>
+            <tr><td>礼品卡</td><td>类型/分类/面额/祝福语/购买订单/交付明细/制卡/操作员；购买、领取、退款、历史。</td></tr>
+            <tr><td>积分</td><td>积分账户、兑换、积分商城、积分变更管理（App 端 remote-app-mem）。</td></tr>
+            <tr><td>权益 / 榜单</td><td>充值活动、充值权益、榜单(含券榜)。</td></tr>
+            <tr><td>发票</td><td>发票抬头、开票历史；ERP 侧诺诺电子发票。</td></tr>
+            <tr><td>公益 / 福利</td><td>「好想做公益」项目/明细/进度/捐赠规则/机构/三方 API；福利下单与延迟同步。</td></tr>
+            <tr><td>三方会员</td><td>抖音/快手 会员+券同步、支付宝门店、微信私域活动绑定。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="order">
+      <h2><span class="num">03</span>订单 / 履约域</h2>
+      <p>主责：<code>retail-new</code>(oms 模块)、<code>oms-plateform</code>(订单中台)、<code>rust-for-order</code>(POS 单/优惠计算)。订单类型覆盖：积分兑换/卡/POS/美团闪购/淘宝闪购/京东秒送/线上商城/拼团/京东电商/淘宝/拼多多。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th><th>归属</th></tr></thead>
+          <tbody>
+            <tr><td>下单与计算</td><td>订单创建、金额计算、优惠/促销计算、积分支付、XPay 支付；TCC 分布式事务（库存/卡/券/VIP/拼团）。</td><td>retail-new/oms、rust-for-order/coupon-web</td></tr>
+            <tr><td>订单生命周期</td><td>COLA 状态机：TO_PAY→PAID→CONFIRMED→FINISHED / CANCELED，部分退款。</td><td>oms-plateform/oms-core</td></tr>
+            <tr><td>逆向 / 退款</td><td>退款单、退款明细（门店/平台承担）、退款交易记录；仅退款 / 退货退款。</td><td>oms-reverse、retail-new(RefundOrder)</td></tr>
+            <tr><td>履约</td><td>自提单、同城单、物流发货。</td><td>oms-fulfillment、retail-new(Pickup/SameCity)</td></tr>
+            <tr><td>渠道接入</td><td>美团闪购回调（下单/支付/接单/完成/取消/配送）验签→标准化→入核心。</td><td>oms-adapter、retail-thirdpart-gateway</td></tr>
+            <tr><td>订单检索</td><td>ES 宽表读模型 + Qwen 自然语言→SQL 查询。</td><td>oms-search</td></tr>
+            <tr><td>拼团</td><td>开团/成团、支付超时、回调重试。</td><td>retail-new/group</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="pos">
+      <h2><span class="num">04</span>POS / 门店域</h2>
+      <p>主责：<code>retail</code>（ERP-POS 单体）、<code>retail-new</code>(retail-c/-api/-manager、pos-item-initialization)、<code>xlb_retail_bff_pos</code>。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>POS 收银</td><td>收银机管理/版本/推送、POS 订单/明细/快照、结算单/支付/券、班次(Shift)、小票模板、副屏、AI 激活码、事件日志、异常操作分析。</td></tr>
+            <tr><td>结算</td><td>POS 结算单、支付、结算券处理，结算已支付回调。</td></tr>
+            <tr><td>促销</td><td>特价/金额折扣/多买优惠/赠品/折扣码/商品模板/政策活动（retail 单体 promotion 插件）。</td></tr>
+            <tr><td>调价</td><td>门店零售调价单、门店调价申请单、调价汇总。</td></tr>
+            <tr><td>门店主数据</td><td>门店、门店组、仓库、区域、门店费用、公告、经营补贴。</td></tr>
+            <tr><td>盘点 / 库存</td><td>盘点单、库存查询/调整（App remote-app-erp）。</td></tr>
+            <tr><td>采购供应链</td><td>采购订单/收货/退货、配送调入、供应商、批发订单、补货（remote-app-erp）。</td></tr>
+            <tr><td>商品初始化</td><td>POS 商品/价格/门店主数据初始化下发。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="marketing">
+      <h2><span class="num">05</span>营销 / 活动域</h2>
+      <p>主责：<code>marketing-activity-center</code>（编排中台）、<code>retail-new</code>(marketing/lottery/group)、<code>xlb-mp-bff</code>(C 端玩法)。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>活动编排</td><td>活动模板/表单设计、B 端配置与生命周期（保存/激活/终止/续期/删除 + 热修改）、C 端参与（欢迎/抽奖/任务/榜单）。基于 Pipeline+Step+TCC。</td></tr>
+            <tr><td>活动类型</td><td>刮刮乐、苏超打榜、会员日蓄水抽奖、新人抽奖、定时开奖、问卷调研；签到、阶梯任务、兑实物、兑换券。</td></tr>
+            <tr><td>抽奖</td><td>抽奖客户端/市场/明细/兑换/统计/补发/日志/地址/预约/退积分；小满(XiaoMan)抽奖变体。</td></tr>
+            <tr><td>任务</td><td>任务管理/明细/进度/奖励、消费任务、邀请裂变绑定与奖励。</td></tr>
+            <tr><td>榜单 / 虚拟资产</td><td>榜单 CRUD/激活/助力/实时+历史排名（RocketMQ 事件上报）、热力值等虚拟资产扣减/发放。</td></tr>
+            <tr><td>下游能力</td><td>兑奖引擎、抽奖引擎、营销指标(参与限制)、会员积分、门店/用户组范围、ICC 企微校验（11 个 SOA 子系统）。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="review">
+      <h2><span class="num">07</span>评价域 <em>2026-08 新增 · 一期已上线</em></h2>
+      <p>主责：<code>retail-review-center</code>（Rust，6 crate DDD 分层）。对应 gitops <code>retail-review</code> 命名空间。详见 <a href="16-review-center-analysis.html">16 篇专题</a>。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th><th>承载</th></tr></thead>
+          <tbody>
+            <tr><td>评价资格</td><td>消费订单完成/退款事件生成资格；资格状态 5 态（未评/部分/已评/过期/取消）；过期与补偿处理</td><td>review-c + order-consumer / expire / compensation worker</td></tr>
+            <tr><td>商品与门店评价</td><td>按订单提交评价、发布信息、评价内容查询；门店维度评价</td><td>review-c</td></tr>
+            <tr><td>首页待评提醒</td><td>待评数量、待评列表、提醒事件、待评商品推荐</td><td>review-c + notify worker</td></tr>
+            <tr><td>标签与星级配置</td><td>标签分类/标签 CRUD、星级配置、标签商品范围与绑定、门店维度</td><td>review-b</td></tr>
+            <tr><td>风控</td><td>风控事件表与独立 risk worker；含审计日志表</td><td>risk worker</td></tr>
+            <tr><td>统计与导出</td><td>会员维度/门店维度统计；后管导出任务</td><td>review-b + stat worker</td></tr>
+            <tr><td>事件外发</td><td>独立 event-publisher worker（<strong>疑为 outbox 模式</strong>，若成立是全平台少见的正确做法）</td><td>event-publisher worker</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="platform">
+      <h2><span class="num">08</span>平台 / 支撑域</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>说明</th><th>归属</th></tr></thead>
+          <tbody>
+            <tr><td>鉴权与权限</td><td>身份/租户(company_id)/门店范围/权限元组校验。</td><td>iAuth（外部）、各 BFF AuthGuard</td></tr>
+            <tr><td>三方 Token</td><td>微信/支付宝/快手/抖音/美团点评/乐檬 access token 统一代理缓存。</td><td>auth-server</td></tr>
+            <tr><td>路由 / 灰度</td><td>自研 vs 遗留、prod vs gray 流量决策与 DSL 下发；灰度名单。</td><td>retail-route-center、rs-gray-ms</td></tr>
+            <tr><td>第三方网关</td><td>美团闪购、飞鹅打印 的统一签名/回调/出口治理。</td><td>retail-thirdpart-gateway</td></tr>
+            <tr><td>IM / 企微</td><td>App 内 IM（MQTT）；企微群发/朋友圈任务看板。</td><td>remote-app-im、icc-task</td></tr>
+            <tr><td>CMS 装修</td><td>小程序页面装修、空白二维码、企微活码、投放链接。</td><td>cms-server</td></tr>
+            <tr><td>SSE 推送</td><td>订单/POS 等实时推送（Redis pub/sub）。</td><td>retail-new/sse-server、rust-sse-server</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

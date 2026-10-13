@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>移动端 UI 自动化实现方案对比 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>移动端 UI 自动化实现方案对比</h1>
+    <p class="subtitle">以 Appium 为主线深读实现机制：伞驱动 + 独立 driver 包、W3C 协议与 1:1 会话、UiAutomator2 instrumentation 链路与 8200→6790 端口转发、WebDriverAgent 链路与 XCUIElementQuery；并与 LLM Agent 路线（mobilerun）做「谁在设备上监听 HTTP / 谁决定下一步」的机制级对照。</p>
+    <p class="meta">最后更新：2026-09-21 · 数据来源：上游源码与官方文档静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html" class="active">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>：上游第三方仓库 <code>appium/appium</code>（<code>master</code> · <code>gitHead f7b2033</code> · 包版本 <b>3.7.0</b> · 本平台无此仓工作副本，结论来自远端快照）及其官方驱动 <code>appium-uiautomator2-driver 8.7.0</code> / <code>appium-uiautomator2-server</code> / <code>appium-espresso-driver</code> / <code>appium-xcuitest-driver 12.13.1</code> / <code>appium/WebDriverAgent</code> / <code>io.appium.settings</code>。
+      npm dist-tags 现状：<code>latest=3.7.0</code>、<code>beta=4.0.0-beta.1</code>（2026-09-19，ESM-only、移除 MJSONWP 等）。
+      LLM Agent 路线的对照数据来自本仓 <a href="23-mobilerun-analysis.html">《mobilerun 移动端 LLM Agent 分析》</a>，不重复其证据链。
+      Appium 无 prod 分支概念，上游默认分支即发布线；本文描述 3.x 现状，4.x 破坏性变更单独标注。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">结论与判据</a></li>
+        <li><a href="#s2">Appium 本体机制</a></li>
+        <li><a href="#s3">Android 设备侧链路</a></li>
+        <li><a href="#s4">iOS 设备侧链路</a></li>
+        <li><a href="#s5">定位与动作注入</a></li>
+        <li><a href="#s6">等待与防抖</a></li>
+        <li><a href="#s7">稳定性、并行与运维面</a></li>
+        <li><a href="#s8">路线机制对照</a></li>
+        <li><a href="#s9">XLB 选型建议</a></li>
+        <li><a href="#s10">风险与不确定性</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论与判据 <em>Appium = 命令翻译器 + 会话托管；与 Agent 路线在「谁决定下一步」上完全相反</em></h2>
+      <p>一句话定位：<b>Appium 本体不含任何设备驱动</b>，它是一个「HTTP 会话托管器 + 协议翻译器」——接收 W3C WebDriver 命令，路由给运行时安装的独立 driver 包，再由 driver 翻译成平台原语。所以「Appium 的实现方案」要分成两问：<b>① 宿主侧怎么托管会话；② 设备侧谁在监听、怎么执行。</b>本文按这两问展开。</p>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">3.7.0</div><div class="l">本体版本（v3 线 · v4 已进 beta）</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">本体内置的设备驱动数量（全部独立 npm 包）</div></div>
+        <div class="stat"><div class="n">4723</div><div class="l">默认监听端口（绑定 <code>0.0.0.0</code>）</div></div>
+        <div class="stat"><div class="n">1:1</div><div class="l">session 与 driver 实例的映射关系</div></div>
+        <div class="stat"><div class="n">8200-8299</div><div class="l">Android <code>systemPort</code> 宿主端口区间 → 设备 <b>6790</b></div></div>
+        <div class="stat"><div class="n">8100</div><div class="l">iOS WDA 端口（<code>wdaLocalPort</code>）</div></div>
+        <div class="stat"><div class="n">24</div><div class="l">本体 <code>packages/</code> 下的包数量（含 6 个官方插件）</div></div>
+        <div class="stat"><div class="n">Apache-2.0</div><div class="l">许可证（OpenJS 基金会项目）</div></div>
+      </div>
+      <div class="callout ok">
+        <b>三条判据（决定选哪条路线）</b>：① <b>步骤能否预先写死</b>——能写死就用 Appium/Maestro 这类确定性方案（失败便宜、可断言、可进 CI）；② <b>界面是否有稳定的无障碍标识</b>——有则 Appium 的 <code>accessibility id</code>/<code>id</code> 定位是最快最稳的路径；③ <b>是否需要「语义判断」</b>——只有当流程无法枚举、必须靠理解界面内容决策时，才轮到 LLM Agent 路线（见 <a href="23-mobilerun-analysis.html">文档 23</a>）。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>选型问题</th><th>Appium（确定性）</th><th>mobilerun（概率型 Agent）</th></tr></thead>
+          <tbody>
+            <tr><td>谁决定下一步</td><td>外部客户端代码（测试脚本）</td><td>服务端 LLM（Manager 规划 / Executor 执行）</td></tr>
+            <tr><td>失败时的表现</td><td>命令超时 → 用例失败，可复现、可断言</td><td>可能「另辟蹊径」成功，或耗尽 15 步失败</td></tr>
+            <tr><td>单次成本</td><td>接近零（除设备与云资源）</td><td>按 token 计费，第三方实测 $0.075/任务起</td></tr>
+            <tr><td>适合的场景</td><td>发版回归、冒烟、CI 门禁、稳定流程</td><td>探索性验证、无 API 的第三方 App、流程常变</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">appium/packages/appium/package.json（version 3.7.0 · gitHead f7b2033 · engines node ^20.19||^22.12||&gt;=24）· registry.npmjs.org/-/package/appium/dist-tags · appium-uiautomator2-driver README（systemPort 8200-8299）· appium-xcuitest-driver package.json（wdaLocalPort 默认 8100）· docs/23-mobilerun-analysis.html</div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>Appium 本体机制 <em>单 Node 进程 + 伞驱动 + 运行时动态加载的 npm 扩展</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    CLIENT["客户端库 Java / Python / WebdriverIO"] -->|"W3C WebDriver over HTTP · 默认 4723"| SRV
+    subgraph PROC["单个 Node 进程 · appium 3.7.0"]
+        SRV["HTTP/Express 层 @appium/base-driver<br/>中间件链 · body 上限 1gb · 404 兜底"]
+        ROUTE["协议/路由层<br/>METHOD_MAP = W3C + JSONWP + MJSONWP + APPIUM + EXTENSION"]
+        UMB["伞驱动 AppiumDriver<br/>sessions · pendingDrivers · sessionPlugins · sessionIpcs"]
+        EXT["扩展管理层<br/>extensions.yaml manifest · 动态 require"]
+    end
+    DRV["独立 npm driver 包<br/>uiautomator2 / xcuitest / espresso"]
+    PLG["plugin 包<br/>images / execute-driver / inspector / storage"]
+    DEV["设备侧自动化组件"]
+    SRV --> ROUTE --> UMB
+    UMB -->|"createSession 按 automationName + platformName 匹配"| DRV
+    UMB --> PLG
+    EXT --> DRV
+    DRV --> DEV
+        </pre>
+        <p class="arch-title">图 1 · Appium 宿主侧分层：Express → 路由 → 伞驱动 → 独立 driver 包 → 设备组件</p>
+      </div>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>启动链（全部在一个进程内）</h4>
+          <p><code>index.js</code> → <code>AppiumInitializer.init()</code>：解析 CLI/配置文件 → <code>loadExtensions</code> 读 <code>APPIUM_HOME/extensions.yaml</code> → 初始化 logsink → <code>new AppiumDriver(args)</code> → <code>preflightChecks()</code>（Node 版本硬校验 + schema 校验）→ <code>AppiumMainRunner.run()</code>：加载 driver/plugin 类 → <code>buildServerOpts</code> → 起 HTTP/WS → 可选注册 Selenium Grid → 挂 SIGINT/SIGTERM → 打印监听 URL。</p>
+          <p>配置优先级：CLI/程序化 args &gt; 配置文件（<code>lilconfig</code>，支持 package.json 的 <code>appiumConfig</code> 字段）&gt; schema 默认值。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>协议：新会话强制 W3C</h4>
+          <p>路由表是 6 张表的合并：<code>W3C_ROUTES</code> → <code>JSONWP_ROUTES</code> → <code>MJSONWP_ROUTES</code> → <code>APPIUM_ROUTES</code> → <code>APPIUM_DEVICE_ROUTES</code> → <code>EXTENSION_ROUTES</code>（后者覆盖前者）。免 session 命令白名单只有 <code>createSession</code>/<code>getStatus</code>/<code>getAppiumSessions</code>。</p>
+          <p>非 W3C 结构的 caps 直接抛 <code>SessionNotCreatedError</code>；旧 JSONWP/MJSONWP 路由<b>仍注册但全部标记 deprecated</b>，首次命中打一次警告后照常执行。错误模型同时携带三套标识：数字 JSONWP code、W3C 字符串 error、HTTP 状态码。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>扩展模型：driver 就是 npm 包</h4>
+          <p>package.json 里的元数据字段是 <b><code>appium.driverName</code></b> / <b><code>appium.pluginName</code></b>（不是 <code>appium.driver</code>），driver 还必须有 <code>automationName</code>/<code>platformNames</code>/<code>mainClass</code>。安装 <code>appium driver install uiautomator2</code> 会走 npm 装进 <code>APPIUM_HOME/node_modules</code>、写入 manifest（schema rev 4），并做 <code>peerDependencies.appium</code> 远程版本门禁。</p>
+          <p>加载策略：默认加载<b>全部</b>已装 driver，plugin 默认<b>一个都不加载</b>（<code>--use-plugins all</code> 才全开）；单个扩展加载失败只记错误并跳过，不阻断服务启动；driver 类可注入 <code>newMethodMap</code>/<code>updateServer</code> 来扩展服务端能力。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>会话与安全边界</h4>
+          <p>sessionId 由 driver 生成（<code>uuidV4</code>），伞驱动只维护 <code>sessions</code> 等三张表；<b>同一会话内命令由 per-instance <code>AsyncLock</code> 串行</b>（日志会打印「Scheduling the … command to the commands queue」），跨会话天然并发。本体<b>没有设备池/调度器</b>——并行隔离靠 driver 侧端口参数与 <code>--session-override</code>。</p>
+          <p>默认绑 <code>0.0.0.0:4723</code>、<code>base-path</code> 默认空（Appium 2 起废弃 <code>/wd/hub</code>）、<code>--allow-cors</code> 默认关（打开即打印安全警告）、<code>--relaxed-security</code> 只影响「服务端下发给 driver 的不安全特性」且被 <code>--deny-insecure</code> 覆盖；官方立场是自建内网、不要暴露公网。</p>
+        </div>
+      </div>
+      <div class="loc">packages/appium/lib/{main.ts,bootstrap/appium-initializer.ts,bootstrap/appium-main-runner.ts,appium.ts,helpers/capability.ts,extension/*,cli/*} · packages/base-driver/lib/{express/server.ts,protocol/protocol.ts,protocol/errors.ts,protocol/routes/*,basedriver/core.ts} · packages/schema/lib/appium-config-schema.ts · 官方 guides/security</div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>Android 设备侧链路 <em>instrumentation 里的 netty HTTP 服务 · 宿主 8200-8299 转发到设备 6790</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    D["uiautomator2 driver createSession"] --> P["校验 apiLevel 不小于 26 · API 28+ 放行 hidden API"]
+    P --> PORT["findAPortNotInUse 8200-8299<br/>文件锁 uia2_device_port_guard 串行化"]
+    PORT --> FWD["adb forwardPort localPort 6790"] --> APK["安装两个 APK<br/>server 与 server.test · 20s 超时"]
+    APK --> VER["pm list instrumentation 轮询 · 上限 30s"] --> CLEAN["清理残留会话 · forceStop"]
+    CLEAN --> INST["am instrument -w 常驻子进程<br/>no-window-animation · disableAnalytics"]
+    INST --> READY["轮询 GET /status<br/>launchTimeout 30s · 最多 2 轮"]
+    READY --> SESS["POST /session 建设备侧会话"] --> PROXY["jwpProxyActive 打开<br/>W3C 命令直通设备侧 HTTP"]
+        </pre>
+        <p class="arch-title">图 2 · Android 首次会话链路：从 adb 安装到命令直通设备侧 instrumentation 服务</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>端口</th><th>归属</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><b>6790</b></td><td>设备侧 UIA2 HTTP</td><td><code>DEFAULT_SERVER_PORT</code>，由 <code>ServerInstrumentation</code> 在 instrumentation 进程内启动（netty），可用 settings <code>serverPort</code> 或环境变量覆盖（合法区间 1024–65535）</td></tr>
+            <tr><td><b>8200–8299</b></td><td>宿主侧</td><td><code>appium:systemPort</code>，默认取第一个空闲端口；分配用 <code>/tmp/uia2_device_port_guard</code> 交叉进程文件锁（超时 25s）</td></tr>
+            <tr><td><b>7810</b></td><td>设备侧 MJPEG</td><td>仅当传 <code>appium:mjpegServerPort</code> 才转发到宿主</td></tr>
+            <tr><td><b>5037</b></td><td>ADB server</td><td><code>appium:adbPort</code>，可指向远端 ADB</td></tr>
+            <tr><td>10900–11000</td><td>WebView devtools</td><td>chromedriver 相关，非 UIA2 本体</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><b>关键实现细节</b>：拉起设备侧服务用的是长驻子进程 <code>adb shell am instrument -w … io.appium.uiautomator2.server.test/androidx.test.runner.AndroidJUnitRunner</code>（附带 <code>--no-window-animation</code> 与 <code>-e disableAnalytics true</code>）；该子进程退出即置 <code>didInstrumentationExit</code>，此后代理命令直接抛 <code>InvalidContextError</code>「the instrumentation process is not running」。服务端内部启动顺序是 <code>acquireWakeLock</code>（24h）→ <code>startHttpServer(6790)</code> → <code>startMjpegServer(7810)</code>，并注册掉电自杀（<code>shutdownOnPowerDisconnect</code> 默认 true）。</p>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>UiAutomator2（黑盒、跨应用）</h4>
+          <p>能操作任意 App，符合真实用户路径；定位走 <code>AccessibilityNodeInfo</code> 树；支持 <code>UiScrollable</code> 滚动定位。官方已警告 Google 计划移除 <code>UiSelector/UiScrollable</code> 家族，届时 <code>-android uiautomator</code> 定位会失效。</p>
+          <p>适用：端到端回归、跨 App 流程、第三方 App。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>Espresso（进程内、灰盒）</h4>
+          <p>与被测 App 同进程，能拿到 <code>ViewMatchers</code>（<code>withTagValue</code>）、<code>DataInteraction</code>（可靠的列表滚动）、<code>IdlingResource</code>（<b>阻塞式</b>等 UI 线程空闲）与 Compose 子驱动（<code>hasTestTag</code>）。设备端口 <b>6791</b>、宿主端口走 8300–8399 段；默认开启动画禁用。</p>
+          <p>适用：自家 App 内部白盒校验；不能跨 App。</p>
+        </div>
+      </div>
+      <div class="loc">appium-uiautomator2-driver lib/{driver.ts,commands/find.ts,uiautomator2-server/session.ts,uiautomator2-server/core.ts,uiautomator2-server/packages.ts} · appium-uiautomator2-server app/src/main/java/io/appium/uiautomator2/{ServerInstrumentation.java,ServerConfig.java,handler/FindElement.java,model/internal/ElementsLookupStrategy.java} · appium-uiautomator2-driver docs/architecture.md · appium-espresso-driver README</div>
+    </section>
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>iOS 设备侧链路 <em>WebDriverAgent 是 XCTest runner 里的 HTTP 服务 · 宿主用 usbmuxd 转发而不是 iproxy</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    subgraph HOST["macOS 宿主"]
+        DRV["appium-xcuitest-driver<br/>WebDriverAgent 实例管理 · XcodeBuild"]
+        XC["xcodebuild build-for-testing + test-without-building<br/>scheme WebDriverAgentRunner · DEVELOPMENT_TEAM 签名"]
+        FWD["LegacyPortForwarder<br/>net.createServer + usbmuxd connectPort"]
+        FWD2["RemotexpcPortForwarder<br/>iOS 18+ · appium-ios-remotexpc"]
+    end
+    subgraph DEV["iPhone 或 Simulator"]
+        WDA["WebDriverAgentRunner.xctrunner<br/>HTTP 服务 · 默认 8100"]
+        XCT["XCTest · XCUIElementQuery"]
+    end
+    DRV --> XC
+    XC --> WDA
+    DRV -->|"轮询 GET /status · launchTimeout 60s"| WDA
+    FWD --> WDA
+    FWD2 --> WDA
+    WDA --> XCT
+        </pre>
+        <p class="arch-title">图 3 · iOS 链路：Xcode 构建 WDA → XCTest runner 内 HTTP 服务 → usbmuxd/RemoteXPC 转发到宿主 8100</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>机制</th></tr></thead>
+          <tbody>
+            <tr><td>构建与启动</td><td>默认 <code>build-for-testing</code> + <code>test-without-building</code>（<code>useSimpleBuildTest</code> 时退化为 <code>build</code> + <code>test</code>）；产物 <code>WebDriverAgentRunner-Runner.app</code>（bundle id <code>com.facebook.WebDriverAgentRunner</code>）；就绪判定为每 500ms <code>GET /status</code>，总超时 <code>wdaLaunchTimeout</code> 默认 60s，启动重试 Simulator 2 次 / 真机 1 次</td></tr>
+            <tr><td>免 xcodebuild 路线</td><td><code>webDriverAgentUrl</code>（完全不构建）或 <code>usePreinstalledWDA</code>（需 iOS 17+，真机走 RemoteXPC 隧道启动）；<code>prebuiltWDAPath</code> 需移除内嵌 <code>Frameworks/XC*</code>，否则 iOS 17 起 testmanagerd 崩溃</td></tr>
+            <tr><td>端口与转发</td><td>WDA 端口 <code>8100</code>；<b>Simulator 与宿主共享端口、不转发</b>；真机在「无 <code>webDriverAgentUrl</code> 且为本地 host」时才启用转发：<code>LegacyPortForwarder</code> 走 usbmuxd <code>connectPort</code>，iOS 18+ 走 <code>RemotexpcPortForwarder</code>。现代驱动<b>不调用 <code>iproxy</code></b>（libimobiledevice 已被 Node 版 <code>appium-ios-device</code> 取代）</td></tr>
+            <tr><td>签名 capability</td><td><code>xcodeOrgId</code> 必须与 <code>xcodeSigningId</code> 同时给才生效（后者默认 <code>iPhone Developer</code>）；CI 用 <code>keychainPath</code>/<code>keychainPassword</code> 把私钥移出系统 keychain；<code>updatedWDABundleId</code> 改 bundle id</td></tr>
+            <tr><td>真机额外门槛</td><td>iOS 15+ 必须<b>关闭密码/Touch ID</b>，否则会话启动被拦；运行中会出现「Automation Running」覆盖层；多次失败后设备可能拒绝连接，需重启设备</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <b>iOS 的现实成本</b>：一条可用的 iOS 流水线 = macOS 构建机 + Xcode + 可签名 Apple ID +（真机）关闭锁屏 + WDA 重签 + 端口/隧道管理。这与 Android 的「装两个 APK 就能跑」不是一个量级；非 macOS 主机驱动 iOS 属受限路径（仅真机 iOS 18+ 且依赖 RemoteXPC 隧道）。
+      </div>
+      <div class="loc">appium/WebDriverAgent lib/{xcodebuild.ts,webdriveragent.ts,constants.ts} · appium-xcuitest-driver lib/{driver.ts,device/device-connections-factory.ts,commands/wda/startup.ts} · 官方 docs/guides/{parallel-tests.md,ci-setup.md,non-macos-hosts.md} · docs/troubleshooting/wda-slowness.md</div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>定位与动作注入 <em>策略数 5/8/6 · xpath 永远最慢 · Android 点击其实是坐标手势注入</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>平台</th><th>确定性 locator</th><th>底层实现</th><th>速度（官方口径）</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="3">Android · UiAutomator2</td><td><code>id</code></td><td>原生 <code>By.res</code>；不带前缀时自动补 <code>&lt;当前包名&gt;:id/</code></td><td>最快</td></tr>
+            <tr><td><code>accessibility id</code> · <code>class name</code></td><td><code>By.desc</code>（contentDescription，RN 里就是 <code>accessibilityLabel</code>）· <code>By.clazz</code></td><td>最快</td></tr>
+            <tr><td><code>-android uiautomator</code> · <code>xpath</code> · <code>css selector</code></td><td><code>UiSelector</code>（支持 UiScrollable 滚动定位）· <b>非原生</b>：先取 page source 生成 XML 再匹配（server 4.25+ 默认 XPath 2.0，可 <code>enforceXPath1</code> 回退）· 宿主侧 <code>cssToNativeLocator</code> 转换</td><td>中 → 慢</td></tr>
+            <tr><td>Android · Espresso</td><td><code>id</code> · <code>accessibility id</code> · <code>class name</code> · <code>text</code> · <code>-android viewtag</code> · <code>-android datamatcher</code> · <code>-android viewmatcher</code>（+ Compose 子驱动）</td><td>Hamcrest <code>ViewMatchers</code> / <code>DataInteraction</code>；<b>UIA2 没有 viewtag/matcher 能力</b></td><td>最快（同进程）</td></tr>
+            <tr><td>iOS · XCUITest</td><td><code>accessibility id</code> · <code>id</code>/<code>name</code>（同一实现）· <code>class name</code> · <code>-ios predicate string</code> · <code>-ios class chain</code> · <code>xpath</code> · <code>link text</code></td><td>WDA <code>FBFindElementCommands</code> → <code>XCUIElementQuery</code>（identifier / className / NSPredicate / class chain / XPath）</td><td>前四种快；<b>xpath 官方称可能慢 10 倍</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>两个容易踩的实现细节：<b>①</b> 宿主侧会拦截并重写两条「魔法 XPath」——<code>/*[@firstVisible="true"]</code> 转成 <code>GET /appium/element/:id/first_visible</code>，<code>//*[@scrollable="true"]</code> 转成 <code>-android uiautomator</code> 的 <code>UiSelector().scrollable(true)</code>；<b>②</b> 传入驱动不支持的策略会直接失败（UIA2 服务端只认 <code>id</code>/<code>xpath</code>/<code>accessibility id</code>/<code>class name</code>/<code>-android uiautomator</code> 这 5 个名字，其余抛 <code>InvalidSelectorException</code>）。</p>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>Android 动作注入：坐标手势，不是 <code>UiObject2.click()</code></h4>
+          <p>真实链路是 <code>BaseElement.click()</code> → <code>AxNodeInfoHelper.click()</code> → <code>GestureController</code>，后者通过<b>反射</b>调用 <code>androidx.test.uiautomator.GestureController.performGesture(PointerGesture…)</code>：click 是一次 <code>pause(0)</code> 的按下抬起，longClick 是 <code>pause(LongPressTimeout)</code>，scroll/fling 注入后还会用 <code>UiDevice.performActionAndWait</code> 等滚动结束事件；手势区域按 <code>0.1</code> 比例内缩以避免边缘误触。</p>
+          <p>常规点击<b>不走</b> <code>adb shell input</code>（那只出现在 <code>mobile:</code> 便捷包装里，如 <code>mobile: pressKey</code>）。文本输入是与点击分离的 <code>ElementHelpers.setText()</code>，<code>hideKeyboard</code> 靠切换自定义输入法（<code>io.appium.settings</code> 的 <code>AppiumIME</code>/<code>UnicodeIME</code>）。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>iOS 动作注入：全部经 WDA/XCTest</h4>
+          <p>元素命令统一 <code>proxyCommand('/element/:id/…')</code>；手势走 WDA 的 <code>/wda/*</code> 或 XCTest 手势 API；文本输入官方注明「没有任何绕过打字的办法，只能通过键盘」，且受 <code>maxTypingFrequency</code>（默认 60 次/分）限制——这是 iOS 输入慢的根因。</p>
+          <p>需要更低层时可用 <code>mobile: performIoHidEvent</code> / <code>performIndigoHidEvent</code> 注入 HID 事件。</p>
+        </div>
+      </div>
+      <div class="loc">appium-uiautomator2-server {model/BaseElement.java,core/AxNodeInfoHelper.java,model/internal/GestureController.java,core/InteractionController.java} · appium-uiautomator2-driver lib/commands/find.ts · appium-xcuitest-driver lib/commands/{element.ts,xcuitest find.ts} · appium/WebDriverAgent FBFindElementCommands.m · 官方 locator-strategies.md</div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>等待与防抖 <em>idle + quiescence 是确定性的核心 · 动画禁用靠反射改 animationScales</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>平台</th><th>参数（默认值）</th><th>机制</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="4">Android UIA2 Settings</td><td><code>waitForIdleTimeout</code> = <b>10000ms</b></td><td>所有核心 uiautomator 对象在查找前先等空闲；Click handler 点击后还会显式 <code>Device.waitForIdle()</code>；设 ≤0 表示跳过</td></tr>
+            <tr><td><code>waitForSelectorTimeout</code> = <b>10000ms</b></td><td>仅对 <code>-android uiautomator</code> 策略生效</td></tr>
+            <tr><td><code>actionAcknowledgmentTimeout</code> = 3000ms · <code>scrollAcknowledgmentTimeout</code> = 200ms</td><td>等动作对应的 AccessibilityEvent / 滚动回执</td></tr>
+            <tr><td><code>snapshotMaxDepth</code> = 70</td><td>page source/XPath 的树深上限（注释明说默认 70 是为避免无限递归 <code>StackOverflowError</code>）</td></tr>
+            <tr><td rowspan="3">iOS（caps + settings）</td><td><code>shouldWaitForQuiescence</code> = <b>硬编码 true</b> · <code>waitForIdleTimeout</code> = 10s</td><td>由 WDA/XCTest 判定「主线程空闲 + 动画结束」，是 iOS 稳定性的主要来源；<code>0</code> 关闭（官方不建议）</td></tr>
+            <tr><td><code>wdaEventloopIdleDelay</code> = 0 · <code>animationCoolOffTimeout</code> = 2s</td><td>前者延迟 <code>setEventLoopHasIdled:</code>（flaky 时官方建议从 ≥3s 起试）；后者在每个改变状态的动作后等动画结束</td></tr>
+            <tr><td><code>snapshotMaxDepth</code> = 50（上限 62）· <code>accessibilityDeadline</code> = 0</td><td>快照深度；后者给无障碍快照设上限、防 WDA 永久挂死（官方建议只在风险步骤前后临时开）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <b>关键纠偏（写脚本/写文档都容易错）</b>：Android 的动画禁用<b>不是</b>改 <code>settings put global window_animation_scale</code> 这类全局设置。真实实现是两条：API ≥ 26 由 instrumentation 参数 <code>--no-window-animation</code> 完成；API &lt; 26 由 <code>io.appium.settings</code> 反射拿到 <code>android.view.IWindowManager</code>，把 <code>getAnimationScales()</code> 返回的浮点数组整体填 0（会话结束再填 1），权限是 <code>SET_ANIMATION_SCALE</code>。Espresso 侧默认即开启动画禁用。
+      </div>
+      <p><b>隐式/显式等待的分工</b>：显式等待完全属于客户端库行为，driver 不参与；隐式等待在两端实现不同——iOS 是 driver 侧 <code>implicitWaitForCondition</code> 轮询重发查找请求；Android 由宿主处理 W3C <code>timeouts</code>，另有服务端内建的 idle 等待与 <code>waitForSelectorTimeout</code>。Espresso 提供第三种形态：<code>IdlingResource</code>，<b>阻塞式</b>等 UI 线程空闲（<code>mobile: registerIdlingResources</code>，类必须有静态 <code>getInstance()</code>）。</p>
+      <div class="loc">appium-uiautomator2-driver README Settings API 表 · appium-uiautomator2-server model/settings/*.java · handler/Click.java · appium/io.appium.settings handlers/AnimationSettingHandler.java · appium-xcuitest-driver lib/commands/wda/startup.ts · 官方 docs/troubleshooting/wda-slowness.md</div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>稳定性、并行与运维面 <em>官方归因清单可直接用 · 并行靠端口族隔离而非调度器</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>官方承认的成因</th><th>官方对策</th></tr></thead>
+          <tbody>
+            <tr><td>Android：并发或会话未正常关闭导致端口冲突、旧会话残留</td><td>每会话唯一 <code>systemPort</code>/<code>chromedriverPort</code>/<code>mjpegServerPort</code>；开 <code>--session-override</code>；<code>appium driver run uiautomator2 reset</code> 清设备缓存</td></tr>
+            <tr><td>Android：<code>Socket Hangup</code>（连不上设备侧 REST 服务）</td><td>修会话生命周期、调大或关掉 <code>newCommandTimeout</code>；查 logcat 中 <code>io.appium.uiautomator2.server</code> 的异常；排查设备优化、USB 线材</td></tr>
+            <tr><td>Android：元素在但找不到</td><td>加显式等待；排查拼写；xpath 场景调 <code>allowInvisibleElements</code>/<code>ignoreUnimportantViews</code>/<code>snapshotMaxDepth</code> 等（官方同时警告这些会显著拖慢）</td></tr>
+            <tr><td>iOS：应用慢或交互超时</td><td>应用必须 idle 且动画结束才能交互；调 <code>waitForIdleTimeout</code>/<code>animationCoolOffTimeout</code>/<code>wdaEventloopIdleDelay</code>；主线程死循环的 App 基本不可自动化</td></tr>
+            <tr><td>iOS：WDA 永久挂死 / 命令莫名多等 60s</td><td><code>accessibilityDeadline</code> 临时开启；后者是 <code>testmanagerd</code> 崩溃重启所致，需终止目标 App 或重启设备</td></tr>
+            <tr><td>iOS：真机不稳、系统弹窗点不到</td><td>真机官方明说「特别 flakey」，必要时重启设备；弹窗用 <code>autoAcceptAlerts</code>/<code>autoDismissAlerts</code>/<code>mobile: alert</code>；iOS 18 的有限通讯录弹窗需单独指定 active app</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>并行：端口族 + 单进程多会话</h4>
+          <p>Android 每会话隔离 <code>systemPort</code>（8200–8299）、<code>chromedriverPort</code>、<code>mjpegServerPort</code>；iOS 隔离 <code>udid</code>、<code>wdaLocalPort</code>（8100 起）、<code>mjpegServerPort</code>（9100）、<code>derivedDataPath</code>。两种拓扑：<b>per-process</b>（每会话一个 server）与 <b>per-request</b>（一个 server 多会话，靠 caps 指定设备）。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>默认超时矩阵（排障先看这四个）</h4>
+          <p>instrumentation 安装 20s（<code>uiautomator2ServerInstallTimeout</code>）· 服务端拉起 30s（<code>uiautomator2ServerLaunchTimeout</code>）· 请求读超时 240s（<code>uiautomator2ServerReadTimeout</code>）· 会话空转 <code>newCommandTimeout</code> 60s（超时即强杀会话）。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>企业级编排与设备农场</h4>
+          <p>Selenium Grid 4 的 <b>relay</b> 模式是官方接法（配 <code>relay url</code>/<code>status-endpoint</code>/<code>configs</code>，Appium 3 起废弃 Grid3 的 <code>--nodeconfig</code>）；自建设备农场可用 <code>appium-device-farm</code> 插件或 DeviceFarmer/stf；云侧 BrowserStack/Sauce/TestMu 均直接支持 Appium（各有 vendor 前缀的扩展 caps，会形成一定锁定）。</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>版本 / 生态事实（易过期，引用请带日期）</th><th>内容</th></tr></thead>
+          <tbody>
+            <tr><td>版本线</td><td><code>appium@3.0.0</code> 稳定版 2025-08-18；<code>3.7.0</code> 2026-08-24；<code>4.0.0-beta.1</code> 2026-09-19 —— <b>ESM-only</b>，移除 MJSONWP、<code>--nodeconfig</code>（Grid3）、<code>--allow-cors</code>，Node 要求升至 <code>^22.22.2 || ^24.15.0 || ^26</code></td></tr>
+            <tr><td>驱动版本门禁</td><td><code>appium-uiautomator2-driver</code> ≥ 5.0.0 仅支持 Appium 3；当前 latest 8.7.0；<code>xcuitest-driver</code> latest 12.13.1；<code>appium-webdriveragent</code> 16.x</td></tr>
+            <tr><td>官方生态</td><td>6 个官方插件（execute-driver / images / inspector / relaxed-caps / storage / universal-xml）；Appium Inspector 2026.9.2（桌面版 + <code>appium plugin install inspector</code>）；官方客户端 5 个（Java/Python/Ruby×2/.NET）+ 第三方（WebdriverIO/Nightwatch/Robot Framework/Rust/Swift）；官方维护状态表里 WinAppDriver 已 2022 停维（社区 NovaWindows 替代）</td></tr>
+            <tr><td>MCP 与 AI 插件</td><td><code>appium-mcp</code> 支持「内嵌 local driver」与「连远端 server」两种模式，其 vision 工具 <code>appium_ai</code> <b>默认不注册</b>、需显式开启 —— 即官方生态也在往 Agent 方向靠，但默认保持确定性</td></tr>
+            <tr><td>Docker 与云价格</td><td>官方镜像 <code>appium/appium</code>（tag 至 <code>v3.7.0-p1</code>，约 892MB，<b>仅 amd64</b>）；云价格量级：Sauce Live $39 / 虚拟设备 $149 / 真机 $199（每并发月），BrowserStack App Automate $199 起，TestMu 虚拟 $139 / 真机 $199，Maestro Cloud $250/设备月</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <b>可维护性判断</b>：Appium 本体是「协议与扩展机制稳定、驱动包快速迭代」的分层结构——升级风险集中在 driver 包（例如 uiautomator2-driver 5.0 起只配 Appium 3），本体升级则要盯 4.x 的 ESM 化。对内部落地而言，<b>锁定 appium 与各 driver 的版本组合</b>比追新更重要。
+      </div>
+      <div class="loc">appium-uiautomator2-driver README（并行、超时、troubleshooting）· appium-xcuitest-driver docs/guides/parallel-tests.md · appium/packages/appium/CHANGELOG.md 与 releases（4.0.0-beta.1）· docs/guides/{grid.md,ci-setup.md} · 官方 ecosystem/{drivers,plugins,clients}.md · appium-inspector README · appium-mcp README · hub.docker.com/r/appium/appium</div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>路线机制对照 <em>判据是「谁在设备上监听 HTTP」+「定位是选择器还是模型语义」</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+    subgraph A["Appium · UiAutomator2"]
+        A1["宿主 Node server 4723"] --> A2["adb forward 8200-8299"] --> A3["设备 instrumentation 内 netty 6790"]
+    end
+    subgraph B["Appium · XCUITest"]
+        B1["宿主 Node server 4723"] --> B2["usbmuxd connectPort 转发"] --> B3["XCTest runner 内 WDA 8100"]
+    end
+    subgraph C["uiautomator2 Python"]
+        C1["宿主 Python 直连"] --> C2["设备端 UiAutomator HTTP 服务 9008"]
+    end
+    subgraph D["mobilerun · LLM Agent"]
+        D1["宿主 Python Agent 循环"] --> D2["ADB/端口转发 8080"] --> D3["设备端 Portal APK 无障碍服务"]
+    end
+    AG["谁决定下一步：脚本 或 模型"]
+    A3 --> AG
+    B3 --> AG
+    C2 --> AG
+    D3 --> AG
+        </pre>
+        <p class="arch-title">图 4 · 四条路线的设备侧载体与端口：6790 / 8100 / 9008 / 8080</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方案</th><th>设备端组件</th><th>通信 / 协议</th><th>定位机制</th><th>等待机制</th><th>语言 / 许可</th><th>确定性</th><th>iOS</th></tr></thead>
+          <tbody>
+            <tr><td><b>Appium</b></td><td>UIA2 instrumentation / WDA xctrunner / io.appium.settings</td><td>W3C WebDriver over HTTP（4723）→ adb forward / usbmuxd</td><td>5/8/6 种确定性 locator（id、accessibility id、predicate、class chain…）</td><td>idle/quiescence + 动画禁用 + 端口化超时</td><td>Node（本体）+ 任意客户端 / Apache-2.0</td><td>确定性</td><td>XCUITest/WDA，需 macOS + 签名</td></tr>
+            <tr><td>uiautomator2（Python）</td><td>设备端 UiAutomator HTTP 服务（jar）</td><td>HTTP/JSON-RPC 直连，默认 9008</td><td><code>d(text=…)</code>/<code>d(resourceId=…)</code> 等控件选择器</td><td><code>implicitly_wait</code> 默认 20s</td><td>Python / MIT</td><td>确定性</td><td><b>无</b>（仅 Android）</td></tr>
+            <tr><td>Maestro</td><td>companion driver app（Android <code>dev.mobile.maestro</code> + androidTest server；iOS 永不结束的 XCUITest + 内嵌 HTTP 7001）</td><td>gRPC/Ktor（Android）· HTTP（iOS）</td><td>自研 view-matching + 文本/语义选择</td><td>内建自动等待与重试语义</td><td>Kotlin / Apache-2.0</td><td>确定性（YAML flow）</td><td>有，但官方称物理 iOS 设备支持仍在路上</td></tr>
+            <tr><td>Detox</td><td>被测 App 内嵌 native client（Android 依赖 Espresso，iOS 用 DetoxSync + LNViewHierarchyDumper）</td><td>WebSocket 中介服务器（<b>不走 WebDriver</b>）</td><td>灰盒：按测试 id / 原生视图匹配</td><td>同步网络/主线程/布局/定时器/动画/RN bridge —— 天然抗 flaky</td><td>Node / MIT</td><td>确定性（灰盒）</td><td>有（需构建期集成）</td></tr>
+            <tr><td><b>mobilerun</b></td><td>Portal APK 无障碍服务 / iOS <code>mobilerun-ios</code> + WDA</td><td>设备侧自定义 HTTP（8080 / 8080-8089）</td><td><b>无 locator 概念</b>：模型看「元素序号 + 文本」的树断面</td><td>0.5s 稳定等待 + 差分状态 + 重新规划</td><td>Python / MIT（Portal AGPL）</td><td>概率型</td><td>RC 阶段，依赖 macOS + WDA 签名</td></tr>
+            <tr><td>worktool（本仓 <a href="22-worktool-analysis.html">文档 22</a>）</td><td>AccessibilityService（企微专用）</td><td>自有后端 WebSocket 下发指令</td><td>固定指令分支（39 个）</td><td>单 Handler 串行队列 + 重试</td><td>Kotlin/Java / 第三方开源</td><td>确定性（专用）</td><td>无</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout ok">
+        <b>一句话记忆</b>：<b>Appium / Maestro / uiautomator2 / Detox 是「确定性执行器」</b>（差别只在设备端载体与等待策略）；<b>mobilerun 是「设备上的 Agent 运行时」</b>（差别在谁决定下一步）。两条路线在「设备接入层」高度重合（ADB、无障碍、端口转发、截图），但在「控制权」上完全相反——因此它们更可能是<b>互补</b>而非互相替代：稳定的主干流程用确定性方案，探索性/易变流程用 Agent。
+      </div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>XLB 选型建议 <em>先补无障碍标识，再用 Appium 建主干，Agent 只做补充</em></h2>
+      <p><b>现状（本仓实测，同 <a href="23-mobilerun-analysis.html">文档 23</a> §9）</b>：全仓检索 <code>appium|uiautomator|maestro|detox</code>（排除 node_modules）仅命中历史壳 <code>xlb_app</code>（Detox 19.12.6，14 个月未动）；主端 <code>host-app-xlb</code>（RN 0.80.1，243 个 TS/TSX + 原生 Android 模块）无任何 UI 自动化工程，<code>testID|accessibilityLabel|accessibilityRole</code> 合计仅 66 处，小程序页面跑在 WebView 内。这意味着<b>不管选哪条路线，第一步都是同一个：补无障碍/测试标识。</b></p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    S0["阶段 0 · 补 testID 与 accessibilityLabel<br/>RN 两端一致 · 复用同一批标识"] --> S1
+    S1["阶段 1 · Appium + UiAutomator2 主干<br/>Android 冒烟与回归 · accessibility id 定位"] --> S2
+    S2["阶段 2 · 进 CI 与设备池<br/>单机多会话 或 Grid relay · 端口族隔离"] --> S3
+    S3["阶段 3 · iOS 评估<br/>需 macOS 构建机 + 签名 + WDA 维护"] --> S4
+    S2 --> S5["补充轨 · Agent 探索<br/>无 API 的第三方 App / 易变流程<br/>关遥测 · 内网模型 · 只读优先"]
+        </pre>
+        <p class="arch-title">图 5 · 分阶段路径：确定性主干先行，Agent 只做确定性覆盖不到的补充</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>做什么</th><th>前置条件</th><th>验收门槛</th></tr></thead>
+          <tbody>
+            <tr><td>阶段 0</td><td>给关键路径（登录、工作台、下单前链路、POS 相关 H5）补 <code>testID</code>/<code>accessibilityLabel</code>；RN 与原生模块统一命名</td><td>与前端团队约定命名规范</td><td>关键路径控件标识覆盖率 ≥ 90%（可按页面抽查）</td></tr>
+            <tr><td>阶段 1</td><td>Appium + <code>appium-uiautomator2-driver</code> 跑 Android 冒烟：真机/模拟器各一条链路，全部用 <code>accessibility id</code> 或 <code>id</code> 定位</td><td>一份 <code>capabilities</code> 配置 + 一台可连设备</td><td>同一用例连续 20 次运行成功率 ≥ 95%，单次耗时可比</td></tr>
+            <tr><td>阶段 2</td><td>进 CI：per-process 或 Grid relay；固定 <code>systemPort</code> 区间、<code>--session-override</code>、用例失败自动留 page source 与截图</td><td>设备池（自建 stf/appium-device-farm 或云）</td><td>流水线中稳定跑通且失败可归因（日志含 page source 与 WDA/UIA2 服务端日志）</td></tr>
+            <tr><td>阶段 3</td><td>iOS 评估：先只做 Simulator，再评估真机（关闭锁屏、WDA 签名维护）</td><td>macOS 构建机 + Xcode + 可签名 Apple ID</td><td>Simulator 冒烟通过；真机连续 10 次无「会话启动被拦」</td></tr>
+            <tr><td>补充轨</td><td>mobilerun 用于「无 API 的第三方 App」与「流程常变」的探索性验证，<b>只读操作优先</b></td><td>内网模型 + 关遥测 + 专用测试账号</td><td>3 个固定任务各跑 10 次成功率 ≥ 90%，且无一次误触写操作</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <b>不要一开始就上 Agent 的理由（成本视角）</b>：确定性方案的单次运行成本≈0，失败可复现；Agent 单次成本按 token 计（第三方实测乐观任务集 $0.075/任务，长链与重试会成倍放大），且失败不可复现。把 Agent 用在「确定性方案覆盖不到」的地方，才是成本最优解。
+      </div>
+      <div class="loc">本仓检索命令与命中（见 <a href="23-mobilerun-analysis.html">文档 23</a> §9 的同一证据）· host-app-xlb/package.json · appium-uiautomator2-driver README（并行与端口）· docs/guides/grid.md</div>
+    </section>
+
+    <section class="card" id="s10">
+      <h2><span class="num">10</span>风险与不确定性 <em>flakiness 数字全部不可引用 · UiSelector 面临废弃 · 4.x 会 ESM 化</em></h2>
+      <div class="callout danger">
+        <b>不可验证的数据（不要在内部评审里引用）</b>：公开可见的「Appium 15–20% / Detox &lt;2% / Maestro &lt;1% flakiness」出自竞品自营文章，无方法学与样本量；Maestro 官方的 Appium 对比页同样是厂商自营的定性对比 + 客户案例。本次调研<b>未找到任何带方法学的独立第三方 flakiness 基准</b>，Appium 官方主仓文档也没有 flakiness 专页（只有各驱动的归因文档）。因此本平台若要横向比较稳定性，只能自己按同一批用例做 A/B 实测。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>风险</th><th>影响</th><th>应对</th></tr></thead>
+          <tbody>
+            <tr><td>Google 计划移除 <code>UiSelector/UiScrollable/UiObject/UiCollection</code></td><td>Android 上所有 <code>-android uiautomator</code> 定位将失效</td><td>新用例优先 <code>accessibility id</code>/<code>id</code>；把 <code>-android uiautomator</code> 限制在确需滚动定位的场景</td></tr>
+            <tr><td>Appium 4 将 ESM-only 并移除 MJSONWP / Grid3 <code>--nodeconfig</code> / <code>--allow-cors</code></td><td>升级时有破坏性变更，Node 版本要求抬升</td><td>锁版本组合；4.x 稳定后再评估迁移，避免自动跟随 latest</td></tr>
+            <tr><td>驱动包版本门禁（如 uiautomator2-driver ≥5 只配 Appium 3）</td><td>升级本体可能导致驱动不兼容</td><td>把 <code>appium + driver 版本组合</code>纳入版本管理并写进镜像/CI 镜像 tag</td></tr>
+            <tr><td>iOS 依赖 macOS + Xcode + 签名 + WDA 维护</td><td>iOS 流水线成本与不确定性远高于 Android</td><td>iOS 先只做 Simulator；真机评估单独立项</td></tr>
+            <tr><td>并行端口冲突与旧会话残留</td><td>表现为 <code>Socket Hangup</code>、元素找不到等难归因错误</td><td>固定端口族与 <code>--session-override</code>；CI 里强制 kill 遗留 instrumentation</td></tr>
+            <tr><td>云厂商 vendor 前缀扩展 caps</td><td>用例被云平台绑定，迁移成本上升</td><td>核心用例只用标准 W3C caps；厂商能力限制在适配层</td></tr>
+            <tr><td><code>xpath</code> 与 <code>getPageSource</code> 的性能</td><td>iOS 官方称 xpath 可能慢 10 倍；page source 受深度上限裁剪</td><td>禁用 xpath 作为主定位；仅在排障时取 page source</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>不应写死的数字</h4>
+          <p>ⓐ 端口默认值与区间（会随驱动版本调整）；ⓑ 超时默认值；ⓒ 云厂商价格；ⓓ driver 版本门禁；ⓔ flakiness 百分比。文档引用时都带上「版本 + 日期」，或直接写「以当前版本 README 为准」。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>未能确认项</h4>
+          <p>ⓐ 是否存在个别路径回落到 <code>adb shell input</code>（未逐文件穷举）；ⓑ v2→v3 的逐项机制差异（未做分支 diff）；ⓒ 各 driver 自有的「不安全特性」清单（本体只实现机制，特性名由 driver 定义）。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>方法学声明</h4>
+          <p>本文结论来自对上游 <code>raw.githubusercontent.com</code> 源码与官方文档的只读快照分析（Appium 3.7.0 / gitHead <code>f7b2033</code>），<b>未在本平台真机执行过 Appium</b>；因此所有「时间/成功率」类数字均来自官方 README 与第三方文章，落地前必须自测。</p>
+        </div>
+      </div>
+      <div class="loc">竞品自营对比（maestro.dev/blog/maestro-vs-appium-the-benchmark · drizz.dev/post/detox-vs-appium-vs-maestro…）标注为不可验证 · appium-ui2 README WARNING（UiSelector 废弃）· appium 4.0.0-beta.1 release notes · 官方 docs 目录（无 flakiness 专页）</div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>POS Qt 客户端代码分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>xlb_pos_qt · POS 收银客户端代码分析</h1>
+    <p class="subtitle">门店收银桌面端：一主五辅多进程、纯编译期环境切换、SSE 会员登录与离线收银；风险集中在可逆「加密」的凭据、全局关闭的 TLS 校验与无签名自升级。</p>
+    <p class="meta">最后更新：2026-08-19 · 基准：分支 <code>v2.1</code> <code>ce47e668c</code>（2026-08-18，与远端同步 0/0） · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html" class="active">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <section class="card" id="baseline">
+      <h2><span class="num">01</span>分析基准与体量<em>v2.1 · 21 万行应用代码 + 66.6 万行 thirdparty · 双构建体系</em></h2>
+
+      <div class="callout warn">
+        <b>分析基准</b>：仓 <code>pos/xlb_pos_qt</code> 检出在 <code>v2.1</code> 分支 <code>ce47e668c</code>（2026-08-18，「修复SSE断连期间新二维码补偿轮询未启动问题」），与 <code>origin/v2.1</code> 完全同步。
+        默认分支为 <code>master</code>，全仓 438 个分支；<code>v2.1</code> 由编译宏 <code>IS_V2_1_VERSION</code> 常开标识。
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><span class="n">21.0万</span><span class="l">应用代码行数<br/>src 除 thirdparty</span></div>
+        <div class="stat"><span class="n">66.6万</span><span class="l">thirdparty 行数<br/>含 AI_SDK / LAVFilters</span></div>
+        <div class="stat"><span class="n">1687</span><span class="l">tests 行数 · 5 个套件<br/>覆盖约 0.8%</span></div>
+        <div class="stat"><span class="n">6</span><span class="l">进程形态<br/>一主五辅</span></div>
+      </div>
+
+      <p>技术栈：<b>C++14 / Qt 5</b>（Concurrent、Network、WebSockets、SerialPort、Sql、Qml、Quick、Multimedia、PrintSupport 等 13 个模块），
+      Windows 为主（MSVC，win32/win64 双架构），Linux/mac 仅部分路径。<b>双构建体系并存</b>：根 <code>CMakeLists.txt</code> 只编
+      <code>posclient</code> 一个目标（<code>src/CMakeLists.txt:3</code>），<b>实际发布走 qmake</b> <code>src/xlb-pos-qt.pro</code>（TEMPLATE=subdirs）；
+      <code>build/</code> 里提交了一份 CMake 生成的 VS 工程。仓内自带结构化知识库 <code>wiki/</code>（架构/业务/集成/运行时八组文档），是阅读本文之外的最佳入口。</p>
+      <div class="loc">src/posclient/CMakeLists.txt:3,20-35 · src/xlb-pos-qt.pro · wiki/README.md</div>
+    </section>
+
+    <section class="card" id="arch">
+      <h2><span class="num">02</span>总体架构：一主五辅多进程<em>主进程拉起并监护全部辅助进程 · IPC 各用一套</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph host["门店 POS 主机 · Windows"]
+    PC["posclient 主进程<br/>QML + Widgets · 约35个 controller"]
+    AI["posai<br/>本地视觉识别 · 非LLM"]
+    AP["posalitouchpay<br/>支付宝碰一碰 · win32"]
+    SC["posscreen<br/>客显副屏"]
+    WG["posweigh<br/>秤/打印/钱箱"]
+    UP["posUpdater<br/>自升级器"]
+  end
+  PC -->|"拉起+监护"| AI
+  PC -->|"拉起+监护"| AP
+  PC -->|"QSharedMemory+Win消息"| SC
+  PC -->|"监护"| WG
+  PC -->|"拉起/热下载"| UP
+  PC -->|"HTTP/SSE"| BFF["xlb-pos-bff<br/>NestJS BFF"]
+  PC -->|"HTTP 直连"| OLD["retail 老单体 / OMS"]
+  AI -->|"127.0.0.1 HTTP/gRPC"| PC
+  AP -->|"USB NFC"| DEV["碰一碰设备"]
+  WG -->|"串口/DLL"| HW["电子秤·打印机·钱箱"]
+  UP -->|"OSS 补丁zip"| OSS["阿里云 OSS<br/>xlb-qt-update-*.json"]
+        </pre>
+        <p class="arch-title">图 1 · POS 主机进程拓扑与后端连接</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>进程</th><th>职责</th><th>关键类 / 通道</th></tr></thead>
+          <tbody>
+            <tr><td><code>posclient</code></td><td>收银主应用：购物车/结算/会员/打印/离线/升级编排</td><td><code>MainController</code> 单例 + ordermanager、cashmanager、loginmanager、ssemanager、netmanager 等约 35 个 controller 子目录</td></tr>
+            <tr><td><code>posai</code></td><td><b>本地</b>零食/烘焙视觉识别（厂商 AI_SDK dll），<b>不是 LLM</b></td><td><code>SnackDetectDllLoader</code>；内嵌 JQHttpServer 监听 127.0.0.1，<code>/rpc/ai/*</code>、<code>/rpc/camera/*</code></td></tr>
+            <tr><td><code>posalitouchpay</code></td><td>支付宝「碰一碰」NFC 支付守护（headless，win32）</td><td><code>AliTouchPay</code> 监听 USB；ABCP SDK 自 <code>mdn.alipayobjects.com</code> 更新</td></tr>
+            <tr><td><code>posscreen</code></td><td>客显副屏（QML + 多媒体）</td><td>IPC = QSharedMemory + Windows 消息 <code>QIPCMessage</code></td></tr>
+            <tr><td><code>posweigh</code></td><td>电子秤称重独立进程（TARGET=posweight）</td><td>托利多/百伦斯等秤驱动 <code>QIns*</code>、打印机 <code>QEPSONPrinter</code> 等</td></tr>
+            <tr><td><code>posUpdater</code></td><td>自升级器（QML）；二进制本身也会被热下载替换</td><td><code>PosUpdateFlowManger</code>；升级锁 + 自检 + 失败回滚</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>主进程入口 <code>src/posclient/controller/main.cpp:250</code>：DLL MD5 校验 → 单实例 → 升级自检 → splash →
+      <code>MainController::initialize()</code> → QML <code>qrc:/ui/App.qml</code>。崩溃走 qBreakpad（主进程）与各辅进程自挂的
+      <code>MiniDumpWriteDump</code>。日志为 Log4Qt 包装的 <code>ScopedLogger</code> → <code>posclient.log</code>。</p>
+      <div class="loc">main.cpp:250,:283,:336,:386 · common/utils/sysutils.cpp:483-487 · 辅进程 main.cpp 各自的 SetUnhandledExceptionFilter</div>
+    </section>
+
+    <section class="card" id="build">
+      <h2><span class="num">03</span>构建 · 发布 · 环境切换<em>环境纯编译期宏 · 无 CI · Inno Setup 打包</em></h2>
+
+      <ul>
+        <li><b>环境切换没有运行时配置</b>：<code>IS_ONLINE_VERSION</code> 由构建机上的 <code>D:/build-online.txt</code>（MSVC）或 <code>/tmp/online</code> 决定；
+        <code>/tmp/wanchi</code> 切万驰版（<code>IS_BUILD_WANCHI_VERSION</code>）；版本号走 <code>VERSION_STR</code> 环境变量，默认 0.0.1。
+        基址在 <code>apiutil.h:27-37</code> 以宏写死：<code>xlb-pos-bff.retail-bff.ali-{prod,test,dev}.xlbsoft.com</code>，万驰版 <code>pos-bff-wanchi.*</code>。</li>
+        <li><b>打包</b>：Inno Setup（<code>ISCC.exe xlb-pos-qt.iss</code>），<code>.iss</code> 不在仓内；后置步骤 <code>install_depends_for_windows.bat</code> 拷贝 Qt DLL / AI_SDK / VC 运行库。</li>
+        <li><b>无 CI</b>：仓内无 <code>.gitlab-ci.yml</code> / Jenkinsfile；<code>batFile/</code> 是开发者 git 快捷脚本，<code>build/windows/build.py</code> + <code>config.bat</code> 承担半自动构建，厂商开关 <code>POS_QT_BUILD_VENDOR</code>。</li>
+        <li><b>双构建体系</b>：qmake 才是发布路径（还编 posscreen/posai/posalitouchpay/posUpdater 等辅进程），根 CMake 只产出 posclient；两套并存属遗留债。</li>
+      </ul>
+      <div class="loc">CMakeLists.txt:35-67 · src/posclient/CMakeLists.txt:161-176,393-404 · doc/buildexe.md · build/windows/readme.txt</div>
+    </section>
+
+    <section class="card" id="net">
+      <h2><span class="num">04</span>后端通信<em>主走 xlb-pos-bff · 三条 SSE · 无 MQTT · 路由头已停发</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>对象</th><th>基址 / 路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>POS BFF</td><td><code>xlb-pos-bff.retail-bff.ali-*</code></td><td>登录 <code>/erp-mdm/hxl.erp.user.pos.login</code>、结算 <code>/retail/hxl/retail/pos/settlement/*</code>、Rust 下单 <code>/hxl/retail/createOrder</code>、券算价 <code>/coupon-calculator</code>；约 760 行路径常量集中在 <code>xlbapi.h</code></td></tr>
+            <tr><td>retail 老单体 / OMS</td><td><code>https://hxl-api.xlbsoft.com</code> · <code>oms_host_base</code></td><td>部分老接口直连，未全部收口 BFF</td></tr>
+            <tr><td>活动/商品 SSE</td><td><code>sse_*_request</code>（<code>/connected</code>）</td><td><code>SSEWorker</code>；QNAM 长连接 GET，<code>Accept: text/event-stream</code>，逐行剥 <code>data:</code>；MAX_RETRIES=3 + 30s 递增退避</td></tr>
+            <tr><td>会员 SSE</td><td><code>xlb-member-sse-server.xlb-member.ali-*</code></td><td><code>MemberSSEWorker</code>；<b>ali-prod 走明文 http</b>，凭据仅 <code>X-ROOM</code>=门店号、<code>X-ID</code>=MAC 头</td></tr>
+            <tr><td>route-center 规则</td><td>OSS <code>route-rules/default/route-config.json</code>，兜底 <code>retail-route-center--retail-gateway.*/api/route/rules</code></td><td><b>本地求值</b> <code>route_runtime.cpp</code>；但产出的 <code>x-route-target-*</code> 头<b>已注释停发</b>，周期拉取 <code>#if 0</code></td></tr>
+            <tr><td>Idaas</td><td><code>login-web.idaas.ali-*</code></td><td>两阶段 <code>/oauth2/token</code> → 用户画像；refresh_token 只存不续（TODO 注释）</td></tr>
+            <tr><td>其他</td><td>OTel collector · 阿里 HTTPDNS <code>223.5.5.5/resolve</code> · OSS 日志/配置</td><td>trace 上报含全量请求体（见风险表）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>HTTP 客户端为 <code>HttpClient</code>（QNetworkAccessManager 封装，链式 API），注册表开关可切到 libcurl 实现
+      <code>HttpclienCurl</code> + <code>MultiDriver</code>（CURLM 驱动线程）。<b>WebSocket 仅本地</b> <code>ws://127.0.0.1:8765</code> 调试/日志通道；
+      <b>全仓无 MQTT 客户端</b>——文档 14 提到的「MQTT clientId 含明文手机号」在 remote-app-im（RN 侧），不在本仓。</p>
+
+      <div class="callout warn">
+        <b>与文档 01/06 的口径差（已同步修正那两篇）</b>：route-center 的 DSL 导出确实存在，但 POS Qt 端 v2.1 把它拉下来<b>本地求值</b>后，
+        路由头 <code>x-route-target-*</code> 的发送代码被注释（<code>common/httputil.cpp:538-539</code>），规则周期拉取也被
+        <code>#if 0</code>（<code>cashmanager/cashworker.cpp:365-379</code>）。即「网关读 Qt 上送的路由头」这条链路在 Qt 侧<b>实际未生效</b>。
+      </div>
+      <div class="loc">apiutil.h:27-42 · xlbapi.h:60-103 · ssemanager/networkmanager.h:24-30 · networkmanager.cpp:76-145 · cashmanager/route_runtime.cpp</div>
+    </section>
+
+    <section class="card" id="login">
+      <h2><span class="num">05</span>登录与会员<em>收银员三通道 · 会员扫码靠 SSE + 1s 补偿轮询</em></h2>
+
+      <p>收银员登录有三条通道：MDM/ERP 在线登录（<code>/erp/hxl.erp.user.pos.login</code>，注册表 <code>openMdmErpV2</code> 切 BFF v2 口）、
+      Idaas 两阶段 OAuth、以及<b>离线登录</b>——断网时用本地 SQLite 缓存账号 + <b>XOR 混淆</b>密码比对（<code>loginmanager.cpp:1493-1528</code>）。
+      Token 存 <code>QUtil::m_token</code>，随 <code>Access-Token</code> 头发出。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 收银员
+  participant P as posclient MemberManager
+  participant B as BFF 会员接口
+  participant S as 会员 SSE 服务
+  C->>P: 打开会员扫码
+  P->>B: qr/generate 生成二维码
+  P->>P: 提前30s刷新
+  P->>S: 建立 SSE 长连接
+  S-->>P: Connected 信号 · m_memberSseConnected=true
+  alt SSE 正常
+    S-->>P: 授权事件推送
+  else SSE 断连期间生成新码
+    P->>P: startCompensationPolling · 每1s
+    P->>B: qrQueryAuth 轮询兜底
+    S-->>P: Connected 恢复 · stopCompensationPolling
+  end
+  P->>B: qrLoginResult 登录完成
+        </pre>
+        <p class="arch-title">图 2 · 会员扫码登录：SSE 主通道 + 断连补偿轮询（ce47e668c 修复点）</p>
+      </div>
+
+      <p>08-18 的修复即上图 else 分支：新增 <code>m_memberSseConnected</code>（<code>membermanager.h:444</code>）由 Connected/Disconnected 信号维护，
+      断连期间生成/复用新二维码立即启动 1s 间隔补偿轮询（原 3s），SSE 恢复即停。残余风险：断连信号晚于生码回调到达时仍有约一个轮询周期的窗口，靠 1s 兜底。</p>
+      <div class="loc">cashmanager/membermanager.cpp:65-81,:2822-2877,:2915,:2962,:3157-3170 · loginmanager/loginmanager.cpp:1493-1528,:1757-1768 · loginmanager/idaaslogin.h:24,48</div>
+    </section>
+
+    <section class="card" id="biz">
+      <h2><span class="num">06</span>收银业务链路<em>算价/下单/支付/券/退货全走 BFF · 离线补单分批上传</em></h2>
+
+      <ul>
+        <li><b>算价与下单</b>：购物车算价 <code>hxl.retail.pos.cart.compute</code>；下单二选一——老 <code>retailOrderCreateApi</code> 或 BFF 的 Rust 口 <code>rustOrderCreateApi</code>（<code>cashmanager.cpp:1628-1634</code>）；支付/关单/确认 <code>/settlement/pay|closeOrder|pay/confirm</code>；券+支付组合核销 <code>couponwriteoffAndCreateAndPay</code>。</li>
+        <li><b>券算价 sidecar</b>：可切本地进程 <code>/pos/couponcompute</code>（开关 <code>/pos/getProcessTag</code>），与云端双轨。</li>
+        <li><b>退货/反结账</b>：<code>/settlement/return|reverse|refund/retry|refund/confirm</code>。</li>
+        <li><b>离线收银</b>：订单/交班写本地 SQLite（<code>shift_info</code> 表 <code>need_*_upload</code> 标记），恢复网络后 <code>OfflineOrderUploader</code> 分批上传；离线积分本地算 <code>OfflineCalculate</code>。</li>
+        <li><b>打印/称重/副屏</b>：<code>NewTicketManager::printSaleTicket</code> + 价签机；<code>C_Weight</code> 串口读重（posai 也可推重量 <code>/rpc/ai/push/weight</code>）；会员码送副屏 <code>sendMemberQrToPosscreen</code>，副屏进程挂掉时降级本地副屏。</li>
+        <li><b>碰一碰</b>：posalitouchpay 监听 USB NFC，支付宝 openid 换会员 <code>memberLoginOpenid</code>。</li>
+      </ul>
+      <div class="loc">xlbapi.h:478-565,699 · common/httpclient.cpp:63 · goodsmanager/goodsmanager.cpp:1946-2005 · printmanager/newticketmanager.h:31,75 · maincontroller.cpp:234,553</div>
+    </section>
+
+    <section class="card" id="storage">
+      <h2><span class="num">07</span>本地存储<em>SQLCipher 口令硬编码 · 非 Windows 直接不加密</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>库</th><th>驱动</th><th>内容</th></tr></thead>
+          <tbody>
+            <tr><td><code>xlbPos.db</code></td><td>SQLCipher（优先）/ QSQLITE 兜底</td><td>主库：company_info、order_info、coupon_type_info、settlement_order、shift_info、unexpectedOrder、pos_exceptional_cash_pay_orders 等；<b>口令硬编码于二进制，可解码</b>；非 Windows 平台不加密</td></tr>
+            <tr><td><code>coupon_cache.db</code> · <code>config.db</code> · <code>backdata.db</code></td><td>明文 QSQLITE</td><td>券缓存 / 配置 / 备份</td></tr>
+            <tr><td>LevelDB</td><td>链接库</td><td>KV 缓存</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">sql/sqlTool.cpp:1186,1223-1226,1289-1298 · sql/sqlutil.h:9 · 表定义 sqlTool.cpp:3557-4184</div>
+    </section>
+
+    <section class="card" id="update">
+      <h2><span class="num">08</span>自升级<em>OSS 索引 + 补丁 zip · 仅 MD5 校验 · 无代码签名</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  V["versionworker<br/>拉版本索引"] -->|"xlb-qt-update-通道.json"| O["阿里云 OSS<br/>hxl-pos / pos-wanchi"]
+  O -->|"xlb-update.json + 补丁zip"| U["posUpdater<br/>PosUpdateFlowManger"]
+  U -->|"MD5 比对 patch.json"| U
+  U -->|"杀 posclient · 备份 · 替换 · 失败回滚"| P["posclient"]
+  O -.->|"posUpdater.exe 自身也被热下载替换"| U
+        </pre>
+        <p class="arch-title">图 3 · 自升级链路：校验止于 MD5</p>
+      </div>
+
+      <p>版本索引按通道分 <code>xlb-qt-update-{public,pre-master,v2.1,pre_v2.1,beta}.json</code>（<code>xlbapi.h:32-47</code>）。
+      posUpdater 下载补丁 zip 解压后<b>只做 MD5 校验</b>（<code>PosUpdateFlowManger.h:26-27,127-129</code>），随后杀主进程、备份、替换、失败回滚；
+      另有断电安全升级锁设计（仓内 <code>docs/</code> 方案三文档）。下载走公网 OSS HTTPS，但<b>无数字签名验证</b>——OSS 桶若被入侵即全门店投毒。</p>
+      <div class="loc">versionmanager/versionworker.cpp:121-146,244 · posUpdater/mgr/PosUpdateFlowManger.cpp:267-332 · systemworker.cpp:1782-1796</div>
+    </section>
+
+    <section class="card" id="risk">
+      <h2><span class="num">09</span>风险与技术债<em>可逆「加密」的 OSS 凭据 · 全局 VerifyNone · 密码进 trace</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>级别</th><th>问题</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge danger">高</span></td><td><b>OSS AccessKey/Secret 明文在注释中</b>（4 组），且正式使用的「加密」常量仅为<b>单字节 XOR + base64，可逆</b>，能无损还原真实 AK/SK。需立即轮换并改真加密/服务端下发</td><td>ssemanager/ossworker.cpp:24-44,134-135 · util/qutil.h:39 · qutil.cpp:242-256</td></tr>
+            <tr><td><span class="badge danger">高</span></td><td><b>TLS 证书校验全局关闭</b>：主 HTTP 客户端三处 <code>VerifyNone</code>；登录（含密码的 OAuth 请求）、SSE、本地 WebSocket、碰一碰支付模块同样关闭，注释自认「生产环境应使用 VerifyPeer」</td><td>common/httpclient.cpp:501,690,810 · loginmanager/idaasloginthread.cpp:191-192 · ssemanager/networkmanager.cpp:196-199 · netmanager/websocketclinet.cpp:14,140 · posalitouchpay/PubHttpClient/HttpClient.cpp:190,291,407</td></tr>
+            <tr><td><span class="badge danger">高</span></td><td><b>会员 SSE 明文 HTTP + 无凭据认证</b>（仅门店号 + MAC 头）：会员登录授权推送可被同网伪造/劫持</td><td>ssemanager/membersseworker.cpp:8,39-40 · sseworker.cpp:79-104</td></tr>
+            <tr><td><span class="badge danger">高</span></td><td><b>登录密码写入 OTel trace span</b>（<code>w_inputJson</code> 捕获完整 POST body）；通用 HTTP 路径同样上报请求体</td><td>loginmanager/idaasloginthread.cpp:199,304 · common/httpclient.cpp:469 · common/httpCurl/qhttpworker.cpp:186</td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>本地主库 SQLCipher <b>口令硬编码</b>（加密形同虚设），非 Windows 不加密；三个辅助库明文；<b>发布版默认日志级别 debug</b></td><td>sql/sqlutil.h:9 · sqlTool.cpp:1223-1226,1293 · common/options.cpp:162-163</td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>飞书告警机器人 webhook key 6 枚硬编码，可被注入告警消息</td><td>util/xlbapi.h:12-27</td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>自升级<b>仅 MD5、无代码签名</b>；无 CI；tests 1687 行 vs 21 万行应用代码，核心收银/会员/SSE 零覆盖，且根 CMake 未挂 tests</td><td>posUpdater/mgr/PosUpdateFlowManger.h:26-27 · 根 CMakeLists.txt</td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>手工内存管理为主：<code>new</code> 约 476 处 vs 智能指针 28 处；析构里 <code>deleteLater</code> 自身成员、析构里 <code>terminate()</code> QProcess 等危险模式；跨线程 <code>DirectConnection</code> 9 处</td><td>netmanager/websocketclinet.cpp:29 · ssemanager/ossworker.cpp:72-77 · loginmanager/loginmanager.cpp:130-131</td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>OpenSSL 3.1.5（2025-03 已 EOL）且 CMake 同时链 legacy 1.0 库名；Qt 5.15 OSS EOL；C++14</td><td>thirdparty/openssl · src/posclient/CMakeLists.txt:234,246</td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>日志与 trace 含明文手机号等 PII；<code>IdaasLoginThread</code> 成员持有明文密码</td><td>offlinecalculate/offlinecalculate.cpp:11758 · couponsManager/PosCouponsManager.cpp:1157 · idaasloginthread.cpp:25</td></tr>
+            <tr><td><span class="badge legacy">低</span></td><td>双构建体系并存；JQLibrary 两份字节级重复 vendored；<code>#if 0</code> 死块 61 处；大量注释掉的内网 URL 与废弃凭据</td><td>src/xlb-pos-qt.pro · thirdparty/JQLibrary vs posai/JQLibrary · rfcmanager/rfcworker.cpp</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <b>修复排序建议</b>：① 轮换全部 OSS AK/SK 与飞书 webhook key，凭据改服务端下发或真 KMS；② 生产构建恢复 TLS 校验（至少登录/支付/SSE 三条链路）；③ 会员 SSE 切 HTTPS + 令牌；④ trace 停止捕获请求体；⑤ 自升级补签名校验。
+      </div>
+    </section>
+
+    <section class="card" id="contradiction">
+      <h2><span class="num">10</span>与平台文档的对照<em>route-center 口径已修正 · posai 不是 LLM · MQTT 不在本仓</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>平台文档原口径</th><th>本仓事实</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>文档 01/06：route-center 规则导出 DSL 给 Qt 客户端、网关读 Qt 上送的路由头</td><td>Qt 端本地求值，但 v2.1 路由头发送被注释、周期拉取 <code>#if 0</code>——该链路在 Qt 侧未生效。<b>01/06 已随本篇同步修正</b></td></tr>
+            <tr><td>2</td><td>文档 14 M6：MQTT clientId 含明文手机号</td><td>在 remote-app-im（RN 侧）；<b>本仓无 MQTT 客户端</b>，特此澄清归属</td></tr>
+            <tr><td>3</td><td>「posai」命名易联想 LLM 助手</td><td>实为<b>本地视觉识别</b>（厂商 AI_SDK dll + 本机 HTTP/gRPC），云端仅激活与素材上传</td></tr>
+            <tr><td>4</td><td>根 CMakeLists 暗示 CMake 构建</td><td>发布走 qmake；CMake 只编 posclient，辅进程与打包均不在其中</td></tr>
+            <tr><td>5</td><td>—</td><td>本仓 <code>wiki/</code> 自带结构化知识库（架构/业务/集成八组），与本文互为印证；本文风险结论以源码为准</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

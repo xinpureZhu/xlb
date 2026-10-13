@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>集成与消息 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>集成与消息</h1>
+    <p class="subtitle">消息 Topic 目录、第三方平台集成、网关与路由、SOA 依赖关系。</p>
+    <p class="meta">最后更新：2026-07-31 · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html" class="active">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <section class="card">
+      <h2><span class="num">00</span>集成与消息全景</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph EXT["外部平台"]
+    E1["美团闪购/秒提"]
+    E2["飞鹅云打印"]
+    E3["微信 / 支付宝"]
+    E4["抖音 / 快手"]
+    E5["乐檬 ERP / 诺诺发票"]
+    E6["同盾风控 / 高德 / Qwen"]
+  end
+  subgraph GATE["接入网关"]
+    G1["retail-thirdpart-gateway<br/>签名·回调·出口治理"]
+    G2["oms-adapter<br/>渠道回调适配"]
+    G3["auth-server<br/>三方 Token 代理"]
+  end
+  subgraph MQBUS["消息总线"]
+    M1["RocketMQ 5.x<br/>90+ topic"]
+    M2["Kafka<br/>ERP/DTS/POS 同步"]
+    M3["RabbitMQ<br/>ERP-POS·价签"]
+  end
+  subgraph SVC["业务服务"]
+    S1["retail-new"]
+    S2["oms-plateform"]
+    S3["goods 商品域"]
+    S4["marketing 营销"]
+  end
+  E1 --> G1 & G2
+  E2 --> G1
+  E3 & E4 & E5 --> G3
+  E6 -.直连.-> SVC
+  G1 --> M1
+  G2 --> M1
+  G3 --> SVC
+  M1 --> S1 & S2 & S4
+  M2 --> S3 & S1
+  M3 --> S1
+  S2 -.OMS_ORDER_TOPIC.-> M1
+  S4 -.MARKETING_RANK_EVENT.-> M1
+        </pre>
+        <p class="arch-title">图 1 · 三方集成与消息中间件拓扑</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">01</span>消息 Topic 目录（选摘）</h2>
+      <h3>RocketMQ · retail-new（<code>common/mq/RocketMqConstants.java</code>，90+ topic）</h3>
+      <div class="tags">
+        <span class="tag">oms_order_push_topic</span><span class="tag">retail_order_push_topic</span>
+        <span class="tag">oms_pickup_expire/settle_topic</span><span class="tag">oms_es_push_topic</span>
+        <span class="tag">oms_refund_order_server/retry/audit_topic</span><span class="tag">oms_expire_auto_cancel_topic</span>
+        <span class="tag">oms_coupons_issue_topic</span><span class="tag">oms_order_gift_distribution_topic</span>
+        <span class="tag">member_coupon_direct/center_s3_topic</span><span class="tag">member_coupon_type(_new)_sync_topic</span>
+        <span class="tag">member_coupon_batch/cdp_batch_send_topic</span><span class="tag">member_deposit_send_rights_topic</span>
+        <span class="tag">member_sms_send_async_topic</span><span class="tag">member_gift_card_cancel_transfer_topic</span>
+        <span class="tag">marketing_task_push/operate/send_reward_topic</span><span class="tag">marketing_activity_invite_bind/reward_topic</span>
+        <span class="tag">XLB_POS_ORDER</span><span class="tag">retail_pos_xpay_query_topic</span>
+        <span class="tag">retail_settle_paid_handle_topic</span><span class="tag">group_order_timeout/pay_timeout/callback_retry_topic</span>
+        <span class="tag">vip_open/send/refund_rights_award_topic</span><span class="tag">member_welfare_donate_bill_sync_topic</span>
+      </div>
+
+      <h3>Kafka · retail-new / goods / bff_pc（阿里云 serverless SASL_SSL）</h3>
+      <div class="tags">
+        <span class="tag">retail_consumer_member_create/update_sync</span><span class="tag">retail_consumer_customer_point_*_sync</span>
+        <span class="tag">retail_consumer_card_sync</span><span class="tag">retail_consumer_gift_card_sync</span>
+        <span class="tag">retail_consumer_coupon(_type)_sync</span><span class="tag">pos-item</span>
+        <span class="tag">pos-payment_v2</span><span class="tag">oms_pos_order_sync</span>
+        <span class="tag">item_price_change_log</span><span class="tag">official_product_sync</span>
+        <span class="tag">store_product_relation</span><span class="tag">dfp_sync</span>
+        <span class="tag">official_store_price_dts</span><span class="tag">takeaway_product_sale_status</span>
+        <span class="tag">test_erp_stock_detail</span><span class="tag">mdm_item_change_delay(RocketMQ)</span>
+      </div>
+
+      <h3>RocketMQ · 订单/营销中台</h3>
+      <div class="tags">
+        <span class="tag">OMS_ORDER_TOPIC (oms-plateform)</span>
+        <span class="tag">OMS_ADAPTER_CALLBACK_TOPIC / CHANNEL_CALLBACK</span>
+        <span class="tag">MARKETING_RANK_EVENT / EVENT_REPORT (marketing)</span>
+      </div>
+
+      <h3>Kafka · 企微任务（icc-task, namespace scrm）</h3>
+      <div class="tags"><span class="tag">scrm.icc.task-sync</span><span class="tag">scrm.icc.export-job</span></div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">02</span>第三方平台集成</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>平台</th><th>用途</th><th>接入方</th></tr></thead>
+          <tbody>
+            <tr><td>美团闪购 / 秒提</td><td>渠道订单推送（下单/支付/接单/完成/取消/配送）验签回调</td><td>retail-thirdpart-gateway、oms-adapter</td></tr>
+            <tr><td>飞鹅 (feieyun)</td><td>云打印状态回调（RSA 验签/解密），打印指令下发</td><td>retail-thirdpart-gateway(feie driver)</td></tr>
+            <tr><td>微信（MP+公众号+支付）</td><td>登录、JSSDK、支付、发券、私域活动绑定</td><td>auth-server、xlb-mp-bff、member-weapp</td></tr>
+            <tr><td>支付宝</td><td>登录、支付、券插件、卡包</td><td>auth-server、各 BFF、member-weapp</td></tr>
+            <tr><td>抖音 / 快手</td><td>会员+券同步、开放平台 Token</td><td>auth-server、retail-new(member)</td></tr>
+            <tr><td>美团点评</td><td>签名代理</td><td>auth-server</td></tr>
+            <tr><td>乐檬 nhsoft / ERP</td><td>ERP 集成、Token</td><td>auth-server、bff_pos(LM)、retail</td></tr>
+            <tr><td>诺诺 NuoNuo</td><td>电子发票开具</td><td>retail(connector/nuonuo)</td></tr>
+            <tr><td>XPay</td><td>内部支付网关</td><td>retail、retail-new、bff_pos、xlb-mp-bff</td></tr>
+            <tr><td>同盾 Tongdun</td><td>C 端风控</td><td>xlb-mp-bff</td></tr>
+            <tr><td>ICC 企微开放平台</td><td>群发/朋友圈任务、群/福利官校验</td><td>icc-task、marketing(soa-icc)</td></tr>
+            <tr><td>高德 AMap</td><td>定位/地图（选址、附近门店）</td><td>App、xlb-mp-bff、retail</td></tr>
+            <tr><td>通义千问 Qwen</td><td>订单自然语言→SQL 检索</td><td>oms-search</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">03</span>网关与路由</h2>
+      <ul>
+        <li><strong>retail-route-center</strong>：规则路由决策，输出路由头 <code>x-route-target-service-kind</code>（xlb/wc）与 <code>x-route-target-environment</code>（prod/gray）；网关仅读头转发，不理解业务规则。规则可导出 DSL 给微信/POS/Qt/Java/TS 客户端运行时；<b>但 POS Qt 端 v2.1 起本地求值、不再上送路由头</b>（发送被注释、周期拉取 <code>#if 0</code>，见文档 19）。</li>
+        <li><strong>retail-thirdpart-gateway</strong>：出站统一代理 <code>POST /api/v1/proxy/:channel_id</code> + 入站统一回调 <code>ANY /callbacks/:channel_id/*</code>；通用签名支持 HMAC-SHA256/MD5/组合，新 SaaS 渠道可配置化接入。</li>
+        <li><strong>Istio Gateway-API</strong>：K8s 层入口，HTTPRoute + 金丝雀 + baggage-header lane + WASM 限流。</li>
+        <li><strong>bff-gateway</strong>（GitOps <code>retail-platform</code>）：BFF 层网关（含快手变体）。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">04</span>营销中台 SOA 依赖（11 子系统）</h2>
+      <p><code>marketing-activity-center</code> 通过 <code>@HttpExchange</code> 声明式客户端调用下游（防腐层），自身只做编排：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>子系统</th><th>能力</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>营销任务 (Task)</td><td>任务查询/进度、完成/回滚、批量完成</td></tr>
+            <tr><td>2</td><td>兑奖引擎 (Award)</td><td>奖品查询、兑奖、物流</td></tr>
+            <tr><td>3</td><td>抽奖引擎 (Lottery)</td><td>抽奖/确认/取消、记录、发放机会</td></tr>
+            <tr><td>4</td><td>营销指标 (Indicator)</td><td>参与限制实例、预扣/完成/取消</td></tr>
+            <tr><td>5</td><td>榜单 (Ranking)</td><td>榜单 CRUD/激活/助力、实时+历史排名（+MQ）</td></tr>
+            <tr><td>6</td><td>虚拟资产/热力值 (Asset)</td><td>资产实例、扣减/发放/余额/记录</td></tr>
+            <tr><td>7</td><td>阿里云 OSS</td><td>活动静态资源 JSON 上传</td></tr>
+            <tr><td>8</td><td>ICC 企微</td><td>企微群/福利官/消息中心校验</td></tr>
+            <tr><td>9</td><td>会员中心积分 (Member)</td><td>积分增减</td></tr>
+            <tr><td>10</td><td>门店服务 (Store)</td><td>区域/组织查询（范围）</td></tr>
+            <tr><td>11</td><td>用户组 (User)</td><td>用户组查询（范围）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">下游调用采用 POST+JSON、幂等键、无自动重试；完整映射见 <code>marketing-activity-center/soa_map.md</code>。</div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">05</span>典型异步数据流</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  ERP["ERP 库存变更<br/>DTS / CDC"] --> K1["Kafka<br/>erp_stock_detail"]
+  K1 --> GC["goods_consumer/erp_stock_sync<br/>批处理 + 去重"]
+  GC -->|"Lua 脚本"| RD["Redis<br/>库存明细"]
+  GC --> MG["MongoDB<br/>goods.inventory<br/>跨渠道可售量重算"]
+  GC --> K2["Kafka<br/>official_product_sync<br/>售罄状态事件"]
+  K2 --> ES1["es-official-product-mqconsumer"]
+  ES1 --> ES["Elasticsearch<br/>商品索引"]
+  ES --> BFF["xlb-mp-bff / goods-b"]
+  BFF --> C["C 端商品可售状态"]
+        </pre>
+        <p class="arch-title">图 2 · ERP 库存变更到 C 端可售状态的异步链路</p>
+      </div>
+      <pre><code>ERP 库存变更 (DTS/CDC)
+   → Kafka(test_erp_stock_detail)
+   → goods_consumer/erp_stock_sync (批处理+去重, Lua 写 Redis, 跨渠道可售量重算)
+   → MongoDB goods.inventory
+   → Kafka(official_product_sync) 售罄状态事件
+   → es-official-product-mqconsumer → ES 索引 → C 端商品可售状态
+
+会员/卡/券变更
+   → Kafka(retail_consumer_*_sync) / Flink 管道
+   → retail-new 各同步消费者 → member DB + Redis + ES 读模型
+   → xlb-mp-bff 通过 member_assets_es 聚合展示</code></pre>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

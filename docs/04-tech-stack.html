@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>技术栈 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>技术栈总结</h1>
+    <p class="subtitle">各语言框架版本、存储/缓存/搜索/消息、可观测性与工程约定。</p>
+    <p class="meta">最后更新：2026-07-31 · 数据来源：pom.xml / Cargo.toml / package.json 等构建文件</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html" class="active">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <section class="card">
+      <h2><span class="num">00</span>技术栈全景</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph LANG["语言与框架"]
+    L1["Java 8 / 21 / 25<br/>Spring Boot 2.7 / 3.3 / 3.4 / 3.5 / 4.0"]
+    L2["Rust 2021 / 2024<br/>axum 0.7-0.8 + tokio"]
+    L3["Node 22 / 23<br/>NestJS 10.3"]
+    L4["React Native 0.68 / 0.80<br/>Re.Pack + Module Federation"]
+    L5["Taro 4 + React 18<br/>NutUI"]
+  end
+  subgraph DATA["存储与检索"]
+    S1["MySQL / PolarDB-X<br/>分库分表"]
+    S2["MongoDB<br/>商品/CMS/网关"]
+    S3["Redis / Tair<br/>缓存·锁·PubSub"]
+    S4["Elasticsearch<br/>订单/会员/商品"]
+    S5["Caffeine 本地缓存"]
+    S6["阿里云 OSS"]
+  end
+  subgraph MQ["消息中间件"]
+    Q1["RocketMQ 5.x<br/>90+ topic"]
+    Q2["Kafka（阿里云 Serverless）"]
+    Q3["RabbitMQ"]
+  end
+  subgraph OBS["可观测与工程"]
+    B1["OpenTelemetry OTLP"]
+    B2["VictoriaMetrics / VictoriaLogs"]
+    B3["Grafana + 飞书告警"]
+    B4["knife4j / utoipa / Swagger"]
+    B5["Sentry（RN 端）"]
+  end
+  LANG ==> DATA
+  LANG ==> MQ
+  LANG ==> OBS
+  B1 --> B2 --> B3
+        </pre>
+        <p class="arch-title">图 1 · 语言 / 框架 / 存储 / 消息 / 可观测 技术栈分层</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">01</span>语言与框架矩阵</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>栈</th><th>项目</th><th>核心框架/版本</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge java">Java</span></td><td>retail-new</td><td>Spring Boot 3.3 / Java 21 / MyBatis-Plus 3.5.7 / Undertow</td></tr>
+            <tr><td><span class="badge java">Java</span></td><td>retail</td><td>Spring Boot 2.7 / Java 8 / JPA+QueryDSL / Tomcat</td></tr>
+            <tr><td><span class="badge java">Java</span></td><td>xlb-retail-bff-goods</td><td>Spring Boot 3.5.6 / Java 25 / MongoDB / 虚拟线程 + ZGC</td></tr>
+            <tr><td><span class="badge java">Java</span></td><td>marketing-activity-center</td><td>Spring Boot 3.4.5 / Java 21 / MyBatis-Plus / @HttpExchange SOA</td></tr>
+            <tr><td><span class="badge java">Java</span></td><td>oms-plateform</td><td>Spring Boot 4.0 / Java 25 / MyBatis-Flex / COLA 状态机 / OpenFeign</td></tr>
+            <tr><td><span class="badge rust">Rust</span></td><td>全部 7 个 Rust 服务</td><td>axum 0.7–0.8 / tokio / edition 2021–2024 / mimalloc·jemalloc</td></tr>
+            <tr><td><span class="badge node">Node</span></td><td>6 个 NestJS 服务</td><td>NestJS 10.3 / Node 22–23 / pnpm / OpenTelemetry</td></tr>
+            <tr><td><span class="badge rn">RN</span></td><td>host-app-xlb + remotes</td><td>React Native 0.80 / React 19 / Re.Pack+Rspack / Module Federation</td></tr>
+            <tr><td><span class="badge rn">RN</span></td><td>xlb_app</td><td>React Native 0.68 / React 17 / Metro（遗留单体）</td></tr>
+            <tr><td><span class="badge mp">小程序</span></td><td>member-weapp</td><td>Taro 4 / React 18 / NutUI React（微信 + 支付宝）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">02</span>存储 · 缓存 · 搜索</h2>
+      <div class="grid cols-3">
+        <div class="stat"><div class="n">MySQL / PolarDB-X</div><div class="l">retail(erp)、retail-new(member/oms)、bff_pos、pos-order、route-center、marketing、oms（分库分表 PARTITION BY KEY / GLOBAL INDEX）</div></div>
+        <div class="stat"><div class="n">MongoDB</div><div class="l">商品中台(goods-b)、bff_pc、cms-server、goods_consumer、retail-thirdpart-gateway</div></div>
+        <div class="stat"><div class="n">Redis / Tair</div><div class="l">几乎所有服务：缓存、分布式锁(Redisson/redlock)、PubSub、SSE、灰度名单、购物车</div></div>
+        <div class="stat"><div class="n">Elasticsearch</div><div class="l">订单/会员/商品检索：retail-new、oms-search(8.x)、goods(7.10)、各 BFF 读模型</div></div>
+        <div class="stat"><div class="n">Caffeine</div><div class="l">本地缓存：营销活动摘要、oms、goods 等一级缓存</div></div>
+        <div class="stat"><div class="n">OSS</div><div class="l">阿里云对象存储：图片/文件、路由规则、灰度配置、导出文件</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">03</span>消息中间件</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>中间件</th><th>使用方</th><th>典型用途</th></tr></thead>
+          <tbody>
+            <tr><td><strong>RocketMQ</strong>（阿里云 5.x）</td><td>retail-new（90+ topic）、oms-plateform、marketing、goods_consumer(mps)</td><td>订单推送/履约/退款、会员券同步、营销榜单事件、渠道回调</td></tr>
+            <tr><td><strong>Kafka</strong>（阿里云 serverless SASL_SSL）</td><td>retail-new、xlb-retail-bff-goods、bff_pc、goods_consumer、icc-task</td><td>ERP 数据同步(DTS/CDC)、POS item/payment、商品/库存/门店同步、企微任务</td></tr>
+            <tr><td><strong>RabbitMQ</strong></td><td>retail（ERP-POS 单体）、marketing 活动事件</td><td>POS 订单、电子价签同步、会员积分</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">消息 Topic 明细见「集成与消息」文档。</div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">04</span>可观测性与工程约定</h2>
+      <ul>
+        <li><strong>Tracing</strong>：全栈统一 OpenTelemetry OTLP → <code>opentelemetry-collector.observability:4317</code>；Java 用 javaagent，Rust 用 init-tracing-opentelemetry，Node 用 <code>--import ./dist/otel.js</code>。</li>
+        <li><strong>Metrics/Logs</strong>：Micrometer/Prometheus + VictoriaMetrics / VictoriaLogs + Grafana；<code>logs-monitor</code> 做路径覆盖率巡检。</li>
+        <li><strong>API 文档</strong>：Java 用 knife4j/springdoc；Rust 用 utoipa + Swagger UI；Node 用 knife4j 风格 swagger。</li>
+        <li><strong>错误监控</strong>：RN 端接入 Sentry。</li>
+        <li><strong>DTO 映射</strong>：Java 广泛使用 MapStruct；工具库 Hutool / Guava / fastjson2 / Lombok。</li>
+        <li><strong>代码智能</strong>：oms-plateform / bff_pc / bff_pos 接入 GitNexus（代码图谱、影响分析、安全改名），对应 <code>agents.md</code> 为其配置文件。</li>
+        <li><strong>包管理/构建</strong>：Java=Maven；Rust=Cargo（rsproxy.cn 镜像）；Node=pnpm 9.15；小程序=pnpm+Taro CLI。</li>
+        <li><strong>基础镜像</strong>：阿里云 ACR <code>zc_xlb/*</code>（openjdk-21/8-arthas、jdk25-mvn、rust-1.88/1.93、node-22/23-slim）。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">05</span>值得注意的技术选型</h2>
+      <ul>
+        <li><strong>Rust WASM</strong>：会员动态码与优惠计算编译为 WASM 供小程序端复用（<code>coupon-assembly</code> / <code>member-assembly</code>）。</li>
+        <li><strong>GraalVM 原生镜像</strong>：<code>oms-adapter</code> 以 native image 部署，冷启动快。</li>
+        <li><strong>AI 能力</strong>：<code>oms-search</code> 用 langchain4j + 通义千问(Qwen) 实现自然语言→SQL 订单查询。</li>
+        <li><strong>状态机 / TCC</strong>：oms 用 COLA 状态机；营销活动与订单用 TCC（Try-Confirm-Cancel）保证跨服务一致性（Seata 已引入但禁用）。</li>
+        <li><strong>Module Federation</strong>：RN 微前端在 App 侧落地，远程 bundle CDN 分发 + 按 userId 灰度。</li>
+        <li><strong>虚拟线程 + ZGC</strong>：Java 25 服务（goods、oms）启用虚拟线程与 ZGC。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

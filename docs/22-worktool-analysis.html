@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>worktool 企微机器人源码分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>worktool 企微机器人源码分析</h1>
+    <p class="subtitle">依附企业微信的无人值守群管理机器人：AccessibilityService 驱动 UI 自动化、WebSocket 远程指令、单 Handler 串行队列；含 8 项安全问题评估。</p>
+    <p class="meta">最后更新：2026-09-09 · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html" class="active">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>：<code>worktool</code>（分支 master · 2a34868 · 2026-09-03 · 与远端 0/0，上游 <code>git@github.com:gallonyin/worktool.git</code>）。
+      该仓为<b>第三方上游开源仓</b>，默认分支即 master，本平台无对应 prod 分支；README 声明开源版冻结于 <b>v2.8.1（2023-11-19）</b>，商业版另行维护。
+      因此本文结论描述的是开源历史版本，不代表商业版现状。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">定位与版本状态</a></li>
+        <li><a href="#s2">总体架构与控制流</a></li>
+        <li><a href="#s3">指令通道：WebSocket + 串行队列</a></li>
+        <li><a href="#s4">远程指令目录（39 分支）</a></li>
+        <li><a href="#s5">UI 自动化核心与消息抓取</a></li>
+        <li><a href="#s6">安全评估：8 项问题</a></li>
+        <li><a href="#s7">可靠性设计与代码质量</a></li>
+        <li><a href="#s8">结论与二开建议</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>定位与版本状态 <em>无障碍 RPA 机器人 · 开源版冻结于 v2.8.1</em></h2>
+      <p>worktool 是一个依附<b>企业微信</b>（<code>com.tencent.wework</code>）运行的无人值守群管理机器人：用 Android 官方 <b>AccessibilityService</b> 模拟真人操作企微 UI，后端通过 WebSocket 下发指令驱动。无 hook、无 root、无内存修改，纯无障碍 API + 手势注入。</p>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">16.6k</div><div class="l">代码行数（Kotlin 11,761 + Java 4,802）</div></div>
+        <div class="stat"><div class="n">39</div><div class="l">远程指令分发分支（38 已实现）</div></div>
+        <div class="stat"><div class="n">3</div><div class="l">Gradle 模块（app / baselibrary / floatwindow）</div></div>
+        <div class="stat"><div class="n">30</div><div class="l">compileSdk（minSdk 24，已落后 4 代）</div></div>
+      </div>
+      <div class="tags">
+        <span class="tag">Kotlin</span><span class="tag">Android AccessibilityService</span><span class="tag">OkHttp WebSocket</span><span class="tag">OkGo</span><span class="tag">blankj utilcode</span><span class="tag">企微官方 SDK lib_wwapi</span><span class="tag">友盟 + TalkingData</span>
+      </div>
+      <div class="callout">
+        开源版兼容企微版本硬编码止于 <b>4.1.10</b>（<code>Constant.kt:7</code> 的 AVAILABLE_VERSION），README 打包版声称兼容 4.1.8–4.1.39 / 5.0.x 属商业版能力。企微每次改版 UI 都可能使开源版静默失效。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>总体架构与控制流 <em>WS 下发 → 串行队列 → 无障碍操作 → 事件/文件双路上报</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    subgraph BK["后端 / 调度平台"]
+        HOST["默认 wss://api.worktool.ymdyes.cn<br/>可改 host 自建"]
+    end
+    subgraph APP["worktool APP · 手机"]
+        WSV["WeworkService<br/>AccessibilityService 入口"]
+        WSM["WebSocketManager<br/>心跳 5s · 重连 5s · messageId 去重"]
+        ML["MyLooper<br/>单 Handler 线程指令队列<br/>AES 解密 · 去重 · 失败重试 1 次"]
+        WC["WeworkController<br/>39 个分发分支 · @RequestMapping"]
+        OP["WeworkOperationImpl 3252 行<br/>发消息 / 回复 / 转发 / 建群 / 拉踢人 / 推文件"]
+        LP["WeworkLoopImpl 955 行<br/>mainLoop 轮询抓消息 · 自动通过好友"]
+        GT["WeworkGetImpl 552 行<br/>群信息 / 好友 / 通讯录读取"]
+        AU["AccessibilityUtil 1354 行<br/>节点查找 · 点击 · 滚动 · SET_TEXT · 手势"]
+        FO["MultiFileObserver<br/>监听企微 imagecache 目录"]
+        HP["HttpUtil<br/>图片 / 文件 / 回调上报"]
+    end
+    WW["企业微信 UI"]
+    HOST -->|WS 指令| WSM
+    WSV -->|onOpen 建连| WSM
+    WSM --> ML
+    ML --> WC
+    WC --> OP
+    WC --> GT
+    LP --> AU
+    OP --> AU
+    AU -->|模拟点击 / 输入| WW
+    WW -->|AccessibilityEvent| WSV
+    WW -->|图片落盘| FO
+    FO --> HP
+    GT -->|抓取结果| WSM
+    HP -->|HTTP 上报| HOST
+        </pre>
+        <p class="arch-title">图 1 · worktool 总体架构：指令下行与数据上行双通道</p>
+      </div>
+      <div class="loc">service/WeworkService.kt:38-63（服务入口）· utils/WebSocketManager.java · service/MyLooper.kt · service/WeworkController.kt · service/WeworkOperationImpl.kt · service/WeworkLoopImpl.kt · utils/AccessibilityUtil.kt</div>
+      <p>服务连接时一次完成四件事：挂 Controller 引用、建 WebSocket、起 MyLooper、起图片 FileObserver（<code>WeworkService.kt:38-63</code>）。<code>onAccessibilityEvent</code> 只负责记录「当前在哪个页面」（<code>:97-105</code>），真正的 UI 读取全部由操作线程主动遍历节点树完成 —— 事件只做状态跟踪，不做数据源，这是它对事件丢包不敏感的原因。</p>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>指令通道：WebSocket + 串行队列 <em>AES 解密 → 去重 → 单 Handler 串行执行 → 异常回首页重试一次</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+    participant BK as 后端平台
+    participant WSM as WebSocketManager
+    participant ML as MyLooper
+    participant WC as WeworkController
+    participant OP as OperationImpl
+    participant AU as AccessibilityUtil
+    participant WW as 企微 UI
+    BK->>WSM: WS 指令列表 可 AES 加密
+    WSM->>WSM: messageId 确认与 30s 去重
+    WSM->>ML: onMessage 原文
+    ML->>ML: AES 解密 · LinkedHashSet 去重
+    ML->>ML: 入队 Handler 单线程
+    ML->>WC: 按 type 分发
+    WC->>OP: 调用具体操作
+    OP->>AU: 找节点 · 点击 · 输入
+    AU->>WW: 手势与 SET_TEXT
+    WW-->>AU: 节点树变化
+    OP-->>WSM: 执行结果回传
+    WSM-->>BK: 回调上报
+        </pre>
+        <p class="arch-title">图 2 · 一条远程指令的完整执行时序</p>
+      </div>
+      <ul>
+        <li><b>连接</b>：URL = <code>{host}/webserver/wework/{robotId}</code>（<code>Constant.kt:124</code>），心跳 5s、断线 5s 重连（<code>WebSocketManager.java:33-34</code>）；onOpen 即广播跳转企微首页待命（<code>WeworkService.kt:135</code>）。</li>
+        <li><b>解密</b>：<code>encryptType=1</code> 时 AES/CBC/PKCS7 解密指令体（<code>MyLooper.kt:91-103</code>）；密钥与 IV 硬编码在客户端（见 §6 S1）。</li>
+        <li><b>三级去重</b>：messageId 30s 确认表（<code>WebSocketManager.java:64-78</code>）→ <code>LinkedHashSet</code> 批内去重 → 同特征值 <code>removeMessages</code> 丢弃未执行的重复指令（<code>MyLooper.kt:104-118</code>）。</li>
+        <li><b>串行执行</b>：所有 UI 自动化在单一 Handler 线程跑（<code>MyLooper.kt:26-58</code>）；悬浮窗暂停时忙等（<code>:33-36</code>）。</li>
+        <li><b>自愈</b>：执行异常先 <code>goHome()</code> 再重试一次，仍失败回报 <code>ERROR_ILLEGAL_OPERATION</code>（<code>:38-51</code>）；进程级崩溃由 <code>GlobalException</code> 全局 handler 重启。</li>
+        <li><b>队列控制指令</b>：<code>ROBOT_QUEUE_CLEAR</code> 清空全部待执行指令；每条指令执行完自动补一条 <code>LOOP_RECEIVE_NEW_MESSAGE</code> 回到收消息主循环（<code>:107-132</code>）。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>远程指令目录（39 分支） <em>38 已实现 · 1 空分支 · 写操作占多数</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>类别</th><th>指令</th></tr></thead>
+          <tbody>
+            <tr><td>消息写</td><td><code>SEND_MESSAGE</code> 发消息 · <code>REPLY_MESSAGE</code> 指定回复 · <code>RELAY_MESSAGE</code> 转发 · <code>SEND_MULTI_MESSAGE</code> / <code>SEND_MERGE_MESSAGE</code> 群发/合并转发 · <code>RELAY_MULTI_MESSAGE</code> / <code>RELAY_MERGE_MESSAGE</code> · <code>RECALL_MESSAGE</code> 撤回</td></tr>
+            <tr><td>内容推送</td><td><code>PUSH_FILE</code> 任意文件 · <code>PUSH_LINK</code> 链接 · <code>PUSH_MICRO_DISK_IMAGE</code> / <code>PUSH_MICRO_DISK_FILE</code> 微盘 · <code>PUSH_MICROPROGRAM</code> 小程序 · <code>PUSH_OFFICE</code> 文档</td></tr>
+            <tr><td>群管理</td><td><code>INIT_GROUP</code> 建群+公告+拉人+模板 · <code>UPDATE_GROUP</code> 改群 · <code>DISMISS_GROUP</code> 解散 · <code>MODIFY_GROUP_MEMBER_INFO</code> 群备注 · <code>ADD_FRIEND_BY_GROUP</code> 群内加好友</td></tr>
+            <tr><td>联系人</td><td><code>ADD_FRIEND_BY_PHONE</code> 手机号加好友 · <code>DELETE_CONTACT</code> 删除 · <code>PASS_ALL_FRIEND_REQUEST</code> <b>空分支</b>（自动通过实际由 mainLoop 的 <code>getFriendRequest</code> 承担，受 <code>Constant.autoPassFriendRequest</code> 开关控制）</td></tr>
+            <tr><td>数据读</td><td><code>GET_GROUP_INFO</code> / <code>GET_ALL_GROUP_INFO</code> · <code>GET_FRIEND_INFO</code> / <code>GET_ALL_FRIEND_INFO</code> · <code>GET_MY_INFO</code> · <code>GET_RECENT_LIST</code> 会话列表 · <code>GET_CORP_LIST</code> · <code>GET_LOCAL_FILE</code> 取本地文件 · <code>SHOW_GROUP_INFO</code> 群二维码</td></tr>
+            <tr><td>控制</td><td><code>LOOP_RECEIVE_NEW_MESSAGE</code> 主循环 · <code>STOP_AND_GO_HOME</code> 停止待命 · <code>SWITCH_CORP</code> 切换企业 · <code>SCAN_QR_CODE</code> 扫码 · <code>CLOCK_IN</code> 打卡 · <code>ADD_NEED_DEAL</code> 待办 · <code>TYPE_CONSOLE_TOAST</code> 提示 · <code>ROBOT_CONTROLLER_TEST</code> 自检</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">service/MyLooper.kt:137-256（分发）· service/WeworkController.kt（@RequestMapping 入口）· model/WeworkMessageBean.java（type 常量）</div>
+      <p>分发用 <code>when(message.type)</code> 直连 Controller 单例方法，Controller 方法以自研 <code>@RequestMapping</code> 注解标记远程入口（注解本身无运行时路由逻辑，纯文档作用）。命令语义与后端 API 文档一一对应，端上不含任何业务判断 —— 全部策略（回复谁、回复什么）在服务端。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>UI 自动化核心与消息抓取 <em>sleep 驱动同步 · 节点树主动遍历 · 图片走文件系统旁路</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>AccessibilityUtil（1354 行）</h4>
+          <p>三类能力：查询（按类名/文本/描述找节点、前后兄弟、可滚动集合）、全局操作（回退/回桌面）、窗口操作（点击/长按/滚动/SET_TEXT 输入/坐标手势）。全部<b>阻塞式</b>，约定只在子线程调用；同步靠 150/500/800ms 三档 sleep 轮询。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>mainLoop 收消息（WeworkLoopImpl）</h4>
+          <p>循环体：不在首页则先抓当前房间消息 → 回首页 → 扫会话列表红点进房抓消息 → 处理通讯录好友请求 → 实名/risk 门禁检查 → sleep 300ms 再来一轮。崩溃后自动重新入队主循环指令。</p>
+        </div>
+      </div>
+      <div class="grid cols-2">
+        <div class="mech m3">
+          <h4><span class="num">3</span>图片旁路（MultiFileObserver）</h4>
+          <p>直接 <code>FileObserver</code> 监听企微私有目录 <code>.../com.tencent.wework/files/imagecache/imagemsg2</code>（<code>WeworkService.kt:78</code>），新图即经 <code>HttpUtil.pushImage</code> 上报。Android 10+ 依赖 manifest 的 <code>requestLegacyExternalStorage</code> 续命，Android 11+ 该路径实际已不可达 —— 开源版图片能力的隐性断点。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>无障碍能力声明</h4>
+          <p><code>accessibility_service_config.xml</code>：<code>typeAllMask</code> 全事件 + <code>flagRetrieveInteractiveWindows</code> + <code>flagIncludeNotImportantViews</code> + <code>canPerformGestures</code>，<code>packageNames</code> 限定企微。notificationTimeout 100ms，事件粒度拉满。</p>
+        </div>
+      </div>
+      <div class="callout warn">
+        <b>版本敏感的根源</b>：所有节点查找按文本/类名硬匹配企微 UI 文案（如「通讯录」「可能的同事」），<code>Constant.AVAILABLE_VERSION</code> 硬编码支持列表止于 4.1.10。sleep 轮询 + 文案匹配的组合决定了它对企微改版零容忍 —— 这是商业版持续适配的护城河，也是开源版必然过期的原因。
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>安全评估：8 项问题 <em>硬编码密钥 + 裸 robotId 凭证 + 默认厂商云中转全量聊天</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th><th>位置</th><th>等级</th></tr></thead>
+          <tbody>
+            <tr><td>S1</td><td><b>AES key/iv 硬编码客户端</b>：指令通道加密形同虚设，拿到 APK 即可解密/伪造指令</td><td><code>Constant.kt:25-28</code></td><td><span class="badge danger">严重</span></td></tr>
+            <tr><td>S2</td><td><b>robotId 是唯一凭证</b>：WS URL 裸带，无 token/签名/设备绑定；泄露即等于交出该手机企微账号的完整遥控权</td><td><code>Constant.kt:124</code></td><td><span class="badge danger">严重</span></td></tr>
+            <tr><td>S3</td><td><b>默认全量聊天内容出厂流向厂商云</b>：DEFAULT_HOST 指向厂商 wss；抓到的每条消息、每张图都经其中转，企业使用等于会话数据交给第三方（可改 host，但默认值即厂商）</td><td><code>Constant.kt:17</code></td><td><span class="badge danger">严重</span></td></tr>
+            <tr><td>S4</td><td><b>明文流量全局放行</b>：netsec config <code>cleartextTrafficPermitted=true</code> + manifest <code>usesCleartextTraffic</code>，<code>ws://</code>/<code>http://</code> host 合法，指令与聊天内容可明文传输</td><td><code>res/xml/network_security_config.xml</code> · <code>AndroidManifest.xml:38</code></td><td><span class="badge warn">高</span></td></tr>
+            <tr><td>S5</td><td><b>统计 SDK 无同意默认开启</b>：<code>uminit</code> 默认值即 "1"（注释自述「为 1 时为已经同意」），友盟 + TalkingData 在 onCreate 直接初始化，设备标识出厂即上报</td><td><code>MyApplication.kt:50-57</code></td><td><span class="badge warn">高</span></td></tr>
+            <tr><td>S6</td><td><b>远程 APK 更新链</b>：checkUpdate + UpdateAppUtils，master 地址硬编码厂商域，构成 APK 远程分发/安装路径</td><td><code>Constant.kt:126-128</code></td><td><span class="badge warn">中</span></td></tr>
+            <tr><td>S7</td><td><b>root/hook 检测客户端自欺</b>：结果只写 SP 并在 onOpen 上报；risk 门禁为「rooted 且 robot 创建 &lt;15 天」才拦截，老 robot 在 rooted 机直接放行</td><td><code>HttpUtil.kt:95-101</code> · <code>utils/envcheck/</code></td><td><span class="badge warn">中</span></td></tr>
+            <tr><td>S8</td><td><b>权限面宽</b>：READ_PHONE_STATE、QUERY_ALL_PACKAGES、RECORD_AUDIO、读写外部存储、悬浮窗、前台服务</td><td><code>AndroidManifest.xml:10-26</code></td><td><span class="badge warn">中</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <b>组合风险</b>：S1+S2+S3 叠加 = 一个可被任意伪造的指令通道 + 一把裸凭证 + 一条默认出境的数据管道。若在公司环境部署或二开，这三项必须先解决，否则等于把企微会话的完整读写能力挂在公开可伪造的通道上。另注意 <code>MultiFileObserver</code> 读取企微私有图片目录本身即构成对用户聊天图片的旁路采集（§5-3）。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>可靠性设计与代码质量 <em>串行队列/去重/自愈做对了 · 技术栈停在 2021-2023</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">✓</span>做对的部分</h4>
+          <p>单 Handler 串行执行（UI 自动化必须串行）；三级去重防重复执行；异常回首页重试一次再回报；WS 断线重连 + 心跳；进程级 uncaught handler 重启；mainLoop 崩溃自动重新入队；Controller/Operation/Get/Loop 分层清晰，<code>@RequestMapping</code> 标记远程入口，命令表集中在 WeworkMessageBean。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">!</span>质量债</h4>
+          <p>OkGo + blankj utilcode + <b>kotlin-android-extensions / kotlinx synthetics（已废弃）</b>；compileSdk 30 落后 4 代；可靠性全靠重试与 sleep 堆，无状态机；<code>PASS_ALL_FRIEND_REQUEST</code> 空分支残留；LoginActivity 无真实登录（仅访客入口进 ListenActivity 填 robotId）。</p>
+        </div>
+      </div>
+      <div class="loc">app/build.gradle（compileSdk 30 · kotlin-android-extensions）· activity/LoginActivity.kt:32-35（访客入口）</div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>结论与二开建议 <em>工程完成度高的无障碍 RPA 框架 · 安全模型几乎为零</em></h2>
+      <p>worktool 开源版是一个<b>完成度很高的无障碍 RPA 框架</b>：指令队列、去重、自愈、分层都做对了，39 分支指令目录覆盖企微群运营的全部高频动作。但安全模型几乎为零（§6），且开源版已冻结、对企微新版必然失效。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>二开改造点</th><th>动作</th><th>对应问题</th></tr></thead>
+          <tbody>
+            <tr><td>自建后端</td><td>host 可配置（Settings 页），指向内网调度平台即可切断厂商云</td><td>S3</td></tr>
+            <tr><td>真鉴权</td><td>废弃客户端 AES，改 TLS + 服务端签发短期 token + 设备指纹绑定 robotId</td><td>S1 · S2</td></tr>
+            <tr><td>去统计</td><td>删除友盟/TalkingData 初始化与 manifest meta-data</td><td>S5</td></tr>
+            <tr><td>锁传输</td><td>netsec 改 <code>cleartextTrafficPermitted=false</code>，删除 ws:// 分支</td><td>S4</td></tr>
+            <tr><td>现代化</td><td>升 compileSdk、移除 synthetics、OkGo 换 OkHttp/Retrofit</td><td>质量债</td></tr>
+            <tr><td>图片通道</td><td>Android 11+ 的 imagecache 旁路已不可达，需改走无障碍树内图片节点或放弃图片上报</td><td>§5-3</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout ok">
+        合规提示：README 强调实现仅基于 Android 官方无障碍 SDK 与企微官方 SDK、无 hook 无 root；但<b>自动化操作企微本身受腾讯运营规范约束</b>，账号曾有封禁/禁言记录者不得使用。企业内落地前应先过法务与企微管理员审批。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

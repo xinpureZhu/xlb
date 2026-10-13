@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>贫血模型 vs 充血模型 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 概念可视化</p>
+    <h1>贫血模型 vs 充血模型</h1>
+    <p class="subtitle">同一个业务，两种放行为的方式：对象是只有数据的「名词」，还是自带行为与规则的「活物」。</p>
+    <p class="meta">最后更新：2026-08-20 · 性质：纯概念说明，示例为中性订单场景</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html" class="active">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <section class="card" id="defs">
+      <h2><span class="num">01</span>一句话区分<em>数据与行为是否住在同一个对象里</em></h2>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>贫血模型 Anemic</h4>
+          <p>领域对象<b>只有数据和 getter/setter</b>，本质是个结构体 / 记录。所有行为住在对象外面：Service、Manager、Controller，甚至界面脚本。
+          对象是<b>名词</b>，动词由别人对它实施。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>充血模型 Rich</h4>
+          <p>领域对象<b>自带行为</b>，行为里守着<b>不变量</b>（业务规则）：想改状态，只能调它的方法，而方法保证规则不被破坏。
+          对象是<b>活物</b>：你对它说意图，它自己完成并自检。</p>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>贫血</th><th>充血</th></tr></thead>
+          <tbody>
+            <tr><td>对象内容</td><td>字段 + getter/setter</td><td>字段 + 业务方法</td></tr>
+            <tr><td>行为住在哪</td><td>外部 Service / 调用方</td><td>对象自己的方法</td></tr>
+            <tr><td>不变量谁守</td><td>每个调用者各自「记得」守 → 迟早有人忘</td><td>方法内部守，<b>绕不过</b></td></tr>
+            <tr><td>规则归属感</td><td>同一条规则在 N 个调用处复制 N 遍</td><td>唯一归属，改一处生效</td></tr>
+            <tr><td>换界面 / 换入口</td><td>流程埋在调用方，换入口 ≈ 重写流程</td><td>入口是薄壳，可整体替换</td></tr>
+            <tr><td>可测试性</td><td>要拉起 Service 栈 / UI 才能测规则</td><td>new 一个对象即可单测</td></tr>
+            <tr><td>阅读体验</td><td>看对象不知道它能干嘛，要追 Service</td><td>读对象即读业务</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <b>先说明</b>：贫血不是原罪。简单 CRUD、一次性脚本、事务脚本风格的小服务，贫血更直白。
+        它变成问题是当<b>规则多、调用方多、生命周期长</b>时——规则散落的代价随调用方数量线性放大。
+      </div>
+    </section>
+
+    <section class="card" id="anemic">
+      <h2><span class="num">02</span>贫血：对象是数据袋<em>规则住在外面，靠调用者自觉</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+classDiagram
+  class Order {
+    -items
+    -status
+    -amount
+    只有 get / set
+  }
+  class OrderService {
+    +create
+    +applyDiscount
+    +cancel
+    规则住在这里
+  }
+  class CallerA {
+    界面 / 接口 / 定时任务
+  }
+  class CallerB {
+    另一个入口
+  }
+  CallerA --> OrderService : 调用
+  CallerB --> Order : 图省事, 直接改字段
+  OrderService --> Order : 读写字段
+        </pre>
+        <p class="arch-title">图 1 · 贫血结构：对象被动，行为与规则外置</p>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 调用方
+  participant S as OrderService
+  participant O as Order 数据
+  C->>S: applyDiscount 打八折
+  S->>O: setAmount
+  Note over C: 调用方要记得先校验<br/>已发货不能打折
+  C->>O: 另一个入口直接 setStatus
+  Note over O: 没人记得校验<br/>规则被绕过, 状态坏了
+        </pre>
+        <p class="arch-title">图 2 · 贫血时序：守规则是调用者的义务，而义务会被忘记</p>
+      </div>
+
+      <p>贫血的典型症状：对象删掉所有 getter/setter 后<b>不剩任何业务信息</b>；Service 越来越胖；
+      同一条 if 判断在多个文件里出现；界面或控制器里藏着「先 A 再 B、失败记得 C」的流程知识。</p>
+    </section>
+
+    <section class="card" id="rich">
+      <h2><span class="num">03</span>充血：对象自己守规则<em>调用方说意图，对象做并自检</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+classDiagram
+  class Order {
+    -items
+    -status
+    -amount
+    +addItem
+    +applyDiscount
+    +cancel
+    方法内部守不变量
+  }
+  class CallerA {
+    界面 / 接口 / 定时任务
+    都只喊意图
+  }
+  CallerA --> Order : order.cancel
+        </pre>
+        <p class="arch-title">图 3 · 充血结构：行为与数据同体，入口只剩薄壳</p>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 调用方
+  participant O as Order
+  C->>O: applyDiscount 打八折
+  O->>O: 已发货? 拒绝
+  O->>O: 折扣叠加超限? 拒绝
+  O->>O: 否则改金额
+  O-->>C: 结果或业务错误
+  C->>O: cancel
+  O->>O: 自己检查状态并释放占用
+  Note over C: 调用方不需要知道任何规则<br/>想绕过也没有后门
+        </pre>
+        <p class="arch-title">图 4 · 充血时序：规则收进对象，任何入口都走同一条受守的路</p>
+      </div>
+
+      <p>充血的判定标准很简单：<b>把对象 new 出来，不连数据库、不拉起框架，就能用单测跑通核心规则</b>。
+      能做到，说明规则真的住在对象里。</p>
+    </section>
+
+    <section class="card" id="check">
+      <h2><span class="num">04</span>三问自检<em>你的代码是哪种</em></h2>
+
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>删掉界面和控制器</h4>
+          <p>业务规则还在吗？如果规则跟着 UI / Controller 一起消失，说明它们是贫血甚至 Smart UI。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>第二个入口</h4>
+          <p>加一个新入口时，需要「记得」复制哪些校验？需要复制的清单越长，贫血越重。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>最小单测</h4>
+          <p>测一条核心规则要启动几层？层数即规则被埋的深度。</p>
+        </div>
+      </div>
+
+      <div class="callout ok">
+        <b>怎么选</b>：规则少、入口单一、寿命短 → 贫血足够，别过度设计。规则多、入口多、要换 UI 或长期演进 →
+        把动词和不变量搬回对象（充血），让入口变薄——这是「换界面不重写业务」的前提。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 纯概念可视化，不绑定任何具体代码库。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

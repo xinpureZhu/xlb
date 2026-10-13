@@ -1,0 +1,19 @@
+{
+  "tasks": [
+    {
+      "id": "4225220f",
+      "cron": "0 9 * * *",
+      "prompt": "用 daily-inspection skill 做 goods 命名空间的每日巡检：运行 python3 .qoder/skills/daily-inspection/scripts/ns_lark_report.py goods --send --user-id ou_5d3dc8766fa70f73a8c0ace68cbbb565（发私聊给朱鑫贵，脚本自带 goods-<YYYYMMDD> 幂等键，同日重复不会重发）。同时在对话里按 skill 的 Reading Rules 输出：先讲变化（告警 24h diff、日环比回归、重启/OOM、P99 突刺、MQ 持续积压），再列今天要处理的项，最后点明监控盲区。正常项一句“无异常”带过。除发送卡片外只做只读查询。",
+      "createdAt": 1787710932775,
+      "lastFiredAt": 1788138900583,
+      "fireCount": 5,
+      "creditsUsed": 867.11019500875,
+      "recurring": true,
+      "permanent": true,
+      "createdBySessionId": "46709de6-2a4b-4af7-9b5a-c5f461d23048",
+      "createdByPid": 37365,
+      "createdByProcStart": 1787707338095,
+      "createdBy": "agent_tool"
+    }
+  ]
+}

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>retail-review-center 评价中心 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>retail-review-center 商品评价中心 · 代码分析</h1>
+    <p class="subtitle">新增 Rust 仓（此前未被任何文档覆盖）。6 crate 的分层设计、31 张表、7 个 worker 形态，承接评价资格 / 商品与门店评价 / 待评提醒 / 风控 / 统计。</p>
+    <p class="meta">最后更新：2026-08-07 · 基准：分支 <code>prod</code> <code>7708e21</code>（2026-08-06，落后 0） · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html" class="active">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="callout ok" id="provenance">
+      <strong>分析基准 ✅ prod</strong> 分支 <code>prod</code>（<code>7708e21</code>，2026-08-06，<strong>与 <code>origin/prod</code> 同步</strong>）。
+      本篇为<strong>新增文档</strong>——该仓在最初的平台扫描时尚不存在，故此前 15 篇文档均未覆盖。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">分层架构</a></li>
+        <li><a href="#s2">部署形态与 worker</a></li>
+        <li><a href="#s3">API 能力</a></li>
+        <li><a href="#s4">数据模型</a></li>
+        <li><a href="#s5">状态机与业务规则</a></li>
+        <li><a href="#s6">观察与风险</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>工程质量明显高于同期其它 Rust 仓</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">6</div><div class="l">workspace crate</div></div>
+        <div class="stat"><div class="n">31</div><div class="l">数据表</div></div>
+        <div class="stat"><div class="n">7</div><div class="l">worker 形态</div></div>
+        <div class="stat"><div class="n">2024</div><div class="l">Rust edition（1.95）</div></div>
+      </div>
+      <p>定位（<code>README.md</code> 原文）：<strong>「商品评价体系一期后端工程」</strong>，承接<strong>评价资格、商品评价、门店评价、首页待评价提醒、订单完成/退款事件消费、后管配置与统计</strong>等服务端能力。</p>
+      <div class="callout ok">
+        <strong>这是本仓库群里工程规范最好的 Rust 项目之一</strong>
+        <ul>
+          <li><strong>严格的 DDD 分层</strong>：<code>domain</code>（模型/状态机/不变量）→ <code>app</code>（用例/DTO/Repository trait/消息抽象）→ <code>infra</code>（MySQL/Redis/RocketMQ/配置/ID 实现），依赖方向清晰且 Repository 以 trait 定义在 app 层、实现在 infra 层（依赖倒置）。</li>
+          <li><strong>单一终态 DDL</strong>：<code>sql/</code> 明确标注「人工执行的唯一终态 DDL」，避免了其它仓中 migration 散乱的问题。</li>
+          <li><strong>docs/ 齐备</strong>：技术方案、工程规范、任务拆解、资源清单分目录维护。</li>
+          <li><strong>一个二进制多形态</strong>：<code>review-worker</code> 通过 <code>WorkerApp::resolve(mode, app)</code> 解析出 7 种角色，与 gitops 的 7 个 worker 服务一一对应——部署单元与代码形态显式对齐。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>分层架构 <em>6 crate · 依赖倒置到位</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  D["review-domain<br/>领域模型 · 状态机 · 值对象 · 业务不变量<br/>status.rs / order_fact.rs / qualification / quantity.rs"]
+  A["review-app<br/>用例服务 · DTO · Repository trait · 消息抽象<br/>usecase/schedule_notify_reminder 等"]
+  I["review-infra<br/>MySQL · Redis · RocketMQ · 配置 · ID 生成<br/>Mysql*Repository · RocketMqSimpleConsumer"]
+  C["review-c<br/>C 端 HTTP"]
+  B["review-b<br/>后管 HTTP"]
+  W["review-worker<br/>消费者 · 定时 · 补偿"]
+  D --> A
+  A -.trait 定义.-> I
+  I -.实现.-> A
+  A --> C & B & W
+  I --> C & B & W
+        </pre>
+        <p class="arch-title">图 1 · crate 分层与依赖倒置</p>
+      </div>
+      <p>技术栈：<strong>Rust edition 2024 / rust-version 1.95</strong>，<code>axum 0.8</code> + <code>axum-tracing-opentelemetry 0.29</code>，存储为 <strong>MySQL + Redis</strong>，消息为 <strong>RocketMQ</strong>（<code>RocketMqSimpleConsumer</code> / <code>RocketMqEventProducer</code> / <code>Heartbeat</code>）。</p>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>部署形态与 worker <em>一个二进制 7 种角色</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th><code>WorkerApp</code> 变体</th><th>职责</th><th>对应 gitops 服务</th></tr></thead>
+          <tbody>
+            <tr><td><code>OrderConsumer</code></td><td>消费订单完成/退款事件，生成评价资格</td><td>review-order-consumer</td></tr>
+            <tr><td><code>ExpireWorker</code></td><td>评价资格过期处理</td><td>review-expire</td></tr>
+            <tr><td><code>EventPublisher</code></td><td>领域事件外发</td><td>review-event-publisher</td></tr>
+            <tr><td><code>StatWorker</code></td><td>评价统计聚合（<code>StatsConsumer</code> / <code>OnStatsProcessed</code>）</td><td>review-stat</td></tr>
+            <tr><td><code>CompensationWorker</code></td><td>补偿任务</td><td>review-compensation</td></tr>
+            <tr><td><code>RiskWorker</code></td><td>风控事件处理</td><td>review-risk</td></tr>
+            <tr><td><code>NotifyWorker</code></td><td>待评提醒通知（<code>NotifyScheduleMessageHandler</code> + <code>AsyncNotifySchedulePublisher</code>）</td><td>review-notify</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>加上两个 HTTP 服务 <code>review-c</code>（C 端）与 <code>review-b</code>（后管），恰好对应 gitops <code>retail-review</code> 命名空间中的 <strong>review-b / review-c + 8 个 worker</strong> 的服务清单。</p>
+      <div class="callout">
+        <strong>可开关的功能位</strong> 代码中有多处显式开关，便于分阶段上线：<code>worker.execution_enabled</code>、<code>notification.schedule_mq_publish_enabled</code>、<code>schedule_publish_concurrency</code>。启用通知消费时会强制校验 <code>rocketmq.notify</code> 配置存在（<code>enabled notify schedule consumption requires rocketmq.notify config</code>）——<strong>fail-fast 而非静默降级</strong>，这一点比同期其它仓做得好。
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>API 能力 <em>C 端 12 路由 · 后管 11 路由</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>C 端（review-c）</h4>
+          <ul>
+            <li><strong>评价资格</strong>：<code>/review/qualifications/by-orders</code>、<code>/pending</code>、<code>/pending-count</code></li>
+            <li><strong>评价内容</strong>：<code>/review/contents</code>、<code>/review/orders/{order_no}</code>、<code>/{order_no}/reviews</code>、<code>/{order_no}/publish-info</code></li>
+            <li><strong>首页待评提醒</strong>：<code>/review/home-reminder</code>、<code>/home-reminder/events</code></li>
+            <li><strong>推荐与上传</strong>：<code>/review/pending-items/recommend</code>、<code>/review/upload-token</code></li>
+            <li>另有 <code>/healthz</code> 与一个 <code>/test</code> 端点</li>
+          </ul>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>后管（review-b）</h4>
+          <ul>
+            <li><strong>标签体系</strong>：<code>/admin/review/tags</code>（+ <code>/list</code>/<code>/detail</code>/<code>/update</code>/<code>/delete</code>）、<code>/tag-categories</code></li>
+            <li><strong>星级配置</strong>：<code>/admin/review/star-configs/list</code></li>
+            <li><strong>统计</strong>：<code>/admin/review/statistics/members</code>、<code>/statistics/stores</code></li>
+            <li><strong>导出</strong>：<code>/admin/review/exports</code>（+ <code>/list</code>/<code>/detail</code>）</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout warn"><strong>需确认</strong> C 端存在一个 <code>/test</code> 端点，建议确认其在生产是否可达（同类问题在其它仓已构成风险，参见 11 篇的白名单放行 <code>test/**</code>）。另本次未核验两个服务的鉴权装配方式，属<strong>待复核项</strong>。</div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>数据模型 <em>31 张表 · 按子域清晰分组</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>子域</th><th>表</th></tr></thead>
+          <tbody>
+            <tr><td>评价资格</td><td><code>review_qualification</code>、<code>review_qualification_item</code>、<code>review_submitted_order</code></td></tr>
+            <tr><td>评价内容</td><td><code>review_content_product</code>、<code>review_content_store</code>、<code>review_content_store_dimension</code>、<code>review_admin_content_index</code></td></tr>
+            <tr><td>标签与配置</td><td><code>review_tag_category</code>、<code>review_tag</code>、<code>review_star_config</code>、<code>review_tag_product_scope</code>、<code>review_tag_product_binding</code>、<code>review_dimension_store</code>、<code>review_dimension_tag</code></td></tr>
+            <tr><td>通知与任务</td><td><code>review_notify_task</code>、<code>review_image_promotion_task</code></td></tr>
+            <tr><td>风控与审计</td><td><code>review_risk_event</code>、<code>review_audit_log</code></td></tr>
+            <tr><td>统计</td><td><code>review_stat_product_subject</code> 等</td></tr>
+            <tr><td>快照</td><td><code>review_store_snapshot</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>命名统一以 <code>review_</code> 前缀，子域边界清楚；<strong>含独立的审计表与风控事件表</strong>，说明合规与风控是一期就纳入的设计目标，而非事后补。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>状态机与业务规则 <em>评价状态 5 态</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+stateDiagram-v2
+  [*] --> None : 订单完成事件<br/>生成评价资格
+  None --> Partial : 部分商品已评
+  None --> Done : 一次性评完
+  Partial --> Done : 补齐剩余商品
+  None --> Expired : ExpireWorker<br/>超过评价有效期
+  Partial --> Expired : 同上
+  None --> Canceled : 订单退款事件
+  Partial --> Canceled : 同上
+  Done --> [*]
+  Expired --> [*]
+  Canceled --> [*]
+        </pre>
+        <p class="arch-title">图 2 · 评价状态机（<code>ReviewStatus</code>：None=0 / Partial=1 / Done=2 / Expired=3 / Canceled=4）</p>
+      </div>
+      <p>状态枚举通过自定义宏 <code>impl_tinyint_enum!</code> 生成与 <code>tinyint</code> 的双向映射（<code>review-domain/src/status.rs:39-51</code>）——<strong>把 DB 编码与领域枚举的映射收敛到一处</strong>，避免了其它仓中「枚举 code 重复 / <code>fromCode</code> 返回 null」那类问题。</p>
+      <p>领域层还包含 <code>order_fact.rs</code>（订单事实，用于从订单事件推导评价资格）、<code>quantity.rs</code>（数量值对象）、<code>qualification/</code>（资格子域）——<strong>值对象与不变量下沉到 domain</strong>，是标准的 DDD 做法。</p>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>观察与风险 <em>本次为首轮分析，深度有限</em></h2>
+      <div class="callout warn">
+        <strong>核验范围说明</strong> 本篇是在有限预算内完成的<strong>首轮结构性分析</strong>：已确认分层、crate 职责、部署形态、路由清单、表清单、状态机。<strong>尚未</strong>逐文件核验以下内容，列为待办：
+      </div>
+      <h3>待复核清单</h3>
+      <ul>
+        <li><strong>鉴权</strong>：<code>review-c</code> 与 <code>review-b</code> 的鉴权中间件实现；后管 11 个写接口是否有权限校验；<code>/test</code> 端点在生产的可达性。</li>
+        <li><strong>凭据</strong>：配置文件与 <code>.env</code> 中是否有明文凭据入库（本次未定位到 <code>config/*.toml</code>，需确认配置加载方式）。</li>
+        <li><strong>并发正确性</strong>：评价提交的幂等（同一订单重复提交）、<code>review_stat_*</code> 统计聚合是否为原子操作或存在读改写竞态、资格生成与过期的并发处理。</li>
+        <li><strong>panic 路径</strong>：请求路径上的 <code>unwrap()</code>/<code>expect()</code>/数组下标；<code>Cargo.toml</code> 的 panic 策略（对比 <code>icc-task</code> 用 <code>abort</code> 会导致 pod 被杀）。</li>
+        <li><strong>MQ 语义</strong>：<code>RocketMqSimpleConsumer</code> 的 ack/重试/死信策略；<code>EventPublisher</code> 是否有 outbox（本仓有独立的 event-publisher worker，<strong>看起来正是 outbox 模式</strong>，值得确认——若成立，这是全平台少见的正确做法）。</li>
+        <li><strong>风控逻辑</strong>：<code>RiskWorker</code> 的判定规则与 <code>review_risk_event</code> 的处置闭环。</li>
+        <li><strong>导出</strong>：后管导出接口是否有分页/行数上限（同类问题在 <code>icc-task</code> 构成 High 风险）。</li>
+      </ul>
+      <div class="callout ok">
+        <strong>初步判断</strong> 从结构、命名、分层、开关设计、fail-fast 校验、独立审计与风控表来看，<strong>该仓的工程成熟度显著高于平台内其它 Rust 服务</strong>（对比 12 篇中普遍存在的鉴权缺失、明文凭据、panic 路径问题）。若上述待复核项也无重大缺陷，可作为<strong>平台内 Rust 服务的参考实现</strong>。
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

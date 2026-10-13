@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Square 架构总览 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>Agent Square 架构总览</h1>
+    <p class="subtitle">多 Runtime Agent 托管平台：Go 控制面 → ATE 调度面 → gVisor 沙箱，以及一次对话如何真正落到沙箱里执行。</p>
+    <p class="meta">最后更新：2026-08-18 · 数据来源：源码静态分析（本轮补充 mcp-proxy / frontend / server internal 的逐文件阅读）</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html" class="active">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <section class="card" id="baseline">
+      <h2><span class="num">01</span>分析基准与盲区<em>五个子模块已于 08-18 全部解锁 · 盲区清零</em></h2>
+
+      <div class="callout warn">
+        <b>分析基准</b>：主仓 <code>agent-square</code> 检出在 <code>prod</code> 分支 <code>c8d2571a</code>（2026-07-31），与 <code>origin/prod</code> 完全同步，但
+        <b>落后 <code>origin/main</code> 共 380 个提交</b>。本文结论描述的是生产基线，<b>不代表当前开发主干</b>；<code>main</code> 上已有的能力（例如 <code>llm-manager</code> 子模块）在 prod 上并不存在。
+      </div>
+
+      <div class="callout ok">
+        <b>盲区已于 2026-08-18 清零。</b>五个子模块全部检出：substrate 经 app-service 权限接口解锁；<code>gvisor</code> 与 <code>agent-hub</code>
+        因无任何 app-service 绑定，改走 <b>CMDB 级</b> <code>/api/v1/codeup/repo-permissions/add</code>（直接吃 <code>repo_ids</code> 7088550 / 7254324）补 member 后拉取。
+        其中 <code>gvisor</code> 是内部 fork，携带 <code>--network=netns-socket</code> 补丁（见第 09 节）；<code>agent-hub</code> 全仓<b>只有一个 README</b>
+        （2026-07-30 init，自称「统一资源/制品仓库 Git Artifact Registry」），与「核心子模块依赖」的定位严重不符。本文残留的
+        <span class="badge warn">设计文档</span> 标注仅指三份 Draft Actor ADR 的验收条件。
+      </div>
+
+      <div class="callout warn">
+        <b>解锁路径复盘</b>：当天早些时候的直接尝试全部失败——SSH <code>ls-remote</code> 与 aliyun CLI（OAuth 身份）对三仓一致返回
+        「找不到代码库」，因为轻舟的 <code>/app-services/codeup/repo-permissions/add</code> 从服务的 CMDB 绑定反查仓库
+        （<code>resolveBoundRepository</code>），当时三仓确实<b>未绑定任何 app-service</b>。转折点是查 CMDB 发现
+        <b>胡夕晗在 08-17 新建了 4 个 <code>ate-system</code> app-service</b>（<code>ate-api-server</code> / <code>ate-api-server-deployment</code> /
+        <code>ate-controller</code> / <code>dns</code>），其中三个的 Application CI 已把 <code>substrate</code> 的 Repository CI（5649，repo_id 7088548）
+        挂为 <code>uses_code</code> 子级。于是经服务 <b>46846 <code>ate-controller</code></b> 走同一接口把当前身份补成 member，一次成功。
+        <code>gvisor</code> / <code>agent-hub</code> 的 Repository CI（5648 / 6320）<b>至今仍无任何 Application 绑定</b>，故同一招数不适用。
+        <div class="loc">efficiency/pkg/appservice/codeup_permission.go:61 · CMDB Repository CI 5649/5648/6320 · app-service 46846</div>
+      </div>
+
+      <div class="callout ok">
+        <b>连带后果已消除</b>：<code>agent-square-server</code> 的 <code>go.mod:104</code> 用 <code>replace</code> 指向 <code>../substrate</code>；
+        substrate 检出后，<code>go build ./...</code> 于 2026-08-18 <b>编译通过（exit 0）</b>。此前「后端在此检出上无法编译」的结论
+        只适用于 08-18 之前的空目录状态。
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>仓库 / 子模块</th><th>检出状态</th><th>短 SHA</th><th>提交日期</th><th>声明分支</th><th>实际指针位置</th></tr></thead>
+          <tbody>
+            <tr><td><code>agent-square</code>（主仓）</td><td>已检出</td><td><code>c8d2571a</code></td><td>2026-07-31</td><td><code>prod</code></td><td><code>prod</code>，落后 main 380</td></tr>
+            <tr><td><code>agent-square-frontend</code></td><td>已检出</td><td><code>10cae8f</code></td><td>2026-07-31</td><td><code>dev</code></td><td><span class="badge warn">origin/fix/role-menu-permissions</span></td></tr>
+            <tr><td><code>mcp-proxy</code></td><td>已检出</td><td><code>2edd7d4</code></td><td>2026-07-30</td><td><code>main</code></td><td><span class="badge warn">origin/feat/multi-ack</span>，落后 main 3</td></tr>
+            <tr><td><code>substrate</code></td><td><span class="badge ok">已检出 · 08-18 解锁</span></td><td><code>8ec057de</code></td><td>2026-06-29</td><td><code>main</code></td><td>指针即 <code>main</code>；经 app-service 权限接口（服务 46846）补 member 后拉取</td></tr>
+            <tr><td><code>gvisor</code></td><td><span class="badge ok">已检出 · 08-18 解锁</span></td><td><code>27ed554e</code></td><td>2026-07-13</td><td><code>feat/netns-socket</code></td><td>指针即声明分支；经 CMDB 级权限接口补 member 后拉取</td></tr>
+            <tr><td><code>agent-hub</code></td><td><span class="badge ok">已检出 · 08-18 解锁</span></td><td><code>18d7e02a</code></td><td>2026-07-30</td><td><code>feat/crm-shop</code></td><td>指针即声明分支；<b>仓内仅一个 README</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><code>agent-square-frontend</code> 与 <code>mcp-proxy</code> 两个子模块的指针<b>停在特性分支上而非声明分支</b>。这类偏移在主仓侧看不出任何异常，但一旦有人执行带 <code>--remote</code> 的
+      <code>git submodule update</code>，指针会被静默退回声明分支并丢弃改动——主仓 <code>main</code> 分支的 <code>.gitmodules</code> 注释里专门警告过这一点。</p>
+
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#baseline">分析基准与盲区</a></li>
+          <li><a href="#overview">平台定位与整体架构</a></li>
+          <li><a href="#chatpath">请求链路：一次对话如何落到沙箱</a></li>
+          <li><a href="#actor">Actor 身份与多路复用</a></li>
+          <li><a href="#storage">存储分层</a></li>
+          <li><a href="#components">组件清单</a></li>
+          <li><a href="#frontend">前端与 Widget SDK</a></li>
+          <li><a href="#deploy">部署拓扑</a></li>
+          <li><a href="#runsc">gVisor / runsc 的交付与校验</a></li>
+          <li><a href="#risk">风险与技术债</a></li>
+          <li><a href="#contradiction">文档与代码矛盾清单</a></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" id="overview">
+      <h2><span class="num">02</span>平台定位与整体架构<em>控制面自研 · 调度面是 ATE · 隔离靠 runsc 而非 RuntimeClass</em></h2>
+
+      <p>Agent Square 是一个多 Runtime 的 AI Agent 托管平台。它把每个「用户 × Agent」建模成一个 <b>Actor</b>，Actor 在 gVisor 沙箱里执行，
+      并通过 <b>挂起 / 恢复</b> 复用到一组数量有限的 Worker Pod 上。调度控制面在代码与部署里的真名是 <b>ATE</b>（<code>ate-api-server</code> /
+      <code>ate-controller</code> / <code>atelet</code> / <code>ateom-gvisor</code>），仓库文档里称之为 Substrate。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph client["接入层"]
+    FE["agent-square-frontend<br/>React 18 · Vite 8"]
+    WG["Widget SDK<br/>IIFE bundle + iframe"]
+  end
+
+  subgraph gw["入口 · Istio ambient"]
+    GWY["ingressgateway<br/>Gateway API HTTPRoute"]
+    WASM["auth-wasm v0.10<br/>WasmPlugin AUTHZ"]
+  end
+
+  subgraph cp["控制面 · namespace agent-square"]
+    SRV["agent-square<br/>Go · :8090"]
+    TASK["agent-square-task<br/>:8091"]
+  end
+
+  subgraph side["旁路服务"]
+    MCP["mcp-proxy<br/>Python · fastmcp"]
+    KW["knowledge-worker<br/>FastAPI"]
+    LLM["litellm<br/>:4000"]
+  end
+
+  subgraph ate["调度面 · namespace ate-system · 源码不可见"]
+    API["ate-api-server<br/>gRPC :443"]
+    CTL["ate-controller"]
+    LET["atelet DaemonSet"]
+  end
+
+  subgraph wp["数据面 · WorkerPool"]
+    WORKER["worker pod<br/>容器 ateom"]
+    SBX["gVisor sandbox<br/>runsc · Actor"]
+  end
+
+  subgraph store["存储"]
+    MONGO[("MongoDB<br/>平台事实")]
+    NAS[("NAS PVC<br/>RWX · Agent 工作目录")]
+    OSS[("OSS<br/>快照缓存 + 业务对象")]
+  end
+
+  FE --> GWY
+  WG --> GWY
+  GWY --> WASM
+  WASM --> SRV
+  WASM --> FE
+  SRV --> TASK
+  SRV -->|"HTTP 内网"| MCP
+  SRV -->|"HTTP"| KW
+  SRV -->|"HTTP"| LLM
+  SRV -->|"① gRPC ateapipb"| API
+  SRV -->|"② CRD actortemplates"| CTL
+  SRV -->|"③ pod-exec SPDY"| WORKER
+  API --> CTL
+  CTL --> WORKER
+  LET --> WORKER
+  WORKER --> SBX
+  SBX -->|"MCP · Binding JWT"| MCP
+  SRV --> MONGO
+  SRV --> NAS
+  SRV --> OSS
+  WORKER --> NAS
+        </pre>
+        <p class="arch-title">图 1 · Agent Square 整体分层架构</p>
+      </div>
+
+      <p>值得注意的是控制面到调度面<b>并存三条通道</b>，而且都是直连——既没有消息队列，也没有 HTTP 调用 Substrate：</p>
+
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">01</span>gRPC 生命周期</h4>
+          <p><code>ateapipb.Control</code>：<code>CreateActor</code> / <code>ResumeActor</code> / <code>SuspendActor</code> / <code>DeleteActor</code> / <code>ListActors</code> / <code>ListWorkers</code>。</p>
+          <div class="loc">internal/infra/ate.go:23-41 · internal/actor/lifecycle.go</div>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">02</span>CRD 写入</h4>
+          <p>直接写 <code>ate.dev/v1alpha1 actortemplates</code>，由 ate-controller 消费。</p>
+          <div class="loc">internal/actor/template.go:24-27 · :306 · :691</div>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">03</span>Pod-exec 进沙箱</h4>
+          <p>SPDY exec 进 worker pod 的 <code>ateom</code> 容器，拼 <code>runsc … exec</code> 命令行执行。这是真正的 gVisor 入口。</p>
+          <div class="loc">internal/infra/exec.go:118-297 · :188-245 · :520</div>
+        </div>
+      </div>
+
+      <h3>调度面组件清单：代码验证（substrate <code>8ec057de</code>）</h3>
+      <p>「ATE」即 <b>Agent SubstraTE</b> 的三字母简称（项目域 <code>ate.dev</code>、组件前缀 <code>ate*</code>，类比 k8s 的 <code>kube*</code>）；
+      该仓是 Google 开源 <b>Agent Substrate</b> 的 fork。七个二进制各司其职：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>二进制</th><th>形态</th><th>职责 / 协议</th></tr></thead>
+          <tbody>
+            <tr><td><code>ateapi</code></td><td>Deployment <code>ate-api-server</code> · gRPC :443</td><td><code>ateapi.Control</code> + <code>SessionIdentity</code> 两个服务；<b>Valkey 为状态库</b>；工作流引擎跑 resume/suspend；WorkerPoolSyncer 把 worker Pod 镜像进 Valkey</td></tr>
+            <tr><td><code>atecontroller</code></td><td>Deployment</td><td>controller-runtime：WorkerPool / ActorTemplate 两个 reconciler；SSA apply 出 <code>&lt;pool&gt;-deployment</code>；golden actor 的创建-恢复-挂起</td></tr>
+            <tr><td><code>atelet</code></td><td>DaemonSet（privileged）</td><td>节点级 supervisor；gRPC <code>AteomHerder</code> :8085；<b>runsc 下载校验、checkpoint 上传、restore 下载</b>；经 unix socket 指挥 ateom</td></tr>
+            <tr><td><code>atenet</code></td><td>两个 Deployment</td><td><b>router</b> = Envoy + xDS :18000 + ext_proc :50051（Host 解析 Actor → ResumeActor → 改写 :authority）；<b>dns</b> = CoreDNS，把 Actor 域名全答成 router ClusterIP 并写 kube-dns stubDomains</td></tr>
+            <tr><td><code>ateom-gvisor</code></td><td>worker Pod 内唯一特权容器</td><td>沙箱 shepherd：unix socket gRPC；直接 exec <code>runsc create/start/checkpoint/restore</code>；单 mutex 串行</td></tr>
+            <tr><td><code>podcertcontroller</code></td><td>Deployment</td><td>两个 PodCertificate signer（servicedns / podidentity），rendezvous 哈希分片；本地 ED25519 CA</td></tr>
+            <tr><td><code>kubectl-ate</code></td><td>CLI</td><td>走 <code>Control</code> gRPC 的运维入口：create/suspend/resume/delete actor、get workers</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">substrate cmd/ateapi/main.go:50,:117,:125 · cmd/atecontroller/main.go:42,:67-98 · cmd/atelet/main.go:63,:168-208 · cmd/atenet/internal/app/router/router.go:153-294 · internal/dns/dns.go:71-189 · cmd/podcertcontroller/main.go:16-24</div>
+
+      <div class="callout warn">
+        <b>鉴权边界不在 Go 服务里。</b><code>internal/auth/auth.go:83-132</code> 只<b>解析</b>网关注入的 <code>authjwt</code> 头，
+        <b>不做任何签名校验</b>（包注释明确写了这一点）。真正的校验在 Istio 的 <code>auth-wasm</code> WasmPlugin。
+        这意味着任何能绕过 Gateway 直连 <code>svc/agent-square:80</code> 的流量都可以自行伪造身份头——集群内网 ACL 是这条链路唯一的兜底。
+      </div>
+    </section>
+
+    <section class="card" id="chatpath">
+      <h2><span class="num">03</span>请求链路：一次对话如何落到沙箱<em>每 Actor 一把互斥锁 · 串行执行 · 挂起与请求生命周期解耦</em></h2>
+
+      <p><code>POST /api/chat</code> 到沙箱执行的完整路径，全部经代码验证：</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 客户端
+  participant H as handler.HandleChat
+  participant B as actor_bindings · Mongo
+  participant R as chat.Runner
+  participant A as ATE gRPC
+  participant W as worker pod · ateom
+  C->>H: POST /api/chat · Accept text/event-stream
+  H->>H: 解码 1MiB 上限 · 取 currentUserKey
+  H->>H: 查 Agent · 校验 CanUseAgent · MCP 预检
+  H->>B: ensureUserActorBinding
+  B-->>H: DeterministicActorID = u-hash-hash
+  H->>R: RunTaskSync
+  R->>R: ActorLock actorID · 同一 Actor 串行
+  R->>A: GetActorByID
+  A-->>R: NotFound
+  R->>A: CreateActor
+  R->>A: ResumeActor · Aborted 则每 2s 重试
+  A-->>R: WorkerPod 就位
+  R->>W: PrepareAgentExecution 同步 soul/MCP/skills
+  R->>W: pod-exec SPDY 执行 runsc exec
+  W-->>C: SSE chunk · progress · reply
+  R->>A: deferredSuspend · SuspendActor
+        </pre>
+        <p class="arch-title">图 2 · 一次对话的控制流与生命周期</p>
+      </div>
+
+      <div class="grid cols-2">
+        <div class="stat"><span class="n">1</span><span class="l">同一 Actor 的并发度<br/>ActorLock 互斥，串行执行</span></div>
+        <div class="stat"><span class="n">15s</span><span class="l">SSE keepalive 心跳间隔</span></div>
+      </div>
+
+      <p><b>SSE 而非 WebSocket。</b>服务端 <code>sseEmitter</code> 发出 <code>queued</code> / <code>running</code> / <code>chunk</code> /
+      <code>progress</code> / <code>reauth</code> / <code>reply</code> / <code>error</code> / <code>canceled</code> / <code>done</code>，
+      并设 <code>X-Accel-Buffering: no</code>；<code>http.Server.WriteTimeout</code> 被<b>刻意置 0</b> 以支持长连接。
+      前端不用 <code>EventSource</code>，而是 <code>fetch</code> + <code>TextDecoderStream</code> 手工切分 <code>\n\n</code>，
+      因为需要 POST 语义与自定义鉴权头。nginx 侧配 <code>proxy_buffering off; proxy_read_timeout 300s</code> 承接。</p>
+      <div class="loc">internal/handler/chat.go:907-1104 · main.go:412 · features/hermes/api.ts:273-331 · nginx.conf.template</div>
+
+      <div class="callout ok">
+        <b>一个正确的设计细节</b>：任务上下文派生自 <code>context.Background()</code> 而非 HTTP 请求，挂起动作用 <code>context.WithoutCancel</code> 包裹。
+        客户端断开只关闭 SSE 通道，不会杀掉正在跑的 Agent，也不会让 Actor 漏掉挂起。取消必须显式走 <code>POST /api/chat/cancel</code>，且带 owner 校验。
+        <div class="loc">internal/chat/runner.go:331-334 · internal/handler/chat.go:410-418 · :1251-1283</div>
+      </div>
+    </section>
+
+    <section class="card" id="actor">
+      <h2><span class="num">04</span>Actor 身份与多路复用<em>身份是确定性哈希 · 复用靠时间而非空间</em></h2>
+
+      <h3>身份：代码验证</h3>
+      <p>Actor ID 由确定性哈希生成，<b>同一用户 + 同一 Agent 永远映射到同一个 Actor</b>：</p>
+      <pre><code>DeterministicActorID(tenant, agentID, userID)
+  = "u-" + sha256(agentID)[:10] + "-" + sha256(tenant:agentID:userID)[:20]
+
+// 任务泳道再加一个维度
+DeterministicTaskLaneActorID(..., laneIndex)
+  = "t-&lt;agentHash&gt;-&lt;userHash&gt;-l&lt;n&gt;</code></pre>
+      <div class="loc">internal/store/actor_binding.go:59-79 · :82-86，Mongo actor_bindings 上有唯一索引</div>
+      <p>之所以是哈希而不是可读结构，是因为 Substrate 只接受 DNS-1123 label（≤63 字符）。设计 ADR 里规定的
+      <code>&lt;tenant&gt;/&lt;agent-name&gt;/&lt;scope-id&gt;</code> 形式<b>并未落地</b>。租户维度目前恒为 <code>default</code>，属遗留兼容，平台<b>没有多租户</b>。</p>
+
+      <h3>多路复用：代码验证（substrate <code>8ec057de</code>）</h3>
+      <div class="callout warn">
+        机制部分已由 substrate 源码验证（下述引文均出自该仓）。仍属 <span class="badge warn">设计文档</span> 的只有三份 <b>Draft</b> Actor ADR 的验收条件
+        （<code>coldStartSupported</code>、<code>preSuspendHook</code>、<code>multiplicityHint</code>、<code>pkg/state/</code> SDK、5 万 Actor 压测），<b>尚未满足</b>，不可当作已交付能力。
+      </div>
+      <p>复用是<b>时间维度</b>的，已验证：Worker 记录只有一个 <code>actor_id</code> 字段，ateom 用<b>单把 <code>sync.Mutex</code></b> 串行化全部 RPC，
+      即一个 Worker Pod 同一时刻只服务一个 Actor、沙箱内单进程串行。状态机与旧文不同——<b>没有 CREATED 状态</b>：
+      <code>CreateActor</code> 直接写 <code>STATUS_SUSPENDED</code>，枚举为
+      <code>SUSPENDED → RESUMING → RUNNING → SUSPENDING → SUSPENDED</code>，四个迁移全部在 ateapi 的工作流引擎里同步执行。</p>
+      <div class="loc">substrate pkg/proto/ateapipb/ateapi.proto:58-64 · cmd/ateapi/internal/controlapi/create_actor.go:43-49 · workflow_resume.go:143-159,:469-485 · workflow_suspend.go:85-126,:269-397 · cmd/ateom-gvisor/main.go:155-156</div>
+      <p>「每 Actor 一把互斥锁」在调度面侧的实现是<b>分布式 Redis 锁</b>而非进程内 mutex：键 <code>lock:actor:&lt;id&gt;</code>、<code>SET NX</code>、
+      TTL 300s，工作流上下文 298s；并发操作直接收到 gRPC <code>Aborted</code>。恢复顺序验证为
+      <b>Actor LastSnapshot → ActorTemplate GoldenSnapshot → 冷启动 Run</b>，含损坏快照检测；恢复失败会把 Actor 回滚到 SUSPENDED 并释放 Worker。
+      Golden 快照也不是文档说的「临时 Golden Pod」：atecontroller 建一个 golden <b>actor</b>，在普通 worker 上 resume、等 20s、再 suspend。</p>
+      <div class="loc">substrate cmd/ateapi/internal/workflow/workflow.go:58-93,:188-189,:322,:353-376 · workflow_resume.go:257-430,:439-459 · internal/controllers/actortemplate_controller.go:70-150</div>
+      <p><span class="badge warn">设计文档</span> 容量公式 <code>WorkerPool 容量 = RUNNING × 峰值系数 3</code>；示例测算 5 万 Actor、约 1000 并发 RUNNING 对应 30–60 个 Worker Pod。
+      已知故障模式是卡在 <code>STATUS_SUSPENDING</code>；某次事故记录中<b>跨 CPU FeatureSet 的快照恢复失败率达 23.5%</b>，这也是部署脚本拒绝变更 WorkerPool 节点亲和的原因。</p>
+
+      <h3>直连路径：atenet 的 DNS + Envoy 跳转</h3>
+      <p>除第 03 节的 pod-exec 控制路径外，Actor 自身暴露的 HTTP 服务走另一条已验证链路：CoreDNS 把
+      <code>&lt;actorID&gt;.actors.resources.substrate.ate.dev</code> 的<b>所有</b>名字答成 atenet-router 的 ClusterIP；
+      Envoy ext_proc 从 Host 解析 Actor ID，<b>singleflight</b> 调 <code>ResumeActor</code>（<code>MaxWaitMs=120000</code>），
+      再把 <code>:authority</code> 改写成 <code>workerIP:80</code> 放行。注意这条路径<b>无任何认证</b>（见风险表）。</p>
+      <div class="loc">substrate internal/dns/corefile.go:43-49 · internal/dns/dns.go:119-189 · cmd/atenet/internal/app/router/resumer.go:44-83 · extproc.go:140-178</div>
+
+      <h3>吞吐现状：两侧瓶颈不同</h3>
+      <p>消费侧（第 10 节矛盾 14 已修正）：派发循环单 goroutine、单批 10，但每任务独立 goroutine，串行来自每用户泳道默认 1。
+      调度面侧<b>没有派发队列</b>：每个 <code>ResumeActor</code> 是同步 RPC，阻塞在快照下载 + <code>runsc restore</code> 上，
+      吞吐上限 = Worker 数 × 单次恢复延迟；每次 assign 还要全量扫一遍 Worker 列表。与 505 任务 / 1342s 的压测数字（约 2.66s/任务）不矛盾，
+      但压测 harness 在 <code>benchmarking/locust</code>，结论仍以消费侧日志为准。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>旋钮</th><th>值</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td>每 Actor 锁 TTL / 工作流超时</td><td>300s / 298s</td><td>workflow.go:188-189,:322</td></tr>
+            <tr><td>router 恢复等待 / 重试</td><td>120s · 7×200ms×1.5 退避</td><td>resumer.go:44,:57-62</td></tr>
+            <tr><td>扩容冷却（manifest 覆盖默认 30s）</td><td><b>10s</b></td><td>scaler.go:46-55 · ate-api-server.yaml:78-79</td></tr>
+            <tr><td>WorkerPool 最大副本</td><td>10</td><td>cmd/ateapi/main.go:71 · scaler.go:57-101</td></tr>
+            <tr><td>atelet→ateom 连接 LRU / ateapi→atelet LRU</td><td>256 / 1024</td><td>atelet/main.go:145 · dialer.go:43</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><span class="badge warn">设计文档</span> 消费侧压测（2026-07-10，500 Pod）：k6 约 1.7s 内创建 505 个任务，<b>派发跨度约 1342s</b>，
+      只用到 214 个不同 Actor/泳道。已实现「泳道懒绑定」，「泳道游标」部分实现，<b>受控并发（<code>scheduler_dispatch_concurrency</code>）明确暂不实现</b>；
+      容量基线建议 <code>PODS=40</code> + <code>max_lanes_per_user=40</code>（端到端 458–468s，p95 489–499s）；50 泳道会触发 Codeup 克隆限流。</p>
+    </section>
+
+    <section class="card" id="storage">
+      <h2><span class="num">05</span>存储分层<em>文档说三层，代码实际是四类 · Redis 与后端无关</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  SRV["agent-square Go"]
+  SBX["Actor 沙箱"]
+  M[("MongoDB<br/>约 40 个集合<br/>平台认账的事实")]
+  N[("NAS PVC · RWX 100Gi<br/>Agent 工作目录<br/>会话 JSONL")]
+  O1[("OSS · 业务对象<br/>知识文档 + 聊天附件")]
+  O2[("OSS · 快照缓存<br/>gVisor checkpoint")]
+  SRV --> M
+  SRV --> N
+  SRV --> O1
+  SRV -.->|"只写 gs:// 路径到 CRD<br/>从不写快照"| O2
+  SBX --> N
+  SBX --> O2
+        </pre>
+        <p class="arch-title">图 3 · 存储职责划分与写入方向</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>层</th><th>技术</th><th>内容</th><th>写入方</th></tr></thead>
+          <tbody>
+            <tr><td>平台事实层</td><td>MongoDB</td><td><code>agents</code> <code>bases</code> <code>llms</code> <code>sessions</code> <code>session_turns</code> <code>tasks</code> <code>task_actor_lanes</code> <code>actor_bindings</code> <code>mcp_*</code> <code>skills</code> <code>eval_*</code> <code>widget_definitions</code> 等约 40 个集合 + RBAC 集合</td><td>Go 服务</td></tr>
+            <tr><td>工作目录层</td><td>NAS PVC · ReadWriteMany · 100Gi · Retain</td><td><code>/shared</code> 下 <code>{agents,previews,skill-artifacts,users,conversations,v1}</code>；Agent 的 soul、<code>.mcp.json</code>、skills、knowledge、产物</td><td>Go 服务 + 沙箱</td></tr>
+            <tr><td>业务对象层<br/><span class="badge warn">文档未列为一层</span></td><td>OSS（<code>APP_OBJECT_STORE=aliyun-oss</code>）</td><td>知识文档 <code>knowledge/v1</code>、聊天附件 <code>chat-attachments/v1</code></td><td>Go 服务</td></tr>
+            <tr><td>快照缓存层</td><td>OSS / rustfs（<code>ATE_STORAGE_BACKEND=s3</code>）或 GCS</td><td><code>runsc checkpoint</code> 产物：<code>checkpoint.img.zstd</code> + 可选 <code>pages*.img.zstd</code>；<b>不含 rootfs 可写层</b>（每次运行重新解包）</td><td><b>仅 atelet</b>（08-18 验证）；Go 服务只把快照 URI 写进 Actor CR</td></tr>
+            <tr><td>调度面状态层<br/><span class="badge new">08-18 新增</span></td><td>Valkey（Redis 协议）</td><td>ateapi 的动态状态：<code>actor:&lt;id&gt;</code> / <code>worker:&lt;ns&gt;:&lt;pool&gt;:&lt;pod&gt;</code> / <code>lock:actor:&lt;id&gt;</code></td><td>ateapi；<b>与 Go 后端仍无关</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>NAS 的挂载权限做了分级：后端以 <code>subPath=agent-square</code> 挂到 <code>/shared</code> 可写；WorkerPool 挂 <code>/mnt/nas</code>；
+      <b>ActorTemplate 再次以 readOnly 挂载</b>，即沙箱内的 Agent 只能读共享目录。目录与权限由一个 <b>以 root 运行的 initContainer</b>
+      <code>init-shared-permissions</code> 创建（<code>agents</code> 目录 0777）。</p>
+      <div class="loc">nas-pv.yaml.tmpl · control-plane.yaml.tmpl:113-176 · internal/actor/template.go:316</div>
+
+      <div class="callout">
+        <b>Redis / Valkey 与后端无关。</b><code>internal/</code> 与 <code>cmd/</code> 下对 Redis 的引用数为 <b>0</b>。
+        托管 Redis 只服务 <code>ate-api-server</code>，Valkey 仅出现在部署脚本与运维 skill 中。谈论「后端缓存层」是不成立的。
+      </div>
+    </section>
+
+    <section class="card" id="components">
+      <h2><span class="num">06</span>组件清单<em>23 个 internal 包 · handler 与 store 占 63% · MCP 网关只认路由键</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>组件</th><th>技术栈</th><th>入口</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>agent-square-server</code></td><td><span class="badge ok">Go</span> 373 个 .go · 23 个 internal 包 · 无 pkg/</td><td><code>cmd/agent-square/main.go</code></td><td>API、RBAC、Actor 生命周期、Task 调度、MCP/Skill/Knowledge 编排</td></tr>
+            <tr><td><code>agent-square-frontend</code></td><td><span class="badge node">React 18.3 · TS 5.8 · Vite 8</span> antd 5.29 · Tailwind · TanStack Query · Monaco</td><td><code>src/main.tsx</code></td><td>控制台 + 可嵌入 Widget SDK；87 个 vitest 文件 + Playwright E2E</td></tr>
+            <tr><td><code>mcp-proxy</code></td><td><span class="badge infra">Python 3.12 · fastmcp 3.4.4</span> Starlette · uvicorn</td><td><code>app/main.py</code></td><td>MCP 数据面网关：路由键 → binding，即时注入上游凭证，工具 ACL</td></tr>
+            <tr><td><code>knowledge-worker</code><br/><span class="badge warn">AGENTS.md 未登记</span></td><td><span class="badge infra">Python · FastAPI</span></td><td><code>app/main.py</code></td><td>把 Go 解析不了的 pdf/docx 转成 Markdown；<code>POST /v1/parse</code></td></tr>
+            <tr><td><code>litellm</code></td><td>第三方镜像</td><td>—</td><td>唯一的 LLM 出口，后端不直连任何厂商 SDK</td></tr>
+            <tr><td><code>agent-hub</code></td><td><span class="badge legacy">占位仓</span></td><td>仅 <code>README.md</code>（08-18 验证）</td><td>自称「统一资源/制品仓库 Git Artifact Registry」；Go 代码 <b>0 次引用</b>，制品实际走 NAS + Skill git 导入——<b>未集成</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><span class="n">26356</span><span class="l">internal/handler 行数<br/>72 个文件</span></div>
+        <div class="stat"><span class="n">19058</span><span class="l">internal/store 行数<br/>66 个文件</span></div>
+        <div class="stat"><span class="n">63%</span><span class="l">两个包占后端约 7.2 万行的比例</span></div>
+        <div class="stat"><span class="n">0</span><span class="l">TODO / FIXME / HACK 命中数</span></div>
+      </div>
+
+      <h3>后端 internal/ 的另外 21 个包</h3>
+      <p>把已单独讨论的 <code>handler</code>（72 文件 / 26356 行）与 <code>store</code>（66 / 19058）拿掉后，剩下 21 个包共约 2.56 万行。
+      行数均为<b>非测试</b> <code>.go</code> 统计，与上面两张统计卡同口径。</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>包</th><th>文件 / 行</th><th>职责</th><th>入口</th></tr></thead>
+          <tbody>
+            <tr><td><code>chat</code></td><td>13 / 6064</td><td>SSE 对话 runner、会话 assignment、MCP token 刷新、媒体处理</td><td><code>NewRunner</code> <code>chat/runner.go:173</code></td></tr>
+            <tr><td><code>task</code></td><td>6 / 3116</td><td>任务队列 + 调度器 + runner；队列落在 <b>MongoDB</b>，靠 <code>FindOneAndUpdate</code> 原子 claim + 租约</td><td><code>NewScheduler</code> <code>task/scheduler.go:66</code></td></tr>
+            <tr><td><code>feishukb</code></td><td>8 / 2846</td><td>飞书知识库 → Markdown 同步流水线；真正的 <code>WaitGroup</code> 工作池，并发 2</td><td><code>NewKnowledgeSyncScheduler</code> <code>:26</code></td></tr>
+            <tr><td><code>skill</code></td><td>15 / 2271</td><td>Skill Catalog 与 NAS 制品库、reconciler</td><td><code>NewService</code> <code>:45</code> · <code>RunReconciler</code></td></tr>
+            <tr><td><code>actor</code></td><td>4 / 1923</td><td>Actor / ActorTemplate 生命周期，对 ATE 的封装；模板就绪缓存、恢复重试、节点磁盘探查</td><td><code>NewService</code> <code>actor/lookup.go:74</code></td></tr>
+            <tr><td><code>knowledgeimport</code></td><td>13 / 1633</td><td>Knowledge Import 2.0：解析器、分块器、zipguard；并发 2 工作池</td><td><code>NewImportScheduler</code> <code>:29</code></td></tr>
+            <tr><td><code>automation</code></td><td>7 / 1371</td><td>定时 / 周期自动化与结果投递；<b>这个才是真串行</b>，单批 20</td><td><code>NewScheduler</code> <code>automation/scheduler.go:32</code></td></tr>
+            <tr><td><code>infra</code></td><td>5 / 1088</td><td>ATE gRPC 客户端、K8s 客户端、沙箱内命令执行</td><td><code>DialATE</code> <code>:23</code> · <code>ExecInActor</code> <code>:81</code></td></tr>
+            <tr><td><code>mcpconnector</code></td><td>2 / 687</td><td>飞书 MCP OAuth connector（UAT / TAT 两类令牌）</td><td><code>NewFeishuConnector</code> <code>:68</code></td></tr>
+            <tr><td><code>authorization</code></td><td>1 / 615</td><td>RBAC 的 principal / permission / scope 求值</td><td><code>BuildPrincipal</code></td></tr>
+            <tr><td><code>widgetdef</code></td><td>2 / 593</td><td>Widget 卡片定义严格校验</td><td><code>ValidateCardDefinitionStrict</code> <code>:59</code></td></tr>
+            <tr><td><code>config</code></td><td>1 / 516</td><td>全量环境变量配置结构</td><td><code>LoadFromEnv</code> <code>:225</code></td></tr>
+            <tr><td><code>directory</code></td><td>1 / 501</td><td>飞书组织架构同步</td><td><code>NewService</code> <code>directory/feishu.go:39</code></td></tr>
+            <tr><td><code>mcpbinding</code></td><td>1 / 400</td><td>ES256 MCP binding token 签发（mcp-proxy 校验的那把票）</td><td><code>LoadSigner</code> <code>:55</code></td></tr>
+            <tr><td><code>trace</code></td><td>2 / 395</td><td>Jaeger Query API 客户端，供链路查询页使用</td><td><code>NewClient</code> <code>:21</code></td></tr>
+            <tr><td><code>auth</code></td><td>2 / 368</td><td>从 <code>authjwt</code> 头提取身份 + HTTP 中间件（<b>不验签</b>，见风险表）</td><td><code>Middleware</code> <code>auth.go:76</code></td></tr>
+            <tr><td><code>widget</code></td><td>1 / 343</td><td>Widget embed token 签发</td><td><code>NewSigner</code> <code>:81</code></td></tr>
+            <tr><td><code>objectstore</code></td><td>2 / 309</td><td>对象存储抽象：本地文件系统 / 阿里云 OSS / 内存</td><td><code>NewAliyunOSSStore</code> <code>:19</code></td></tr>
+            <tr><td><code>observability</code></td><td>2 / 264</td><td>OTel 指标注册表</td><td><code>Init</code> <code>:42</code></td></tr>
+            <tr><td><code>agentexecution</code></td><td>1 / 224</td><td>agent execution 的鉴权与派发</td><td><code>New</code> <code>:28</code></td></tr>
+            <tr><td><code>execution</code></td><td>1 / 95</td><td><code>Spec</code> 值类型与运行期 prompt 渲染</td><td><code>RenderRuntimePrompt</code> <code>:69</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><code>cmd/agent-square/main.go</code>（468 行）是唯一装配点，顺序为：日志 → 配置 → tracing / metrics →
+      ATE gRPC → K8s 客户端 → NAS → Mongo → 索引 → RBAC bootstrap → 各签发器 → 领域服务 → <code>handler.Deps</code> → 9 个后台调度器 → router。
+      其中 <b>Mongo 不可达直接 fatal，K8s 客户端失败只 warn</b>；另起一个 <code>:9090</code> metrics server，且该 server 没有关闭路径。</p>
+
+      <div class="callout ok">
+        <b>Go 侧完全没有 Redis / Valkey 客户端</b>——全仓 Go 源码零引用。部署里的 <code>valkey-cluster</code> 属
+        <code>ate-system</code> 调度面自用，与后端无关，这与第 05 节的存储结论一致。
+      </div>
+
+      <h3>mcp-proxy 为什么必须存在</h3>
+      <p>Actor 绝不能持有上游凭证，也不能通过工具参数自选服务 / URL / 工具。网关把这三件事都收进服务端：</p>
+      <ul>
+        <li><b>唯一公开面</b> <code>POST /{routing_key}/mcp</code>，裸 <code>/mcp</code> 直接 404；<b>无对外路由</b>，仅集群内 <code>mcp-proxy.&lt;ns&gt;.svc.cluster.local:8080</code> 可达。</li>
+        <li><b>不持久化任何凭证</b>：每次调用向 Go 控制面 <code>POST /internal/mcp/v1/resolve</code> 取，缓存 ≤30 秒，按 binding/user/auth_version 分键，失败即 fail-closed。</li>
+        <li><b>ES256 Binding JWT</b> 对 JWKS 校验，强制 <code>kid</code>、issuer、<code>aud=mcp-gateway</code>，并校验 URL 段与签名内 <code>routing_key</code> 相等。</li>
+        <li>MongoDB 为权威源（<code>mcp_services</code> / <code>mcp_service_revisions</code> / <code>agent_mcp_bindings</code>），30 秒原子快照刷新；binding 指向已停用服务或未发布工具时整体 fail-closed。</li>
+        <li>超时 2s/5s/10s 且<b>无自动重试</b>；请求体 1MiB、响应 4MiB 上限；禁重定向、<code>trust_env=False</code>、SSRF 出网白名单。</li>
+      </ul>
+      <p>当前指针所在分支 <code>feat/multi-ack</code> 的实质是引入可选 <code>auth_session_id</code> 声明，把「当前登录用户」这类会话型凭证按会话分键，
+      使多个并发用户会话不共用同一个上游 MCP 客户端。该改动已包含在 <code>main</code> 中（指针落后 main 3 个提交）。</p>
+
+      <h3>公开面与内部面</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方法</th><th>路径</th><th>鉴权</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td>POST/GET/DELETE</td><td><code>/{routing_key}/mcp</code></td><td>ES256 Binding JWT<br/><span class="badge warn">或匿名</span></td><td>唯一 MCP 端点；中间件先把路径改写成 <code>/mcp</code> 再交给内层 app</td></tr>
+            <tr><td>any</td><td>裸 <code>/mcp</code></td><td>—</td><td>硬 404 <code>{"error":"not_found"}</code></td></tr>
+            <tr><td>GET</td><td><code>/healthz</code> · <code>/readyz</code> · <code>/metrics</code></td><td><span class="badge danger">无</span></td><td>中间件只拦两段式 <code>/{x}/mcp</code>，其余全部放行</td></tr>
+            <tr><td>POST</td><td><code>/internal/remote-mcp/{discover,test,invalidate}</code></td><td>静态 <code>x-mcp-control-token</code></td><td>控制面探测上游能力、试调、作废缓存客户端</td></tr>
+            <tr><td>POST</td><td><code>/internal/openapi/test</code></td><td>静态 <code>x-mcp-internal-test-token</code></td><td><span class="badge warn">生产上等于死代码</span>该 token 被配置校验限定只能在 local/test 出现</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">mcp-proxy/app/main.py:96-110（app 构造）· :357-369（路由注册）· app/auth/middleware.py:44-57</div>
+
+      <p>内部路由鉴权失败返回 <b>404 而不是 401</b>，属故意的存在性隐藏。凭证比较用 <code>secrets.compare_digest</code>。</p>
+
+      <h3>上游转发：只有两种传输，没有 stdio</h3>
+      <p>上游传输由 revision 的 <code>provider_config["transport"]</code> 选择，只支持 <b>streamable HTTP（默认）</b>与 <b>SSE</b>；
+      全仓无 <code>StdioTransport</code> 引用，<b>不支持 stdio 上游</b>。<code>openapi</code> 类型的 binding 根本不走 MCP，而是由
+      <code>OpenAPIExecutor</code> 发普通 HTTP。</p>
+      <p>上游客户端按一个复合键缓存：binding、user、revision、auth_version、auth_session、凭证版本、connector 类型、工具 ACL 哈希，
+      以及 <b><code>downstream_session_id</code></b>。也就是说会话亲和是<b>强绑定</b>的。无 MCP session 的调用方会退化成
+      <code>request:{request_id}</code> 键——等价于<b>每请求新建连接</b>。</p>
+      <div class="loc">app/providers/remote_mcp.py:386-390（传输选择）· :36-48,:459-486（缓存键）· :167（客户端字典）</div>
+      <p>回收路径有四条：带 <code>mcp-session-id</code> 的 HTTP <code>DELETE</code>、认证失败、<code>/internal/remote-mcp/invalidate</code>、
+      目录刷新时的 <code>close_all</code>。四条都没走到时客户端会一直驻留。</p>
+
+      <div class="callout warn">
+        飞书 connector 的上游 URL 由服务端强制改写为固定值，<b>覆盖</b> revision 里配置的 URL；同时禁止下游自带飞书鉴权头，命中即 400 <code>forbidden_header</code>。
+        <div class="loc">app/providers/catalog.py:212-225 · app/providers/feishu.py:10-18</div>
+      </div>
+    </section>
+
+    <section class="card" id="frontend">
+      <h2><span class="num">07</span>前端与 Widget SDK<em>两套构建 · 嵌入靠 iframe + postMessage · 分层名存实亡</em></h2>
+
+      <h3>分层：目录名与实际职责不符</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>目录</th><th>规模</th><th>实际职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>src/app/</code></td><td>4 文件</td><td>仅 <code>providers.tsx</code>（单例 QueryClient）+ <code>router.tsx</code>（全量路由表）</td></tr>
+            <tr><td><code>src/features/</code></td><td>27 目录 · 103 文件</td><td><b>几乎全是数据访问层</b>：绝大多数目录只有 <code>api.ts</code> + <code>types.ts</code>（+<code>hooks.ts</code>）。<code>hermes/</code> 是真正的对话客户端（501 行）</td></tr>
+            <tr><td><code>src/components/</code></td><td>29 文件</td><td>可复用 UI；<code>layout/navigation.ts:47-89</code> 持有四个导航分组</td></tr>
+            <tr><td><code>src/pages/</code></td><td><b>138 文件（最大层）</b></td><td>页面 + 页面私有子树与页面局部逻辑模块</td></tr>
+            <tr><td><code>src/lib/</code></td><td>6 文件</td><td><code>api-client.ts</code> / <code>query-keys.ts</code> / <code>display.ts</code>，以及整块 eval API <code>api_eval.ts</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <b>分层泄漏是实测的，不是观感</b>：① <code>pages/embed/EmbedChatPage.tsx:13</code> 从<b>兄弟页面</b>
+        <code>../playground/PlaygroundPage</code> 导入 <code>ChatExperience</code>——那个文件 <b>2481 行</b>，事实上是共享对话引擎；
+        ② 「可复用 UI」层 <code>components/</code> 有 <b>8 个文件反向 import <code>features/</code></b>；
+        ③ 数据层 <code>features/</code> 里塞着 UI 组件（<code>skill-catalog/SkillCatalog.tsx</code>、<code>widgets/WidgetEditorModal.tsx</code> 等）；
+        ④ <code>chat-cards</code> 被劈成两层：协议在 <code>features/</code>，渲染器在 <code>components/</code>。
+      </div>
+
+      <h3>Widget SDK：确实是独立的库构建</h3>
+      <p><code>pnpm build</code> 跑<b>两次 Vite</b>：<code>tsc -b &amp;&amp; vite build &amp;&amp; vite build --config vite.widget.config.ts</code>。
+      第二次以 <code>src/embed/widget-sdk.ts</code> 为入口打 <b>IIFE</b> 包，全局名 <code>AgentSquareWidgetBundle</code>，产物
+      <code>dist/embed/agent-square-widget.js</code>，且 <code>emptyOutDir: false</code> 以免清掉主应用产物。</p>
+      <div class="loc">package.json:8 · vite.widget.config.ts:9-16</div>
+
+      <p>宿主页拿到的公开 API 是 <code>window.AgentSquareWidget.mount(...)</code>（<b>没有</b> Custom Element）。mount 会创建
+      <code>#agent-square-widget-root</code> 并塞一个<b>指向 <code>/embed/chat</code> 的 sandboxed iframe</b>——所以真正的隔离边界是 iframe，
+      跨域契约收敛在 <code>src/embed/protocol.ts</code>：<code>WIDGET_PROTOCOL_VERSION = 1</code>，宿主→widget 为
+      <code>init</code> / <code>set-expanded</code>，widget→宿主为 <code>ready</code> / <code>close</code> / <code>error</code> / <code>set-expanded</code>。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant H as 宿主页面
+  participant S as widget-sdk IIFE
+  participant I as iframe · /embed/chat
+  participant B as 后端 /api
+  H->>B: POST /api/widgets/tokens
+  B-->>H: embedToken
+  H->>S: AgentSquareWidget.mount 配置 + embedToken
+  S->>I: 创建 sandboxed iframe
+  I-->>S: postMessage ready
+  S->>I: postMessage init · 仅一次 · targetOrigin=baseOrigin
+  I->>B: POST /api/chat · Accept text/event-stream
+  B-->>I: SSE 流式增量
+  I-->>S: postMessage set-expanded 或 close
+        </pre>
+        <p class="arch-title">图 4 · Widget 嵌入与 postMessage 握手</p>
+      </div>
+
+      <p>握手做了三处防护：<code>init</code> 靠 <code>handshakeDone</code> <b>幂等</b>只发一次；<code>postMessage</code> 指定
+      <code>baseOrigin</code> 而非 <code>*</code>；来源 origin 或 source 不符<b>直接丢弃</b>。E2E 里有一条专门发恶意 Origin 消息验证拒绝。</p>
+      <div class="loc">src/embed/widget-sdk.ts:240,:244,:473,:489,:517-524,:558 · src/embed/protocol.ts:1-65 · src/pages/embed/EmbedChatPage.tsx:88</div>
+
+      <div class="callout danger">
+        <b>嵌入能力靠一条 nginx 例外打开</b>：全站默认 <code>Content-Security-Policy: frame-ancestors 'self'</code>，
+        但 <code>= /embed/chat</code> 这个 location <b>单独覆盖成 <code>frame-ancestors *</code></b>——即该页面允许<b>任意站点</b>内嵌。
+        安全边界因此完全落在 embedToken 与 <code>X-Widget-Origin</code> 校验上，而不在 CSP。
+        <div class="loc">agent-square-frontend/nginx.conf.template:14（默认）· :57（/embed/chat 覆盖）</div>
+      </div>
+
+      <h3>与后端通信：SSE over fetch，零 WebSocket</h3>
+      <p>流式对话是 <code>POST /api/chat</code> 带 <code>Accept: text/event-stream</code>，用 <code>fetch</code> +
+      <code>TextDecoderStream</code> 手工按 <code>\n\n</code> 切帧的 <b>AsyncGenerator</b>，收到 <code>event: done</code> 结束，
+      靠 <code>AbortSignal</code> 取消。<b>不是 <code>EventSource</code>，全 <code>src/</code> 无任何 WebSocket。</b></p>
+      <div class="loc">src/features/hermes/api.ts:273-331（streamChat）· :333-356（parseSSEBlock）</div>
+
+      <div class="callout warn">
+        <b>两套并存的 HTTP 客户端</b>：24 个 feature api 模块里有 23 个走 <code>lib/api-client.ts</code>（统一错误归一化、鉴权头注入），
+        但 <code>features/hermes/api.ts:32</code> 自己硬编码 <code>HERMES_BASE = "/api"</code> 并直接用裸 <code>fetch</code>，
+        绕过了 <code>ApiClient</code>——偏偏它是对话主链路。
+      </div>
+
+      <p>鉴权头有两条互不相同的路径：控制台用 <code>authjwt</code> 头，值取自 <code>localStorage</code>；
+      <b>但 <code>src/</code> 里没有任何代码写入这个 key</b>（只有测试写），也没有登录页——JWT 由外部门户注入。
+      Widget 侧则用 <code>X-Widget-Token</code> / <code>X-Widget-Origin</code>，<b>只存在模块内存里，刻意不落盘</b>。</p>
+      <div class="loc">src/lib/api-client.ts:33,:61-68,:87-92 · :37-43（不持久化的注释）</div>
+
+      <h3>路由与产物</h3>
+      <ul>
+        <li><code>/embed/chat</code> 是<b>唯一不在 <code>ConsoleLayout</code> 之下</b>的路由，也就是 widget iframe 加载的那个页面；其余全为控制台页面。</li>
+        <li><b>无 <code>errorElement</code>、无 <code>*</code> 404 路由、无 <code>React.lazy</code></b>：所有页面静态 import，控制台是<b>单一 bundle</b>。</li>
+        <li>有 <b>7 个页面组件在路由表里不可达</b>（<code>SecurityPage</code>、<code>MCPServicesPage</code>、<code>MCPServiceDetailPage</code>、<code>SkillDetailPage</code>、<code>CreateAgentPage</code>、<code>HermesCreatePage</code>、<code>WidgetDemoPage</code>）。</li>
+      </ul>
+      <div class="loc">src/app/router.tsx:3-37（静态导入）· :39-88（路由表）</div>
+
+      <p>生产以 <b>nginx</b> 提供：两阶段 Docker（node:22-alpine + pnpm 构建 → nginx:1.27-alpine），
+      <code>dist</code> 落到 <code>/usr/share/nginx/html</code>，upstream 由 <code>BACKEND_UPSTREAM</code> 环境变量注入。
+      为 SSE 专门关掉了 <code>proxy_buffering</code> 并把 <code>proxy_read_timeout</code> 放到 <b>300s</b>；
+      模板用 <code>set $backend</code> 变量把 DNS 解析推迟到请求时。</p>
+
+      <div class="callout">
+        <b>一个有意思的测试</b>：<code>src/nginx-config.test.ts</code> 是个 <b>vitest</b>，但断言的是
+        <code>nginx.conf.template</code> 里有 <code>client_max_body_size 100m</code>——nginx 默认 1 MiB 会打断大 OpenAPI spec 上传，
+        于是拿单测把这条基础设施配置钉住。它是 <code>src/</code> 下唯一断言部署文件的测试。
+      </div>
+
+      <div class="callout warn">
+        <b>两处配置已经腐烂</b>：① <code>playwright.config.ts:13-14</code> 的 <code>webServer</code> 指向
+        <code>../agent-square-backend</code> 并跑 <code>go run ./cmd/agent-square-api</code>，而仓库里是
+        <code>agent-square-server</code> + <code>cmd/agent-square</code>——该目录<b>不存在</b>，默认 <code>pnpm test:e2e</code> 起不来后端；
+        ② dev proxy 默认后端 <code>:8090</code>，而 Playwright 配置里是 <code>:8080</code>。
+        另 <code>Dockerfile</code> 声明了 <code>TASK_UPSTREAM</code> 但 nginx 模板从未引用。
+      </div>
+    </section>
+
+    <section class="card" id="deploy">
+      <h2><span class="num">08</span>部署拓扑<em>五个 namespace · 零 Ingress · 零 CI</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph ns1["namespace ate-system · 本仓不创建，只 patch"]
+    A1["Deployment ate-api-server"]
+    A2["Deployment ate-controller"]
+    A3["Deployment atenet-router"]
+    A4["DaemonSet atelet"]
+    A5["svc rustfs:9000 · S3"]
+    A6["StatefulSet valkey-cluster"]
+  end
+  subgraph ns2["namespace agent-square"]
+    B1["Deployment agent-square<br/>+ initContainer root"]
+    B2["svc agent-square:80 · agent-square-task:8091"]
+    B3["Deployment agent-square-frontend"]
+    B4["CR WorkerPool + ActorTemplate"]
+    B5["Deployment knowledge-worker<br/>手工 apply"]
+  end
+  subgraph ns3["namespace agent-square-preview"]
+    C1["WorkerPool + ActorTemplate preview"]
+  end
+  subgraph ns4["namespace agent-square-mcp-proxy"]
+    D1["Deployment mcp-proxy<br/>sessionAffinity ClientIP"]
+  end
+  subgraph ns5["namespace litellm"]
+    E1["Deployment litellm:4000"]
+  end
+  GW["istio-system ingressgateway"]
+  GW --> B3
+  GW --> B2
+  GW --> E1
+  B1 --> D1
+  B1 --> A1
+  A2 --> B4
+  A4 --> B4
+        </pre>
+        <p class="arch-title">图 5 · 命名空间与工作负载分布</p>
+      </div>
+
+      <div class="callout warn">
+        <b>调度面不由本仓创建。</b><code>deploy/deploy-k8s/substrate.sh:383-392</code> 会在 <code>ate-system</code> 没有任何 Deployment 时直接中止——
+        该 namespace 必须先由独立的「ATE 控制面克隆」流程 bootstrap。<code>rustfs</code> 与 <code>valkey-cluster</code> 的清单也不在本仓，
+        Actor / Worker Pod 的 spec 同样不在。这些都随 <code>substrate</code> 子模块一起不可见。
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项</th><th>结论</th></tr></thead>
+          <tbody>
+            <tr><td>入口方式</td><td><b>Gateway API HTTPRoute + Istio ambient，全仓零个 <code>Ingress</code> 对象</b>。staging-136 对外 4 个域名：<code>agent-square.</code> / <code>agent-square-server.</code> / <code>agent-square-task.</code> / <code>litellm.ali-staging.xlbsoft.com</code></td></tr>
+            <tr><td>集群 Profile</td><td><code>ack-test</code> · <code>ack-test-136</code> · <code>ack-staging-136</code> · <code>ali-dev</code> · <code>kind</code>；<code>&lt;name&gt;.common.env</code> 入库，<code>&lt;name&gt;.env</code> gitignore 并覆盖同名项</td></tr>
+            <tr><td>WorkerPool 规模</td><td>test-136 = 5，staging-136 = 44</td></tr>
+            <tr><td>MongoDB</td><td>test/staging 用阿里云托管副本集（<code>MONGO_DEPLOY_ENABLED=false</code>）；仅 <code>ali-dev</code> 起集群内 StatefulSet</td></tr>
+            <tr><td>CI</td><td><span class="badge danger">prod 上不存在</span><code>.gitlab/</code> 只有 MR 模板，无 <code>.gitlab-ci.yml</code>、无 GitHub Actions。构建部署全靠本机手工执行，仅有 git hooks 兜底</td></tr>
+            <tr><td>镜像 digest 固定</td><td><code>PAUSE_IMAGE</code> / <code>ATEOM_IMAGE</code> / <code>RUNSC_*_SHA256</code> 已 pin；<b>后端与前端未 pin</b>（<code>IMAGE_TAG=latest</code>）</td></tr>
+            <tr><td>发版记录</td><td><code>RELEASES.md</code> 仅 1 条 <code>v1.0.0</code>（2026-07-18），且后端/前端 digest 仍写「待 release-tag.sh 首次记录」</td></tr>
+            <tr><td>环境晋级</td><td>不是制品晋级，而是 <b>profile 切换</b>：staging-136 由 test-136 派生，共用 NAS/OSS/ACR，仅节点池、域名、副本数不同</td></tr>
+            <tr><td>本地开发</td><td><code>deploy-macos/setup.sh</code> 11 步：Colima → Kind → 本地 registry:5002 → 部署 substrate → 构建上传 runsc → 后端 <code>:8090</code> 与前端 <code>:5173</code> 以<b>宿主进程</b>运行，无 nginx / HTTPRoute / Istio，<code>AUTH_DISABLED=true</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <b>部署会删除全部 Actor。</b><code>CLEANUP_ALL_ACTORS_ON_DEPLOY=true</code> 在 <code>ack-test-136</code> 与
+        <code>ack-staging-136</code> 两个 profile 里<b>都是开启的</b>：执行 <code>backend workload</code> 时，
+        <code>workload.sh:558-566</code> 会通过 gRPC 删除所有 Actor，再 <code>kubectl delete workerpool</code>（两个 namespace），
+        ActorTemplate 则无条件删除。该步骤不在 <code>all</code> 流程内，但任何人手工跑 <code>backend workload</code> 都会触发。
+      </div>
+    </section>
+
+    <section class="card" id="runsc">
+      <h2><span class="num">09</span>gVisor / runsc 的交付与校验<em>不走 RuntimeClass，而是把二进制当 CRD 数据下发</em></h2>
+
+      <p>这是整套架构里最反直觉的一处：<b>全仓不存在 <code>RuntimeClass</code>，也不存在任何 <code>runtimeClassName</code></b>。
+      runsc 完全没有接入 Kubernetes 的 CRI runtime-class 机制。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  P["profile *.common.env<br/>RUNSC_AMD64_URL + SHA256"]
+  T["ActorTemplate CR<br/>spec.runsc.amd64.url/sha256Hash"]
+  S["agent-square 后端<br/>同样注入 env"]
+  V["workload.sh 校验<br/>临时 aws-cli pod"]
+  R["rustfs.ate-system:9000<br/>S3 对象"]
+  L["atelet DaemonSet<br/>拉取并校验"]
+  W["worker pod 执行 runsc"]
+  P --> T
+  P --> S
+  P --> V
+  V --> R
+  R --> L
+  T --> L
+  L --> W
+        </pre>
+        <p class="arch-title">图 6 · runsc 二进制的下发与 SHA256 校验链</p>
+      </div>
+
+      <p>校验是真的在做，而且是硬失败：<code>workload.sh:492-530</code> 解析 <code>gs://bucket/key</code>，在 <code>ate-system</code> 起一个一次性
+      <code>aws-cli</code> Pod 从 <code>rustfs</code> 下载，断言 <code>runsc flags</code> 输出中包含 <code>netns-socket</code>，
+      再用 <code>shasum -a 256</code> 重算并与 profile 中的值比对，不一致直接失败。另有防呆：非 kind 环境若指向公开的
+      <code>gs://gvisor/*</code> 或 <code>registry.k8s.io/pause</code>，除非显式开 <code>ALLOW_PUBLIC_RUNSC_ON_NON_KIND</code> 否则拒绝部署。</p>
+      <p>沙箱 <b>supervisor</b> 镜像 <code>ateom-gvisor</code> 是另一条线：由 <code>substrate.sh</code> 构建并写入 <code>WorkerPool.spec.ateomImage</code>，
+      随后轮询 <code>&lt;workerpool&gt;-deployment</code> 直到镜像生效。宿主上 <code>/data1/ateom-gvisor</code> 与 <code>/data1/agent-square</code>
+      两个 hostPath 承载运行时状态与任务日志，因此 <code>atelet</code> 在 staging-136 上被钉在 <code>pool=agent-square</code> 节点——
+      其他节点没有 <code>/data1</code>，会卡在 <code>ContainerCreating</code>。</p>
+      <div class="callout ok">
+        <b>08-18 已解（substrate 源码验证）</b>：atelet 自己下载并校验 runsc——<code>fetchRunsc</code> 按 ActorTemplate 的
+        <code>RunscConfig</code>（URL + SHA256，按平台分别钉死）拉取，哈希不符直接失败，缓存到
+        <code>/var/lib/ateom-gvisor/static-files/runsc-&lt;sha256&gt;</code>。<b>不向 containerd 注册</b>：ateom 以子进程方式直接
+        exec <code>runsc create/start/checkpoint/restore</code>，CRI 完全旁路。挂起 = <code>runsc checkpoint</code> 产出
+        <code>checkpoint.img.zstd</code>（+ 可选 <code>pages*.img.zstd</code>）由 atelet zstd 压缩上传对象存储；恢复 = 并行下载三件 +
+        <code>runsc restore -background -direct -detach</code>。<code>--network=netns-socket</code> 让沙箱<b>直接加入 worker pod 的 netns</b>
+        （为 Istio Ambient TPROXY 而设计），代价是 Actor 间无网络隔离；该特性的实现已在同日解锁的 <code>gvisor</code> fork 中验证（见下）。
+        <div class="loc">substrate cmd/atelet/main.go:262-328,:503-678,:736-770 · cmd/ateom-gvisor/runsc.go:38-206 · cmd/atelet/oci.go:164-171 · pkg/api/v1alpha1/actortemplate_types.go:123-161</div>
+      </div>
+
+      <div class="callout ok">
+        <b>netns-socket：fork 侧实现已验证（gvisor <code>27ed554e</code>）。</b>动机是物理冲突：gVisor 默认 <code>--network=sandbox</code>
+        用用户态 Netstack 自建 TCP/IP，从 veth 以 AF_PACKET 出栈，<b>绕过 pod 内核栈</b>——Istio Ambient 的 iptables/TPROXY + ztunnel
+        命中数为 0，L4 mTLS 完全失效。<code>netns-socket</code> 是 <code>host</code> 的强语义版：sandbox 进程只 unshare
+        PID/MOUNT/IPC/UTS、<b>不 unshare NET</b>，经 OCI <code>namespaces[network].path</code> setns 进 pod netns，Sentry 走 hostinet
+        以真实 syscall 落内核 socket；并做<b>硬校验</b>——OCI spec 缺 network namespace path 时 runsc 直接报错退出，杜绝悄悄退化到 host 全局 netns。
+        该模式为内部 fork 独有（proposal 自标 Draft、不上游），另保留 Netstack 给安全敏感场景兜底。
+        <div class="loc">gvisor docs/proposals/netns-socket.md · runsc/config/config.go:699-712 · runsc/sandbox/sandbox.go:1082-1083 · runsc/sandbox/network.go:71-73 · runsc/boot/loader.go:1679</div>
+      </div>
+    </section>
+
+    <section class="card" id="risk">
+      <h2><span class="num">10</span>风险与技术债<em>一处 TLS 校验被关掉 · MCP 网关默认允许匿名 · 后台任务不随进程退出</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>级别</th><th>问题</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge danger">高</span></td><td>到 ATE 的 TLS 分支使用 <code>InsecureSkipVerify: true</code>，即「安全模式」<b>并不校验 ATE 证书</b>；同一处条件里 <code>strings.EqualFold("true", "")</code> 第二个操作数是常量，属死代码</td><td><code>internal/infra/ate.go:25,:28</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>Go 服务不校验 <code>authjwt</code> 签名，鉴权完全依赖 Istio WasmPlugin；绕过 Gateway 直连 Service 即可伪造身份</td><td><code>internal/auth/auth.go:83-132</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>两个环境都开启 <code>CLEANUP_ALL_ACTORS_ON_DEPLOY</code>，误跑 <code>backend workload</code> 会清空全部 Actor 与 WorkerPool</td><td><code>workload.sh:558-566</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>MCP OAuth 与 token 刷新链路使用无超时的 <code>http.DefaultClient</code>，可能长期挂住 goroutine</td><td><code>mcp_oauth.go:606,651,694</code> · <code>chat/token_refresh.go:136</code> · <code>assistant_media.go:498,551</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>启动期不对称：Mongo 不可达直接 fatal，K8s 客户端失败只 warn。缺 K8s 的实例能起来但每次对话都在运行期失败</td><td><code>main.go:79</code> vs <code>:91</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>God package：<code>handler</code> + <code>store</code> 占后端 63% 代码；<code>handler.Deps</code> 同时持有裸 <code>MongoStore</code> 与 <code>Metadata</code> 门面，handler 可随意绕过门面；chat 层反向触达传输层 <code>r.Actors.ATE</code></td><td><code>router.go:29-71</code> · <code>chat/runner.go:469-486</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>无 CI，后端/前端镜像未 pin digest，发版记录仅 1 条且 digest 缺失——回滚脚本依赖 <code>RELEASES.md</code> 解析，当前几乎无可回滚数据</td><td><code>.gitlab/</code> · <code>RELEASES.md</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>mcp-proxy 的 <code>PUBLIC_ACCESS_ENABLED</code> <b>默认为 <code>True</code></b>：无 <code>Authorization</code> 头的请求会被合成为 <code>user_id="anonymous"</code> 身份放行，只要目标 routing_key 在公开目录内。即「不持久化凭证 + fail-closed」的结论只覆盖<b>带票入口</b>，公开服务事实上<b>无需任何凭证</b>即可调用</td><td><code>mcp-proxy/app/config.py:32</code> · <code>app/auth/middleware.py:81-92</code> · <code>app/providers/binding.py:206-221</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>全部后台调度器（task / automation / knowledge / import / token-refresh / directory / LiteLLM 同步）都拿 <code>context.Background()</code> 而非 <code>shutCtx</code>，<b>SIGTERM 不会取消它们</b>；在途任务另用 <code>context.WithCancel(context.Background())</code>，与进程生命周期脱钩。HTTP 优雅关闭 10s 形同虚设</td><td><code>main.go:341,343,349,361,389,391,393,404</code> vs <code>:435</code> · <code>task/scheduler.go:239</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>上游认证失败靠<b>异常文本子串匹配</b>判定（<code>"401"</code>/<code>"403"</code>/<code>"unauthorized"</code>/<code>"forbidden"</code>/<code>"invalid token"</code>）。上游响应体里只要出现 <code>403</code> 字样就会触发凭证作废与重连</td><td><code>mcp-proxy/app/providers/remote_mcp.py:529-534</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>调度器<b>不是</b>全局串行（见矛盾 14）：派发循环单 goroutine、单批 10 个，但每任务独立 goroutine，<b>无全局并发上限</b>，在途总数 = 各用户泳道数之和；背压只有每用户 <code>MaxLanesPerUser</code>（默认 1），耗尽时整批以 <code>dispatchBlocked</code> 中止</td><td><code>task/scheduler.go:170,241,459-465</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td><code>ListActors</code> 四处硬编码 <code>PageSize: 1000</code> 且无翻页，规模上去后<b>静默截断</b></td><td><code>actor/lifecycle.go:353</code> · <code>actor/lookup.go:106,:293,:352</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>mcp-proxy 无限流、无 CORS，MCP 路径无请求体上限；<code>/metrics</code> 与 <code>/readyz</code> <b>无鉴权</b>，后者还回吐目录条目数与错误类名。上游客户端字典无 TTL / 容量上限，未收到 DELETE 时会一直驻留</td><td><code>mcp-proxy/app/auth/middleware.py:49-57</code> · <code>app/providers/remote_mcp.py:167</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>调度面内部链路<b>与文档宣称的 mTLS 相反</b>：router→ateapi 用 <code>InsecureSkipVerify: true</code>；ateapi→atelet 是<b>明文 gRPC</b>；atelet→ateom 走无鉴权 unix socket。能进 <code>ate-system</code> 网络即可伪造控制面调用</td><td>substrate <code>cmd/atenet/.../router.go:203</code> · <code>cmd/ateapi/internal/controlapi/dialer.go:87-90</code> · <code>cmd/atelet/main.go:977-981</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>atenet-router 对 Actor 流量<b>只做 Host 语法校验，无任何认证</b>：知道 Actor ID 即可触发 <code>ResumeActor</code> 并直连 worker pod IP:80。文档「Identity-Aware Routing」未实现</td><td>substrate <code>cmd/atenet/internal/app/router/extproc_in.go:92</code> · <code>extproc.go:126-185</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td><b>Actor 之间没有网络隔离</b>：netns-socket 模式下沙箱直接加入 worker pod 的 netns，同一 worker 上的多个 Actor（以及 ateom 本身）共享一个网络命名空间</td><td>substrate <code>cmd/atelet/oci.go:164-171</code> · <code>cmd/ateom-gvisor/runsc.go:58,93,158</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td><code>DeleteActor</code> 只删 Redis 记录，<b>快照对象永不回收</b>（GC 未实现，文档自认）；OSS/rustfs 上的 checkpoint 只增不减</td><td>substrate <code>cmd/ateapi/internal/controlapi/delete_actor.go:38-44</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>servicednssigner <b>不校验哪些 Pod 可以申领证书</b>（代码注释自认无 policy）；本地 CA 为自签 ED25519、有效期 365 天</td><td>substrate <code>internal/servicednssigner/servicednssigner.go:94-96</code> · <code>internal/localca/localca.go:119-152</code></td></tr>
+            <tr><td><span class="badge legacy">低</span></td><td><code>ResilientStore</code> 名不副实：NAS 回退 / outbox / reconciler 已移除，<code>BootstrapFromMongo</code> 成为空实现，类型名与旧文档仍保留</td><td><code>internal/store/repository.go:31-45,:59-62</code></td></tr>
+            <tr><td><span class="badge legacy">低</span></td><td>后端模块在<b>空子模块</b>检出上无法编译（<code>replace</code> 指向 <code>../substrate</code>）；08-18 检出 substrate 后 <code>go build ./...</code> 已通过。<b>prod 检出本身仍带空目录</b>，任何 CI 化尝试都会先撞这一下</td><td><code>go.mod:104</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="contradiction">
+      <h2><span class="num">11</span>文档与代码矛盾清单<em>21 处 · 其中「三层存储」有三种互不相同的定义</em></h2>
+
+      <p>按格式规范「源码与构建文件为准」的原则，下表左侧为文档主张，右侧为代码/配置事实。</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>文档主张</th><th>实际情况</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><code>.qoder/rules/submodule-management.md</code>：只有 <code>substrate</code> + <code>gvisor</code> 两个子模块，默认分支 <code>dev</code></td><td>prod 的 <code>.gitmodules</code> 声明 5 个，分支为 <code>main</code> / <code>feat/netns-socket</code> / <code>dev</code> / <code>main</code> / <code>feat/crm-shop</code>，无一致默认分支</td></tr>
+            <tr><td>2</td><td><code>AGENTS.md</code>：部署子命令 <code>{all|app-update|backend|frontend}</code></td><td><code>.qoder/rules/deployment.md</code> 写 <code>{all|services|backend|frontend}</code>；脚本两个名字都接受</td></tr>
+            <tr><td>3</td><td><code>deploy.sh:312</code> 帮助文本：<code>backend deploy</code> 会跑 workload + secrets + mcp-proxy</td><td>代码把 <code>deploy</code> 与 <code>control-plane</code> 都路由到 <code>control-plane test</code>，不含 workload</td></tr>
+            <tr><td>4</td><td><code>.qoder/rules/code-organization.md</code>：后端有 <code>pkg/</code> 公开 API 目录</td><td>不存在 <code>pkg/</code></td></tr>
+            <tr><td>5</td><td><code>AGENTS.md</code>：<code>agent-hub</code> 是核心子模块依赖</td><td>Go 代码中 <code>agent-hub</code> / <code>AGENT_HUB</code> 出现 0 次；制品走 NAS + Skill git 导入</td></tr>
+            <tr><td>6</td><td><code>docs/dev/README.md</code>：三层存储的第三层是 <b>ActorTemplate</b></td><td><code>agent-square-storage-three-layer-architecture.md</code> 说是 <b>OSS</b>；<code>k8s-storage-architecture.md</code> 说共 <b>五层</b>（加 etcd 与 Valkey）。三份文档互斥</td></tr>
+            <tr><td>7</td><td>三层存储文档：聊天记录 = MongoDB <code>sessions</code> + <code>session_turns</code></td><td><code>docs/phase/phase1.md</code> 与 <code>k8s-storage-architecture.md</code> 说对话内容以 JSONL 追加写在 NAS <code>sessions/{id}/history.jsonl</code></td></tr>
+            <tr><td>8</td><td>Actor ADR：<code>actor_id = &lt;tenant&gt;/&lt;agent-name&gt;/&lt;scope-id&gt;</code></td><td>实际是 DNS-1123 约束下的确定性哈希 <code>u-&lt;hash&gt;-&lt;hash&gt;</code></td></tr>
+            <tr><td>9</td><td><code>docs/mongo-primary-nas-fallback-storage.md</code>：描述 NAS 元数据回退机制</td><td>该机制已移除，仅类型名 <code>ResilientStore</code> 留存</td></tr>
+            <tr><td>10</td><td>三份 Actor ADR 描述冷启动、preSuspendHook、<code>pkg/state/</code> SDK、5 万 Actor 压测</td><td>三份状态均为 <b>Draft</b>，上述验收条件<b>均未满足</b>，属规划非交付</td></tr>
+            <tr><td>11</td><td><code>max_lanes_per_user</code> 默认值</td><td>三处不一致：泳道文档 1/3、吞吐文档 500、容量报告建议 40</td></tr>
+            <tr><td>12</td><td>多份文档仍称平台为「Agent Factory」、namespace 为 <code>agent-factory</code></td><td>已改名 Agent Square，namespace 为 <code>agent-square</code>；改名计划文档自身仍在 <code>docs/ops/</code></td></tr>
+            <tr><td>13</td><td><code>AGENTS.md</code> 目录路由表</td><td>缺 <code>knowledge-worker</code>（实际存在且被后端按 <code>KNOWLEDGE_IMPORT_V2_ENABLED</code> 调用）；部分文档残留他人本机绝对路径 <code>/Users/gerb/...</code></td></tr>
+            <tr><td>14</td><td><code>task-concurrency-throughput-optimization.md</code>：调度器<b>单 goroutine 串行</b>执行任务</td><td>只有<b>派发循环</b>是单 goroutine；每个被 claim 的任务都 <code>go s.runTaskWithDispatchLease(...)</code> 独立并发执行（<code>task/scheduler.go:241</code>），单批默认派发 10 个（<code>:51</code>）。真正的串行来自<b>每用户泳道上限</b> <code>MaxLanesPerUser</code> 默认 1（<code>store/runtime_config.go:163</code>），是「同一用户串行、跨用户并发」，不是全局串行</td></tr>
+            <tr><td>15</td><td><code>agent-square/AGENTS.md:19</code>：<code>mcp-proxy</code> 是 <b>Python/FastAPI</b> 网关</td><td>全仓<b>无 FastAPI 依赖</b>（<code>pyproject.toml</code> 只有 <code>fastmcp==3.4.4</code> + <code>uvicorn</code>），ASGI app 由 <code>FastMCP.http_app()</code> 产出，实为 <b>Starlette</b>。同仓真正用 FastAPI 的是 <code>knowledge-worker</code>，二者易混</td></tr>
+            <tr><td>16</td><td>substrate <code>docs/architecture.md</code>「mTLS Everywhere … Control Plane to Atelet mutual TLS」</td><td>ateapi→atelet 是<b>明文 gRPC</b>（<code>dialer.go:87-90</code>）；router→ateapi <code>InsecureSkipVerify: true</code>（<code>router.go:203</code>）；atelet→ateom 无鉴权 unix socket</td></tr>
+            <tr><td>17</td><td><code>architecture.md</code>：Worker 状态为 IDLE 或 BUSY</td><td>Worker 记录<b>没有 status 字段</b>；空闲 = <code>actor_id</code> 为空（<code>pkg/proto/ateapipb/ateapi.proto:160-171</code>）</td></tr>
+            <tr><td>18</td><td><code>architecture.md</code>：Actor 状态 RUNNING 或 SUSPENDED</td><td>枚举四个状态 RESUMING/RUNNING/SUSPENDING/SUSPENDED，且 <code>CreateActor</code> 落 <b>SUSPENDED</b>，无 CREATED（<code>ateapi.proto:58-64</code> · <code>create_actor.go:43-49</code>）</td></tr>
+            <tr><td>19</td><td><code>architecture.md</code> / <code>api-guide.md</code>：快照存 GCS</td><td><code>ATE_STORAGE_BACKEND=s3</code> 时走 S3/OSS（<code>cmd/atelet/main.go:168-193</code>），生产正是 rustfs/OSS</td></tr>
+            <tr><td>20</td><td><code>architecture.md</code>：快照捕获「Memory + Working Volume (Disk)」</td><td>只 checkpoint runsc 内存/状态镜像；<b>rootfs 可写层不落盘</b>，每次运行重新解包（<code>cmd/atelet/oci.go:46-63</code>）</td></tr>
+            <tr><td>21</td><td><code>api-guide.md</code> §3：Golden Snapshot 由「临时 Golden Pod」产出</td><td>atecontroller 建一个 golden <b>actor</b>，在普通 worker 上 resume→等 20s→suspend（<code>internal/controllers/actortemplate_controller.go:70-150</code>）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <b>另有设计中状态需注意</b>：<code>multi-environment-release-governance.md</code> 与 <code>config-artifact-registry-spec.md</code> 标注「设计中」，
+        <code>environment-topology-and-gateway-adr.md</code> 已 <b>Superseded</b>，<code>agent-config-management-and-import.md</code> 说明
+        Bundle v2 / 导入 / Release 均为设计，导出尚是未合入草稿。主仓 <code>AGENTS.md</code>「多环境制品晋级」那条高风险区所描述的
+        Receipt/digest 校验与签名密钥隔离，在 prod 上<b>没有对应实现</b>——当前晋级方式是 profile 切换。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

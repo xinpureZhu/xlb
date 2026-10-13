@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>服务清单 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>服务与代码仓清单</h1>
+    <p class="subtitle">按技术栈枚举 31 个代码仓的项目职责、可部署单元、模块结构与端口。</p>
+    <p class="meta">最后更新：2026-07-31 · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html" class="active">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <section class="card">
+      <h2><span class="num">00</span>代码仓全景</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph JAVA["Java 业务中台 (5)"]
+    J1["retail-new<br/>52 模块 · 27 消费者"]
+    J2["retail（遗留单体）"]
+    J3["xlb-retail-bff-goods<br/>门店商品库存"]
+    J4["marketing-activity-center"]
+    J5["oms-plateform"]
+  end
+  subgraph RUST["Rust 高性能 (8)"]
+    R1["rust-for-order"]
+    R2["goods_cart"]
+    R3["goods_consumer"]
+    R4["icc-task"]
+    R5["retail-route-center"]
+    R6["retail-thirdpart-gateway"]
+    R7["rs-gray-ms"]
+    R8["retail-review-center<br/>评价中心（新增）"]
+  end
+  subgraph NODE["NestJS BFF (7)"]
+    N1["xlb-mp-bff"]
+    N2["xlb_bff_retail（遗留孪生）"]
+    N3["xlb_retail_bff_pc"]
+    N4["xlb_retail_bff_pos"]
+    N5["cms-server"]
+    N6["auth-server"]
+    N7["mall-mcp（骨架）"]
+  end
+  subgraph FE["前端与端应用 (8)"]
+    E1["host-app-xlb（宿主）"]
+    E2["remote-app-base/erp/im/mem"]
+    E3["remote-app-meme（废弃）"]
+    E4["xlb_app（遗留）"]
+    E5["member-weapp"]
+  end
+  subgraph OPS["平台运维 (2)"]
+    O1["repos/gitops/apps<br/>699 服务定义"]
+    O2["logs-monitor"]
+  end
+  NODE ==> JAVA
+  NODE ==> RUST
+  FE ==> NODE
+  E1 --> E2
+  N3 -.迁移为.-> J3
+  R7 -.演进为.-> R5
+  E4 -.演进为.-> E1
+  J2 -.演进为.-> J1
+  OPS -.部署编排.-> JAVA & RUST & NODE
+        </pre>
+        <p class="arch-title">图 1 · 31 个代码仓按技术栈与角色分布</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">01</span>Java 业务中台 <span class="badge java">Java / Spring Boot</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目</th><th>版本</th><th>职责</th><th>可部署单元 / 模块</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>retail-new</code></td>
+              <td>Boot 3.3 / Java 21</td>
+              <td>新零售微服务聚合仓：会员、优惠券、储值/礼品卡、订单(OMS)、POS 结算、营销/任务、抽奖、拼团、短信、公益/福利、VIP。</td>
+              <td>52 个 Maven 模块。运行服务：retail-c/-api/-manager、member-c/-pos/-manager、oms-c/-manager、marketing-c、sse-server、cron-server、group-c、member-sms、retail-pos-item-initialization、store-near；<strong>+27 个 MQ 消费者</strong>（会员/卡券/优惠券/订单/POS/抽奖/福利/VIP 同步）。端口 55110。</td>
+            </tr>
+            <tr>
+              <td><code>retail</code> <span class="badge legacy">遗留</span></td>
+              <td>Boot 2.7 / Java 8</td>
+              <td>门店 ERP-POS 单体：商品/SKU/条码/分类/品牌、门店/仓库、POS 收银机与订单、价格与电子价签、调价、促销、库存、采购/配送/供应商、结算、诺诺发票、用户权限。</td>
+              <td>单一 jar（~1835 java 文件）。JPA+QueryDSL、RabbitMQ、xxl-job。端口 55131。</td>
+            </tr>
+            <tr>
+              <td><code>xlb-retail-bff-goods</code> <span class="badge new">新</span></td>
+              <td>Boot 3.5.6 / Java 25</td>
+              <td><strong>门店商品库存服务</strong>（<code>xlb_retail_bff_pc</code> 的 Java 迁移版，业务能力一致）：商品/SKU、分类、门店商品关系、库存/价格、渠道、电商/外卖商品、积分商品、标签、首页搜索。</td>
+              <td>10 模块。运行：goods-b(18080) + 6 个 Kafka 消费者（takeaway/price-dts/task-sync/es-product/store-relation/dfp）。MongoDB + ES + Redisson。</td>
+            </tr>
+            <tr>
+              <td><code>marketing-activity-center</code></td>
+              <td>Boot 3.4.5 / Java 21</td>
+              <td>营销活动编排中台：活动主数据、范围/资格、生命周期、补发入口；抽奖/兑奖/任务/指标/榜单/虚拟资产下沉到下游。活动类型：刮刮乐、打榜、会员日蓄水抽奖、新人抽奖、定时开奖、问卷。</td>
+              <td>~1500 java 文件。分层 core→base→ext→app→deploy + dal/soa-client/infra。部署：admin(55142) + player(55143)。</td>
+            </tr>
+            <tr>
+              <td><code>oms-plateform</code> <span class="badge new">新/部分完成</span></td>
+              <td>Boot 4.0 / Java 25</td>
+              <td>订单管理中台（DDD）：接入三方渠道（美团闪购为主）、订单生命周期、履约、逆向、结算、检索。COLA 状态机 + TCC。</td>
+              <td>模块：oms-adapter(55199, GraalVM 原生镜像入口)、oms-core(55188)、oms-fulfillment、oms-reverse、oms-search(8084, ES+Qwen NL→SQL)、oms-settlement、oms-common、oms-starter。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn"><strong>注意</strong> <code>oms-plateform</code> 的 README/集成文档版本信息滞后（写 Java 21/Boot 3.x/MyBatis-Plus），以 <code>pom.xml</code> 为准（Java 25/Boot 4.0/MyBatis-Flex）；且 fulfillment/reverse/settlement/search 多为骨架，adapter+core 为实体。</div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">02</span>Rust 高性能服务 <span class="badge rust">Rust / axum</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目</th><th>职责</th><th>存储/消息</th><th>可部署单元</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>rust-for-order</code></td>
+              <td>优惠券与促销计算引擎、会员动态码（含小程序 WASM）、POS 订单持久化、SSE 推送。</td>
+              <td>MySQL(pos-order)、Redis</td>
+              <td>coupon-web(3000, 主二进制)、member-web、pos-order、rust-sse-server + WASM 组件(coupon/member-assembly)。</td>
+            </tr>
+            <tr>
+              <td><code>goods_cart</code></td>
+              <td>多渠道购物车（增删改查/选中），纯 Redis 存储。</td>
+              <td>Redis</td>
+              <td>单二进制（3009）。</td>
+            </tr>
+            <tr>
+              <td><code>goods_consumer</code></td>
+              <td>ERP 库存 & 商品主数据同步到商品平台：Kafka 库存明细批处理 → Redis(Lua) + MongoDB，产出售罄状态事件；RocketMQ 监听商品类型变更。</td>
+              <td>Redis + MongoDB / Kafka + RocketMQ</td>
+              <td>erp_stock_sync、mps_item_change_sync。</td>
+            </tr>
+            <tr>
+              <td><code>icc-task</code></td>
+              <td>企微(ICC) 群发/朋友圈任务看板：本地查询、定时同步、异步 XLSX 导出、补偿、限流、组织权限过滤。namespace <code>scrm</code>。</td>
+              <td>MySQL + Redis + OSS / Kafka</td>
+              <td>api(8080)、sync-worker、export-worker、scheduler（同镜像 4 单元）。</td>
+            </tr>
+            <tr>
+              <td><code>retail-route-center</code></td>
+              <td>规则路由决策中心：决策自研(xlb)/遗留(wc) 与 prod/gray，导出 DSL 给多端客户端。</td>
+              <td>MySQL + Redis(PubSub) + OSS</td>
+              <td>public / admin / all（按 APP profile）。</td>
+            </tr>
+            <tr>
+              <td><code>retail-thirdpart-gateway</code></td>
+              <td>第三方 SaaS 统一网关：签名、回调验签+转发、出口治理、可观测。接入美团闪购、飞鹅打印。</td>
+              <td>MongoDB + Redis（无 MQ，直连出站）</td>
+              <td>public / admin / all（3000）。</td>
+            </tr>
+            <tr>
+              <td><code>rs-gray-ms</code> <span class="badge legacy">前身</span></td>
+              <td>灰度名单服务：手机号/后缀判定灰度；产出小程序灰度配置上传 OSS。</td>
+              <td>MySQL(PolarDB-X) + OSS</td>
+              <td>单二进制。</td>
+            </tr>
+            <tr>
+              <td><code>retail-review-center</code> <span class="badge new">新增</span></td>
+              <td><strong>商品评价中心</strong>（一期）：评价资格、商品与门店评价、首页待评提醒、订单完成/退款事件消费、后管标签星级配置与统计。详见 <a href="16-review-center-analysis.html">16 篇</a>。</td>
+              <td>MySQL + Redis / RocketMQ</td>
+              <td>6 crate DDD 分层；<code>review-c</code>（C 端）+ <code>review-b</code>（后管）+ <code>review-worker</code>（一个二进制 7 种角色：order-consumer / expire / event-publisher / stat / compensation / risk / notify）。31 张表。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">03</span>NestJS BFF 与服务 <span class="badge node">Node / NestJS 10</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目</th><th>服务端</th><th>主存储</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>xlb-mp-bff</code> <span class="badge new">活跃</span></td><td>小程序 / H5 (MINIPROGRAM)</td><td>Redis + ES（无自有 DB）</td><td>会员 C 端 BFF：登录、会员中心、卡券、积分、商城/拼团/官方商城下单、营销/抽奖/公益、支付；~40 个下游服务、同盾风控、灰度。</td></tr>
+            <tr><td><code>xlb_bff_retail</code> <span class="badge legacy">遗留孪生</span></td><td>小程序 (MINIPROGRAM)</td><td>Redis + ES</td><td>xlb-mp-bff 的旧版孪生；新版增加 marketing-activity-player、member_assets_es_v2 等。</td></tr>
+            <tr><td><code>xlb_retail_bff_pc</code> <span class="badge legacy">遗留</span></td><td>PC 商家后台 (XLB_PC)</td><td>MongoDB + ES + Kafka</td><td><strong>门店商品库存服务</strong>：商品/目录主数据、门店商品关系、库存、价格、ERP↔平台数据同步。<strong>正被业务能力一致的 Java 版 <code>xlb-retail-bff-goods</code> 替代。</strong></td></tr>
+            <tr><td><code>xlb_retail_bff_pos</code></td><td>POS 收银机 (POS_MACHINE)</td><td>MySQL (TypeORM)</td><td>收银结算、班次、库存、价签、折扣码、门店会员操作；本组唯一以关系库为主库。</td></tr>
+            <tr><td><code>cms-server</code></td><td>PC 商家后台 (XLB_PC)</td><td>MongoDB + ES + Bull</td><td>小程序装修/页面配置、营销落地资产、空白二维码、企微活码、关联投放链接。iAuth 权限校验。</td></tr>
+            <tr><td><code>auth-server</code></td><td>平台内部</td><td>Redis + node-cache</td><td>第三方平台 Token 代理（微信/支付宝/快手/抖音/美团点评/乐檬），无 DB、无 RBAC。端口 3005。</td></tr>
+            <tr><td><code>mall-mcp</code> <span class="badge warn">骨架</span></td><td>（规划中）</td><td>内存 mock</td><td>「对话下单」MCP 设计骨架：定义 8 个工具契约，尚未接入真实 MCP SDK/上游。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">04</span>前端 / 端应用 <span class="badge rn">React Native</span> <span class="badge mp">Taro</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目</th><th>平台</th><th>技术</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>host-app-xlb</code> <span class="badge new">新</span></td><td>RN App 宿主壳「新零帮」</td><td>RN 0.80 / React 19 / Re.Pack+Rspack / Module Federation</td><td>微前端宿主：本地打包导航+首页+登录，动态加载 15 个远程业务 bundle；OTA 热更 + 灰度。</td></tr>
+            <tr><td><code>remote-app-base</code></td><td>RN 远程 bundle</td><td>MF remote</td><td>基础/公共屏幕：WebView、关于版本、账号、组件中心、主题、设置、聊天 UI 原语。</td></tr>
+            <tr><td><code>remote-app-erp</code></td><td>RN 远程 bundle</td><td>MF remote</td><td>门店 ERP：补货、销售分析、调入单、商品档案、库存查询/调整/盘点、合同、采购收退货、经营分析、供应商、批发单（~60 屏）。</td></tr>
+            <tr><td><code>remote-app-im</code></td><td>RN 远程 bundle</td><td>MF remote + MQTT</td><td>IM 即时通讯：会话列表/详情、MQTT 消息、音视频消息。</td></tr>
+            <tr><td><code>remote-app-mem</code></td><td>RN 远程 bundle</td><td>MF remote</td><td>会员/门店定价：门店储值、门店/零售调价、零售价销售、积分变更/管理。</td></tr>
+            <tr><td><code>remote-app-meme</code> <span class="badge danger">废弃</span></td><td>—</td><td>—</td><td>仅剩配置与 node_modules 的空壳脚手架。</td></tr>
+            <tr><td><code>xlb_app</code> <span class="badge legacy">遗留</span></td><td>RN App 单体</td><td>RN 0.68 / React 17 / Metro</td><td>host-app-xlb 的前身单体：business-erp/im/mem/kms/scm/sms/tms/ems/hrs 全量内置；含丰富原生（打印/扫码/蓝牙/高德/友盟/推送）。</td></tr>
+            <tr><td><code>member-weapp</code></td><td>微信 + 支付宝小程序</td><td>Taro 4 / React 18 / NutUI</td><td>C 端会员小程序：会员码、优惠券、储值卡、礼品卡、会员权益、订单、积分商城、领券/抽奖/任务、公益、开票、商城、拼团。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">05</span>平台与运维 <span class="badge infra">Infra</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目</th><th>技术</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>gitops</code></td><td>ArgoCD + Jsonnet + Argo Rollouts + Istio/Gateway-API + Pulumi</td><td>全平台 GitOps 部署编排：699 个 <code>*.app.yaml</code> 服务定义、159 个命名空间目录；渲染 Rollout/Service/HTTPRoute/HPA/PDB 等 K8s 对象；Pulumi 管理云基础设施。</td></tr>
+            <tr><td><code>logs-monitor</code></td><td>Python 3.10（requests/PyYAML/dotenv）</td><td>API 路径覆盖率巡检：查 Grafana→VictoriaLogs 判定预设路径是否有流量，累计覆盖率状态，推送飞书交互卡片。当前监控 retail-gateway 的美团回调端点。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">共 30 个仓（另有 <code>remote-app-meme</code> 为废弃空壳）。运行时以 GitOps 的 699 个服务定义为部署权威清单，详见「部署拓扑」。</div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

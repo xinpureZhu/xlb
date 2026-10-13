@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>门店商品库存服务（两代）深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>门店商品库存服务（两代）· 代码深度分析</h1>
+    <p class="subtitle">Java 版 <code>xlb-retail-bff-goods</code> 与 Node 版 <code>xlb_retail_bff_pc</code> 是同一服务的两代实现。本文核心是<strong>迁移对齐分析</strong>：两代共享同一数据面、Java 尚不能独立部署、13 项迁移缺口。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：Java <code>prod</code> / Node <code>feature</code> 分支 · 数据来源：两仓源码逐文件比对</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html" class="active">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">核心结论</a></li>
+        <li><a href="#s1">Java 版结构</a></li>
+        <li><a href="#s2">Node 版结构</a></li>
+        <li><a href="#s3">数据面共享性判定</a></li>
+        <li><a href="#s4">Kafka 拓扑与 ES 写入分裂</a></li>
+        <li><a href="#s5">迁移缺口清单</a></li>
+        <li><a href="#s6">接口契约兼容性</a></li>
+        <li><a href="#s7">风险清单（分级）</a></li>
+        <li><a href="#s8">Node 下线前置条件</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · 部分已重校</strong> 两仓现均在最新 <code>prod</code>：Java 版 <code>0c0baa76</code>（2026-08-05）、Node 版 <code>e98d4af8</code>（2026-08-06），均落后 0。
+      <p>已对<strong>决定「Node 能否下线」的 4 项关键缺口与鉴权项重新核验</strong>，结果见下方「重校结果」。迁移对齐表的其余条目（Excel 导入导出、门店补贴、单条操作等）<strong>仍需复核</strong>。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>Node 仍不可下线 · Java 新增 7 个模块</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>旧结论</th><th>最新 prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>G1 🔴</strong> 库存 TCC 引擎完全未迁移（Node 独有 try/confirm/cancel/refund + Lua 脚本）</td>
+              <td><strong>仍是 Node 独有。</strong>Node 侧 <code>inventory.controller.ts</code> 仍有 <code>/tcc/try</code>(:18)、<code>/tcc/confirm</code>(:25)、<code>/tcc/cancel</code>(:32)、<code>/refund</code>(:39)、<code>/channel/store/sku</code>(:46)、<code>/channel/sku/update</code>(:53)；Lua 脚本已从内嵌 <code>redisScript.ts</code> <strong>重构为独立文件</strong>（<code>src/redis/lua/inventory_tcc_try_rollback.lua</code> 等，工程质量提升）。<strong>Java 侧仍无任何 <code>/inventory</code> 控制器</strong>。</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td><strong>G2 🔴</strong> Java 缺少 Mongo ChangeStream 驱动的 OSS 数据分发</td>
+              <td><strong>仍缺。</strong>Node 仍有 4 处 <code>.watch()</code>（product / inventory / tag / homeSearch subscriber）；Java 全仓 <strong>grep <code>ChangeStream</code> 零命中</strong>。</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td><strong>C2</strong> Java 白名单放行 <code>dataClean/**</code>、<code>test/**</code>、<code>api/**</code> → 未鉴权的数据破坏</td>
+              <td><strong>三条全部仍在</strong>（<code>goods-b/application.yaml:113-120</code>），注释原文仍写着「测试相关接口 / 数据清洗接口 / 对外接口」。</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td><strong>H7</strong> Node <code>AuthGuard</code> 只在 <code>APP=pc-bff|pc-bff-gray</code> 时注册，而业务模块在所有角色加载</td>
+              <td><strong>仍是条件注册</strong>：<code>if (['pc-bff','pc-bff-gray'].includes(APP))</code> 才 push <code>APP_GUARD</code>（<code>app.module.ts:132-140</code>）。</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>Java 版 10 个模块</td>
+              <td>已增至 <strong>15 个</strong>——新增 <code>goods-c</code>（C 端）、<code>goods-subsidy</code>（补贴）、<code>self-takeaway-event-mqconsumer</code>、<code>self-takeaway-stock-sync-mqconsumer</code>、<code>mps-store-sync-mqconsumer</code></td>
+              <td><span class="badge warn">已变化</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>核心结论未变：Node 仍不可下线</strong> 两项 🔴 阻塞缺口（<strong>库存 TCC 引擎</strong>与 <strong>ChangeStream 驱动的 OSS 分发</strong>）在这一轮迭代中<strong>都没有迁移</strong>。Java 侧的扩张集中在<strong>新增渠道与同步链路</strong>（自营外卖事件/库存同步、MPS 门店同步、C 端、补贴），而非承接 Node 的核心能力。
+        <p>换言之：<strong>两代并行的时间还会延长</strong>，而并行期的一致性责任仍全部压在应用层（无跨集合事务、无跨代锁）。</p>
+      </div>
+      <div class="callout ok"><strong>正向进展</strong> Node 把内嵌的 Lua 脚本抽成了 <code>src/redis/lua/*.lua</code> 独立文件——这让库存 TCC 的原子操作可读、可测、可复用，也为将来迁移到 Java 降低了移植难度（脚本本身与语言无关）。</div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>核心结论 <em>数据面完全共享 · Java 暂不能独立部署</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>结论</th><th>关键证据</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><strong>两代共用同一套 MongoDB / Redis / ES / Kafka 集群</strong>，不是独立数据面</td><td>环境变量名逐字相同；Java 固定库名 <code>goods</code>；14 个集合名与字段名逐字相同</td></tr>
+            <tr><td>2</td><td><strong>Java 无法独立部署</strong>——库存同步强依赖 Node 仍在运行</td><td>Java 把 ERP 库存推到 <code>erp_stock</code> topic，<strong>唯一消费者是 Node</strong></td></tr>
+            <tr><td>3</td><td><strong>库存 TCC 引擎完全未迁移</strong>（本服务最核心能力）</td><td>Node 侧 try/confirm/cancel/refund + 16 个 Lua 脚本；Java 侧无 <code>/inventory</code> 控制器，<code>InventoryServiceImpl</code> 仅 81 行 1 个方法</td></tr>
+            <tr><td>4</td><td><strong>Node 的 Mongo ChangeStream 会被 Java 的写入触发</strong>（隐式跨代耦合，当前实际有益）</td><td>Node 3 处 <code>.watch()</code>；Java 全仓 0 处 ChangeStream</td></tr>
+            <tr><td>5</td><td><strong>ES 同步 topic 名两边不一致</strong> → Java ES 消费者收不到 <code>goods-b</code> 的消息</td><td>生产端用环境变量，Java 消费端<strong>硬编码</strong>了另一个 topic 名</td></tr>
+            <tr><td>6</td><td><strong>两侧都有未鉴权的高危写接口</strong></td><td>Java 白名单放行 <code>dataClean/**</code>、<code>test/**</code>、<code>api/**</code>；Node 的 <code>sendMessage</code> 可向任意 topic 注入任意消息</td></tr>
+            <tr><td>7</td><td><strong>Node 的 AuthGuard 只在特定角色注册</strong>，而业务 Module 在所有角色都加载</td><td><code>app.module.ts:131-136</code> vs <code>:98-111</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>结论</strong> 两代<strong>技术上可以并行运行</strong>（数据面共享），但代价是所有一致性责任落在应用层——<strong>无跨集合事务、无跨代锁</strong>。而「Node 下线」当前<strong>不可行</strong>，被 4 项 🔴 缺口阻塞（详见 §08）。
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>Java 版结构 <em>10 模块 · goods-b + 6 个 Kafka 消费者</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  CM["goods-common<br/>DTO·枚举·异常·注解·工具"]
+  API["goods-api<br/>Auth/Erp/Retail/Order/Notify/QNH Manager"]
+  INF["goods-Infrastructure<br/>Mongo 实体·Redis 助手·kafkaMsg·Assembly"]
+  B["goods-b :18080<br/>controller/{pc,app,api}"]
+  subgraph CONS["6 个 Kafka 消费者"]
+    C1["takeaway-salestatus :18081<br/>外卖售卖状态"]
+    C2["official-store-price-dts :18082<br/>官方门店价 DTS"]
+    C3["task-sync :18083<br/>事件枢纽"]
+    C4["es-official-product :18084<br/>ES 索引同步"]
+    C5["store-product-relation :18085<br/>门店商品关系"]
+    C6["dfp-sync :18086<br/>DFP 同步"]
+  end
+  CM --> API --> INF
+  INF --> B & CONS
+  B -->|goods_task_sync| C3
+  C3 -->|es-official-product_sync| C4
+  B -->|add_product_store_relation| C5
+  B -->|take_away_product_sale_status| C1
+  C6 -.听 dfp_sync 但无生产者.-> ORPH["孤儿消费者"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class ORPH bad
+        </pre>
+        <p class="arch-title">图 1 · Java 版模块与消费者拓扑（红色 = 无生产者的孤儿消费者）</p>
+      </div>
+      <p>Java 25 特性：虚拟线程 + ZGC（<code>jvm-zgc.conf</code>）。<code>goods-b</code> 控制器分 <code>pc</code>/<code>app</code>/<code>api</code> 三组，覆盖 product、storeProduct、point、eCommerce、takeAway、category、catalog、store、tag、label、homeSearch、dataClean、cronJob、notify。</p>
+      <div class="callout warn"><strong>goods-b 无任何 <code>@KafkaListener</code></strong>——两个 listener factory 是死配置；它只做生产者。</div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>Node 版结构 <em>按 APP 角色分裂部署 · 承载 TCC 与 ChangeStream</em></h2>
+      <p>Node 版通过 <code>APP</code> 环境变量切换部署角色（<code>pc-bff</code> / 各同步 worker），同一镜像跑不同职责：</p>
+      <ul>
+        <li><strong>业务模块</strong>：product(+storeProduct/import)、catalog、category、homeSearch、<strong>inventory</strong>、label、tag、store(+report)、settings、oss、health。</li>
+        <li><strong>同步作业</strong> <code>data_transmission/</code>：erp_stock_sync、erp_store_sync、official_product_sync、opStoreProductRelation、dfp_sync、task。</li>
+        <li><strong>ChangeStream 订阅者</strong> <code>subscriber/</code>：product / inventory / store 三处 <code>.watch()</code>，驱动积分商城 JSON、tag、homeSearch 等 OSS 产物重建。</li>
+        <li><strong>后台 worker</strong>：<code>store-product-summary.worker</code>（60s 间隔）+ dirty-rebuild。</li>
+      </ul>
+      <div class="callout danger">
+        <strong>鉴权装配缺陷</strong> <code>AuthGuard</code> 仅在 <code>APP=pc-bff|pc-bff-gray</code> 时注册（<code>app.module.ts:131-136</code>），而 <code>imports</code>（含 <code>InventoryModule</code>/<code>ProductModule</code>）在<strong>所有角色</strong>都加载（<code>:98-111</code>）→ 以 worker 角色启动的实例暴露了全部业务接口且<strong>无鉴权</strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>数据面共享性判定 <em>同库同集合 · Java 主动做了兼容适配</em></h2>
+      <p>判定为「共享同一数据面」的硬证据：</p>
+      <ol>
+        <li>连接串来自<strong>同名环境变量</strong>（<code>RETAIL_BFF__GOODS_MONGODB__URL</code> 等）。</li>
+        <li>Java 固定库名 <code>goods</code>；集合名与字段名逐字相同。</li>
+        <li>Java <code>MongoDBConfig</code> 显式 <code>setTypeMapper(new DefaultMongoTypeMapper(null))</code> <strong>关闭 <code>_class</code> 字段</strong>——正是为了与 Node 写入的文档兼容。</li>
+        <li>Java 有 <code>StringToLocalDateTimeConverter</code>，注释写「兼容数据库时间字段出现脏数据，时间字段变成了 string 类型」——证明在读 Node 写入的历史脏数据。</li>
+      </ol>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>集合</th><th>Node</th><th>Java</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>product</code> · <code>store_product_relation</code> · <code>inventory</code> · <code>inventory_history</code> · <code>store</code> · <code>store_product_summary</code> · <code>catalog</code> · <code>category</code> · <code>tag</code> · <code>label</code> · <code>home_search</code> · <code>product_list_task</code> · <code>product_change_log</code> · <code>point_product_store_relation</code></td><td>✅</td><td>✅</td><td><strong>共享</strong>（14 个）</td></tr>
+            <tr><td><code>inventory_operations</code>（TCC 流水）· <code>store_inventory_setting_history</code> · <code>store_product_price_relation</code> · <code>official_store_catalog_relation</code> · <code>store_product_relation_add_task_payload</code></td><td>✅</td><td>❌</td><td><strong>仅 Node</strong>（5 个）</td></tr>
+            <tr><td><code>task_record</code> · <code>task_record_detail</code> · <code>task_store_record</code></td><td>❌</td><td>✅</td><td><strong>仅 Java</strong>（3 个）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>枚举编码一致性 ✅</strong>：InventoryType、ProductSaleStatus、ETaskStatus、SoldOutStatus 的数值编码两边完全一致（TS 数字枚举隐式 0,1,2… 恰好匹配 Java Integer code）。</p>
+      <div class="callout warn">
+        <strong>唯一漂移：Channel 枚举</strong> Java 多出 <code>e_commerce</code>（旺店通电商）。Java 写入 <code>overwrite_channels.e_commerce.*</code> 后，Node 的类型定义不认识该 key。TS 类型是编译期的，运行时数据能读出，但任何「遍历所有 Channel 枚举」的 Node 逻辑会漏掉它——例如 <code>store_product_summary</code> 重建 worker <strong>不会计算 <code>e_commerce_product_count</code></strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>Kafka 拓扑与 ES 写入分裂 <em>无双消费 · 但 ES 路径被劈成两条</em></h2>
+      <p>Node 的 group 命名是 <code>groupId = topic</code>，Java 是 <code>&lt;topic&gt;_group</code>——<strong>同一 topic 上两代 group 必然不同</strong>，所以若同时监听必然双消费。逐 topic 核对后结论：<strong>当前配置下不存在同一 topic 被两代同时消费</strong>。</p>
+      <p>真正的风险来自反面——<strong>topic 名分裂导致消息投递到错误管道</strong>：</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  GB["goods-b<br/>official-store-price-dts"] -->|"test_goods_official_product_sync<br/>（环境变量）"| NP["Node officialProductSync<br/>含 buildCatalog 富化"]
+  TS["task-sync"] -->|"es-official-product_sync<br/>（硬编码）"| JP["Java es-official-product<br/>直写不富化"]
+  NP --> ES[("Elasticsearch<br/>同一 esId 文档")]
+  JP --> ES
+  ES --> LOSS["字段级覆盖丢失<br/>两条富化程度不同的管道竞争写入"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class LOSS bad
+        </pre>
+        <p class="arch-title">图 2 · ES 写入路径分裂——迁移期最隐蔽的契约漂移</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Topic</th><th>Node</th><th>Java</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td><code>erp_stock</code></td><td>produce + <strong>consume</strong></td><td><strong>produce only</strong></td><td>⚠️ <strong>Java 单向依赖 Node</strong></td></tr>
+            <tr><td><code>goods_official_product_sync</code></td><td>produce + consume</td><td>produce only</td><td>🔴 <strong>Java ES 消费者听的是另一个 topic</strong></td></tr>
+            <tr><td><code>op_store_product_relation</code></td><td><strong>consume</strong></td><td><strong>produce</strong></td><td>✅ 刻意设计的 Java→Node 交接（代码注释已说明）</td></tr>
+            <tr><td><code>dfp_sync</code>（硬编码）</td><td>❌</td><td>consume only</td><td>🔴 <strong>无生产者，孤儿消费者</strong></td></tr>
+            <tr><td><code>es-official-product_sync</code> · <code>goods_task_sync</code> · <code>take_away_product_sale_status</code> · <code>add_product_store_relation</code></td><td>❌</td><td>produce + consume</td><td>✅ Java 内闭环</td></tr>
+            <tr><td><code>erp_store_sync</code> · <code>mongodb_stock_sync</code> · <code>official_task_sync</code> · <code>dfp_sync</code>(env)</td><td>独占</td><td>❌</td><td>✅ Node 独占</td></tr>
+            <tr><td><code>task_record_type_sync</code></td><td>❌</td><td>配置存在但消费者被注释</td><td>🟡 未启用</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>迁移缺口清单 <em>13 项 · 其中 4 项阻塞 Node 下线</em></h2>
+      <div class="grid cols-4">
+        <div class="mech m4">
+          <h4><span class="num">1</span>G1 库存 TCC 引擎</h4>
+          <p>Node 侧 try/confirm/cancel/refund + <strong>16 个 Lua 脚本</strong> + <code>mongodbStockSyncFor*</code> 落库。Java <strong>完全没有</strong>。</p>
+          <p><strong>影响</strong>：下单锁库存/扣减/回滚全靠 Node，Java 无法承接交易链路。</p>
+          <div class="loc">NODE/src/modules/inventory/inventory.service.ts:105-215 · redisScript.ts</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>G2 ChangeStream 副作用</h4>
+          <p>积分商品全量 JSON、tag、homeSearch、门店商品 id 列表 → OSS 分发，由 3 处 <code>.watch()</code> + 5 个定时任务驱动。Java 无任何等价物。</p>
+          <p><strong>影响</strong>：Node 下线后端侧读取的 OSS JSON <strong>停止更新</strong>。</p>
+          <div class="loc">NODE/src/subscriber/subscribers/*.ts:40,54,62</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">3</span>G3 两个 ERP 同步角色</h4>
+          <p><code>erp_store_sync</code> 与 <code>erp_stock_sync</code>。Java 只往 <code>erp_stock</code> 投递、不消费；ERP 门店同步<strong>无 Java 对端</strong>。</p>
+          <div class="loc">NODE/src/data_transmission/erp_store_sync · erp_stock_sync</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>G4 DLQ 与消费者自愈</h4>
+          <p>Node 有死信队列 + watchdog 自愈；Java 重试 3 次后<strong>仅打日志，消息丢失且无法追溯</strong>（3 处 <code>//todo</code>）。</p>
+          <div class="loc">NODE/src/common/kafka/goodsKafka.service.ts:181-189,211-274</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>缺口</th><th>影响</th></tr></thead>
+          <tbody>
+            <tr><td>G5 🟠</td><td>小程序 / 积分商城配置管理（5 个运营接口）</td><td>无对端</td></tr>
+            <tr><td>G6 🟠</td><td>OSS 预签名 URL / STS 临时凭证</td><td>前端直传能力缺失，Java 只有服务端代传</td></tr>
+            <tr><td>G7 🟠</td><td>Excel 导入导出（4 类 × 下载/模板/按文件更新，共 16 路由）</td><td>Java 只做了 takeaway / ecommerce 共 4 路由</td></tr>
+            <tr><td>G8 🟠</td><td><code>store_product_summary</code> 定时重建 + dirty-rebuild</td><td>Java 报表数据会<strong>逐渐失真</strong></td></tr>
+            <tr><td>G9 🟠</td><td>分类商品数量统计 job</td><td>Java 已定义 Redis flag 常量但无消费者</td></tr>
+            <tr><td>G10-G13 🟡</td><td>门店商品操作日志查询、近 30 天销量、门店最低价、补发关联任务、门店补贴同步、<strong>单条（非批量）stock/repricing/saleStatus/relation.remove</strong></td><td>运维补偿手段缺失；前端单条操作需改造</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>反向也有「仅 Java」的能力：<strong>任务中心</strong>（<code>task_record</code> 三集合 + <code>TaskController</code>）与<strong>电商（旺店通）渠道</strong>。</p>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>接口契约兼容性 <em>字段名兼容做到了 · 外层信封已漂移</em></h2>
+      <p>README 声称「为减少前端改动，对外接口字段保持和 node 项目一致，都是非驼峰命名」。<strong>源码验证通过</strong>：</p>
+      <ul>
+        <li><strong>DTO 字段名本身就是 snake_case</strong>（不是靠注解映射）：<code>store_id</code>、<code>image_url</code>、<code>product_type</code>、<code>store_stock</code>、<code>channel_sale_status</code>、<code>sku_id</code>… 与 Node 对端逐字一致。</li>
+        <li><strong>分页包装体是加性扩展</strong>：Java 保留 <code>total_elements</code>/<code>total_pages</code>/<code>content</code>，另加 <code>pageNo</code>/<code>pageSize</code> → 向后兼容 ✅。</li>
+        <li><strong>序列化链路</strong>：FastJson2 converter 被插到 converters 第 0 位，接管所有 JSON 输出且不做命名策略转换。</li>
+      </ul>
+      <div class="callout danger">
+        <strong>两个隐患</strong>
+        <ul>
+          <li><strong>Jackson 埋伏</strong>：配置里同时有 <code>spring.jackson.property-naming-strategy: SNAKE_CASE</code>，当前被 FastJson 覆盖而无效；且有一行<strong>被注释掉</strong>的「移除 Jackson converter」代码。若某天 FastJson converter 被移除或降级，Jackson 会接管并把 <code>pageNo</code> → <code>page_no</code>、<code>traceId</code> → <code>trace_id</code>，<strong>响应契约瞬间破裂</strong>。</li>
+          <li><strong>外层信封已漂移</strong>：<code>msg</code> 字段 Node 是 <code>'请求成功'</code>，Java 是 <code>'success'</code>。前端若断言中文文案会失败。Java 另加了 <code>success</code>/<code>traceId</code>/<code>spanId</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>风险清单（分级） <em>两代同病：库存读改写无锁</em></h2>
+
+      <h3>Critical</h3>
+      <ul>
+        <li><strong>C1 明文凭据入库（含生产密码）</strong>：Node 的 <code>.env.local</code>/<code>.env.test</code> <strong>未被 gitignore 且已提交</strong>，含 test 与 <strong>prod 两套 Redis 密码</strong>、固定 JWT_SECRET、ES 主备、Kafka SASL、OSS AK+SK、ERP MDM SERVER_TOKEN、飞书 webhook。Java 侧 7 个模块各有一份 <code>application-local.yaml</code>，含 Kafka/Redis/Mongo 密码与 mdmToken 默认值。<strong>修复必须包含轮转全部凭据，删文件不够。</strong></li>
+        <li><strong>C2 白名单放行数据清洗与调试接口</strong>：Java 白名单放行 <code>/goods-b/dataClean/**</code>、<code>/goods-b/test/**</code>、<code>/goods-b/api/**</code> → <strong>未鉴权的数据破坏 + 信息泄露</strong>。Node 侧 <code>/dataTransmission/sendMessage</code>、<code>/task/sendMessage</code> 可向<strong>任意 topic 注入任意消息</strong>且无 prod 保护。</li>
+      </ul>
+
+      <h3>High</h3>
+      <div class="grid cols-2">
+        <div class="mech m4">
+          <h4><span class="num">1</span>H1 库存读改写无锁 → lost update</h4>
+          <p>读 <code>inventory</code> → 内存改数量 → 写回，中间<strong>无锁、无版本号、无 <code>$inc</code></strong>。消费者 <code>concurrency: 3</code>，两条同 <code>(store_id, sku_id)</code> 消息并发即覆盖。<code>RedisLock</code>（288 行）就在依赖里却<strong>未被使用</strong>。</p>
+          <p><strong>两代同病</strong>，且共享同一份数据 → <strong>跨代并发同样丢更新</strong>。</p>
+          <div class="loc">JAVA/task-sync/.../UpdateStockService.java:121-129,176-179</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>H2 Mongo 事务内混入 Redis 写</h4>
+          <p>两个 Mongo upsert 由 <code>MongoTransactionManager</code> 保证原子，但 Redis 写在 commit <strong>之前</strong>执行且<strong>不可回滚</strong>。事务失败 → Redis 已新、Mongo 仍旧。</p>
+          <p>而下游读库存<strong>只读 Redis</strong> → <strong>用户看到的库存是错的且不会自愈</strong>。</p>
+          <div class="loc">JAVA/task-sync/.../UpdateStockService.java:151-197</div>
+        </div>
+      </div>
+
+      <h3>Medium · 大量死代码（含危险的可复活代码）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>位置</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>AddRelationConsumer.java:1-338</code></td><td><strong>整文件被注释</strong>，含完整历史实现；声明的 topic + group 与在用的消费者<strong>完全相同</strong> → <strong>恢复即重复消费</strong></td></tr>
+            <tr><td><code>KafkaSendUtil.transactionSend</code>（3 份副本）</td><td>方法体内<strong>无条件 <code>throw new RuntimeException</code></strong>——从示例代码抄来，一旦被调用永远失败。当前零调用方</td></tr>
+            <tr><td><code>DataCleanController.updateStoreProductBatch</code></td><td><code>@PostMapping</code> 被注释但方法保留——<strong>全表把外卖门店商品改为下架，极危险，勿恢复</strong></td></tr>
+            <tr><td><code>TakeAwayProductOperationConsumerV2</code> · <code>TaskRecordTypeConsumer</code></td><td><code>//@Component</code> + 注释的 <code>@KafkaListener</code>，同 topic 同 group</td></tr>
+            <tr><td><code>Idempotent</code> 注解 + 切面 · <code>RedisLock</code> · MapStruct 依赖</td><td>全部零使用（MapStruct 引了依赖与 processor 但 <strong>0 个 <code>@Mapper</code></strong>）</td></tr>
+            <tr><td><code>InventoryServiceImpl.java:57-61</code></td><td><code>if (null == lockedQuantity)</code> <strong>恒假</strong>（所有分支都返回非 null）</td></tr>
+            <tr><td><code>OfficialProductService.java:35-42</code></td><td>注释的测试索引分支 + 「上线前需要将 ES_INDEX_NAME_TEST 切换」</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>Node 下线前置条件 <em>P0 止血 → P1 一致性 → P3 补齐缺口</em></h2>
+      <h3>P0（立即）</h3>
+      <ol>
+        <li>轮转 <code>.env.local</code>/<code>.env.test</code>/<code>application-local.yaml</code> 中<strong>全部</strong>凭据并清理 git 历史；<code>.gitignore</code> 加 <code>.env*</code>、<code>application-local.yaml</code>。</li>
+        <li>删除 Java 白名单中的 <code>dataClean/**</code> 与 <code>test/**</code>；给 <code>api/**</code> 加内网鉴权；生产关闭 knife4j。</li>
+        <li>给 Node 的 <code>sendMessage</code> 加鉴权 + topic 白名单 + prod 保护。</li>
+        <li>Node <code>AuthGuard</code> 改为<strong>无条件注册</strong>，或按角色裁剪 <code>imports</code>。</li>
+        <li>修复消费者异常吞掉的问题（异常必须外抛）并落地 DLQ。</li>
+        <li><strong>统一 <code>goods_official_product_sync</code> topic 名</strong>，消除 ES 写入分裂。</li>
+      </ol>
+      <h3>P1（一致性）</h3>
+      <ol>
+        <li>库存链路引入分布式锁（<code>RedisLock.executeWithLock("{store}:{sku}")</code>）或改用 Mongo <code>$inc</code> + 乐观锁；<strong>跨代锁必须统一 key 前缀</strong>。</li>
+        <li>把 Redis 写移出 Mongo 事务（改 <code>afterCommit</code>），并加缓存重建兜底。</li>
+        <li>ES 备集群写入改同步 + 失败落 outbox + 重试。</li>
+        <li>Java 实体补齐索引注解（至少 <code>product.sku_id</code>、<code>store_product_relation.(store_id,sku_id)</code>、<code>inventory.(store_id,sku_id)</code>）并纳入启动校验。</li>
+        <li>批量关联接口的上限从 400 万降到可控值；Excel 导入改分批 + 行数上限；导出改流式分页。</li>
+      </ol>
+      <h3>P3（决定 Node 能否真正下线）</h3>
+      <p>排期迁移 <strong>G1–G4</strong>：库存 TCC 引擎、ChangeStream 副作用、两个 ERP 同步角色、DLQ 与消费者自愈。<strong>这四项完成前，Node 不可下线</strong>。</p>
+      <div class="callout warn"><strong>并行期注意</strong> Node 的 ChangeStream 目前会被 Java 的写入触发，从而自动重建 OSS 产物——这是「期望之外但当前有益」的桥接。反过来说，<strong>Node 一旦下线，这些副作用会静默消失</strong>，不会有任何报错提示。</div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

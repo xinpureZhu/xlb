@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>架构总览 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>系统架构总览</h1>
+    <p class="subtitle">端到后端的分层架构、调用链、自研/遗留双轨演进、灰度路由与多租户货道模型。</p>
+    <p class="meta">最后更新：2026-07-31 · 数据来源：源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html" class="active">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#a1">整体分层</a></li>
+        <li><a href="#a2">典型调用链</a></li>
+        <li><a href="#a3">自研 / 遗留双轨与灰度路由</a></li>
+        <li><a href="#a4">App 微前端（Module Federation）</a></li>
+        <li><a href="#a5">多租户「货道」模型</a></li>
+        <li><a href="#a6">鉴权与权限模型</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="a1">
+      <h2><span class="num">01</span>整体分层 <em>五层 · 端只连 BFF</em></h2>
+      <p>系统自上而下分为五层，端应用只与 BFF 交互，BFF 聚合业务中台与高性能 Rust 服务，中台之间以 HTTP（SOA/Feign/HttpExchange）+ 消息（RocketMQ/Kafka/RabbitMQ）解耦。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph CLIENT["端应用"]
+    direction LR
+    C1["商家 App<br/>host-app-xlb"]
+    C2["xlb_app（遗留）"]
+    C3["member-weapp<br/>微信/支付宝"]
+  end
+  subgraph BFF["BFF 接入层 · NestJS"]
+    direction LR
+    F1["xlb-mp-bff"]
+    F2["xlb_retail_bff_pc"]
+    F3["xlb_retail_bff_pos"]
+    F4["cms-server"]
+    F5["auth-server"]
+  end
+  subgraph MID["业务中台 · Java"]
+    direction LR
+    M1["retail-new"]
+    M2["retail"]
+    M3["marketing-activity-center"]
+    M4["oms-plateform"]
+    M5["xlb-retail-bff-goods"]
+  end
+  subgraph RUST["高性能服务 · Rust"]
+    direction LR
+    R1["rust-for-order"]
+    R2["goods_cart"]
+    R3["goods_consumer"]
+    R4["retail-route-center"]
+    R5["retail-thirdpart-gateway"]
+    R6["rs-gray-ms"]
+  end
+  subgraph INFRA["基础设施"]
+    direction LR
+    I1["K8s + Istio<br/>ArgoCD GitOps"]
+    I2["MySQL/PolarDB-X<br/>MongoDB/Redis/ES"]
+    I3["RocketMQ/Kafka<br/>RabbitMQ"]
+    I4["OpenTelemetry<br/>VictoriaMetrics"]
+  end
+  CLIENT ==> BFF
+  BFF ==> MID
+  BFF ==> RUST
+  MID <==> RUST
+  MID ==> INFRA
+  RUST ==> INFRA
+  R4 -.路由头.-> BFF
+  R6 -.灰度名单.-> R4
+        </pre>
+        <p class="arch-title">图 1 · 整体分层与依赖方向</p>
+      </div>
+      <pre><code>┌──────────────────────────────────────────────────────────────────────┐
+│  端应用   商家App(host-app-xlb+remote-app-*)  遗留App(xlb_app)  会员小程序(member-weapp) │
+├──────────────────────────────────────────────────────────────────────┤
+│  BFF     xlb-mp-bff(小程序)  bff_pc(PC)  bff_pos(POS)  goods-bff  cms  auth │
+├──────────────────────────────────────────────────────────────────────┤
+│  中台     retail-new(会员/订单/POS/营销/抽奖/拼团)   retail(ERP-POS 单体)          │
+│          marketing-activity-center(营销活动中台)     oms-plateform(订单中台)       │
+│          xlb-retail-bff-goods(商品中台, MongoDB/ES)                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  Rust     rust-for-order(优惠/会员码/POS单/SSE)  goods_cart  goods_consumer      │
+│          retail-route-center(路由中心)  retail-thirdpart-gateway(第三方网关)      │
+│          rs-gray-ms(灰度)  icc-task(企微任务)                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│  基础设施  ArgoCD+Jsonnet+Pulumi GitOps · Istio 网格 · K8s · 阿里云/腾讯云          │
+│          MySQL/PolarDB-X · MongoDB · Redis/Tair · ES · Kafka/RocketMQ/RabbitMQ  │
+│          OpenTelemetry → VictoriaMetrics/Logs · Grafana · 飞书告警                │
+└──────────────────────────────────────────────────────────────────────┘</code></pre>
+    </section>
+
+    <section class="card" id="a2">
+      <h2><span class="num">02</span>典型调用链 <em>C端下单 / POS结算 / 三方推单</em></h2>
+
+      <h3>C 端 · 小程序下单（积分/拼团/商城）</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant W as member-weapp
+  participant B as xlb-mp-bff
+  participant G as rs-gray-ms
+  participant R as coupon-web · Rust
+  participant O as retail-new/oms-c
+  participant M as retail-new/member-c
+  participant A as marketing player
+  participant P as 支付 · 微信/支付宝/XPay
+  W->>B: 下单请求 · 会员 JWT
+  B->>B: AuthGuard 鉴权 + 踢出校验 + 同盾风控
+  B->>G: 查询灰度名单
+  G-->>B: Gray / Normal
+  B->>R: 优惠与促销计算
+  R-->>B: 优惠明细
+  B->>O: 创建订单 (TCC)
+  O->>M: 核销卡券/积分
+  M-->>O: 核销结果
+  O->>A: 营销活动参与
+  A-->>O: 活动结果
+  O-->>B: 订单号
+  B->>P: 发起支付
+  P-->>B: 支付回调
+  B-->>W: 下单成功
+        </pre>
+        <p class="arch-title">图 2 · 小程序下单调用时序</p>
+      </div>
+      <pre><code>member-weapp (Taro)
+   → xlb-mp-bff (NestJS, 鉴权/灰度/风控 同盾)
+       → rust-for-order/coupon-web        (优惠 & 促销计算)
+       → retail-new/oms-c                 (订单创建, TCC 分布式事务)
+       → retail-new/member-c              (会员/卡券/积分核销)
+       → marketing-activity-center/player (营销活动参与)
+       → 支付 (微信/支付宝/XPay) → 回调</code></pre>
+
+      <h3>POS 端 · 收银结算</h3>
+      <pre><code>host-app-xlb (RN, remote-app-retail)  /  POS 收银机
+   → xlb_retail_bff_pos (NestJS, TypeORM/MySQL)
+       → retail (ERP-POS 单体, 商品/价格/促销/库存)
+       → rust-for-order/coupon-web        (优惠计算)
+       → retail-new/retail-c              (POS 订单/结算/班次)
+   → Kafka: pos-item / pos-payment / pos_order → 多个消费者同步</code></pre>
+
+      <h3>三方渠道 · 美团闪购推单</h3>
+      <pre><code>美团开放平台
+   → retail-thirdpart-gateway (Rust, 验签+回调转发)  或  oms-adapter (回调直入)
+       → oms-plateform/oms-core (COLA 状态机: PAID→CONFIRMED→FINISHED)
+           → RocketMQ OMS_ORDER_TOPIC → oms-fulfillment(履约) / oms-reverse(逆向)
+           → oms-search (ES 宽表 + Qwen NL→SQL)</code></pre>
+    </section>
+
+    <section class="card" id="a3">
+      <h2><span class="num">03</span>自研 / 遗留双轨与灰度路由 <em>xlb 自研 vs wc 遗留 · prod/gray</em></h2>
+      <p>平台正处于「自研（<code>xlb</code>）替换遗留微信生态（<code>wc</code>）」及新旧架构并行的演进期，通过 <strong>路由中心 + 灰度服务</strong> 控制流量切分。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  U["请求<br/>phone / storeId / code / coupon"] --> RC["retail-route-center<br/>规则引擎"]
+  RC -->|"x-route-target-service-kind<br/>x-route-target-environment"| GW["网关<br/>只读头转发"]
+  GW --> XP["xlb · prod<br/>自研生产"]
+  GW --> XG["xlb · gray<br/>自研灰度"]
+  GW --> WC["wc · prod<br/>遗留微信生态"]
+  RC -.->|"规则导出 DSL · 客户端本地求值<br/>Qt v2.1 已停发路由头 · 详见文档 19"| CL["客户端运行时<br/>微信 / POS / Qt / Java / TS"]
+  GRAY["rs-gray-ms<br/>手机号灰度名单"] -.前身/兼容.-> RC
+  CAN["BFF canary<br/>Redis member:canary"] -.selfDeveloped=T.-> XG
+        </pre>
+        <p class="arch-title">图 3 · 路由决策与灰度分流</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>组件</th><th>技术</th><th>职责</th><th>输出</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>retail-route-center</code></td>
+              <td><span class="badge rust">Rust</span></td>
+              <td>规则引擎路由中心：按 phone/storeId/code/coupon 决策 <code>targetServiceKind</code>（xlb 自研 / wc 遗留）与 <code>targetEnvironment</code>（prod/gray）。规则可导出为 DSL 供客户端（微信/POS/Qt/Java/TS）运行时消费。<b>注意</b>：POS Qt 端 v2.1 起本地求值但<b>不再上送路由头</b>（发送被注释、周期拉取 <code>#if 0</code>，见文档 19）。</td>
+              <td>路由头 <code>x-route-target-service-kind</code> / <code>x-route-target-environment</code>（Qt 端已停发）</td>
+            </tr>
+            <tr>
+              <td><code>rs-gray-ms</code></td>
+              <td><span class="badge rust">Rust</span></td>
+              <td>灰度名单服务（route-center 前身）：基于手机号 / 号码后缀判定会员是否走灰度环境；产出小程序灰度配置并上传 OSS。</td>
+              <td><code>Gray / Normal / Unknown</code></td>
+            </tr>
+            <tr>
+              <td>BFF 灰度开关</td>
+              <td><span class="badge node">NestJS</span></td>
+              <td>xlb-mp-bff / bff_pos 的 AuthGuard 读取 Redis <code>member:canary</code> 名单，在请求上打 <code>selfDeveloped='T'</code> 标记，驱动灰度到自研后端。</td>
+              <td>CLS 灰度标记</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <strong>演进关系</strong> <code>xlb_app</code>（RN 0.68 单体）→ <code>host-app-xlb</code>（RN 0.80 + Module Federation 微前端）；
+        <code>retail</code>（Java 8 ERP-POS 单体）→ <code>retail-new</code>（Java 21 微服务）；
+        <code>xlb_retail_bff_pc</code>（Node 门店商品库存服务）→ <code>xlb-retail-bff-goods</code>（Java 25，业务能力一致的迁移版）；
+        <code>rs-gray-ms</code> → <code>retail-route-center</code>。新旧并存，逐步迁移。
+      </div>
+    </section>
+
+    <section class="card" id="a4">
+      <h2><span class="num">04</span>App 微前端（Module Federation） <em>Module Federation · 15 个 remote</em></h2>
+      <p><code>host-app-xlb</code> 作为宿主壳（Re.Pack + Rspack + <code>@module-federation/enhanced</code>），本地只打包 <em>导航 + 首页 + 登录</em>，其余业务作为远程 bundle 从 CDN 动态加载。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  H["host-app-xlb（宿主壳）<br/>RN 0.80 · Re.Pack + Rspack"]
+  H -->|"expose ./store ./webView"| SH["共享模块"]
+  H --> BL["bundleLoader.ts<br/>ScriptManager 解析器"]
+  BL -->|"开发：探测 localhost 端口"| DEV["本地 dev server"]
+  BL -->|"生产：OSS version.json"| CDN["阿里云 OSS<br/>远程 bundle CDN"]
+  CDN -->|"按 userId 灰度"| PG["prod / prod-gray"]
+  BL --> RB["remote-app-base<br/>公共屏幕"]
+  BL --> RE["remote-app-erp<br/>约 60 屏 ERP"]
+  BL --> RI["remote-app-im<br/>MQTT 聊天"]
+  BL --> RM["remote-app-mem<br/>调价/积分"]
+  BL -.声明 15 个 remote.-> OT["Bi / Bms / Bpm / Crm<br/>Ems / Fsms / Hrs / Retail<br/>Scm / Sds / Sms"]
+  RB & RE & RI & RM -.反向依赖 HostAppXlb/webView.-> SH
+  BL -.加载失败.-> FB["FallbackComponent<br/>remote-fallback-plugin"]
+        </pre>
+        <p class="arch-title">图 4 · App 微前端（Module Federation）加载链路</p>
+      </div>
+      <ul>
+        <li><strong>宿主</strong> 声明 15 个 remote（Base/Erp/Im/Mem/Retail/Bi/Bms/Bpm/Crm/Ems/Fsms/Hrs/Scm/Sds/Sms），并 expose <code>./store</code> 与 <code>./webView</code> 给远程复用（双向联邦）。</li>
+        <li><strong>远程</strong> 各自 expose <code>./src/App</code>（组件开关，按 <code>componentName</code> 映射到具体屏幕）；本仓含 base/erp/im/mem 四个远程实现。</li>
+        <li><strong>加载</strong> <code>bundleLoader.ts</code> 通过 Re.Pack <code>ScriptManager</code>：开发探测 localhost 端口，生产从 OSS <code>version.json</code> 解析版本 + 按 userId 灰度（<code>prod</code> / <code>prod-gray</code>）。</li>
+        <li><strong>OTA</strong> 所有 RN 项目用 <code>react-native-update</code>（Cresc/Pushy）热更新；<code>create-version.js</code> 生成远程 bundle 发布清单。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="a5">
+      <h2><span class="num">05</span>多租户「货道」模型 <em>主线 / wanchi / wanquan / wancan</em></h2>
+      <p>GitOps 中大量业务域按租户复制为并行命名空间（lane），实现多品牌/多租户隔离部署，代码同源、配置与镜像分支隔离：</p>
+      <div class="tags">
+        <span class="tag">主线 (goods / retail / marketing / member-center)</span>
+        <span class="tag">万橙 wanchi (retail-wanchi / marketing-wanchi / goods-wanchi ...)</span>
+        <span class="tag">万群 wanquan (retail-wanquan / goods-wanquan / oms-wanquan ...)</span>
+        <span class="tag">万餐 wancan</span>
+      </div>
+      <p>例如商品域在 <code>goods/</code>、<code>goods-wanchi/</code>、<code>goods-wanquan/</code> 三条货道各自部署 goods-b / pc-bff / 各类同步消费者。租户差异通过 Jsonnet 的 <code>getEnvSpecificValue</code> 与 per-lane <code>artifacts.libsonnet</code> 镜像分支控制。</p>
+    </section>
+
+    <section class="card" id="a6">
+      <h2><span class="num">06</span>鉴权与权限模型 <em>iAuth 为权限中枢 · auth-server 只管 Token</em></h2>
+      <ul>
+        <li><strong>iAuth</strong> 是权限中枢（外部服务）：身份 = <code>user-id</code> 头 + Bearer JWT；<strong>租户 = <code>company_id</code></strong>；门店范围 = <code>storeId</code> / <code>userStoresQuery[]</code> + <code>admin</code> 标志；权限 = <code>{app_type, path, action}</code> 元组，经 <code>POST /internal.authority.check[.batch]</code> 校验（见 <code>cms-server</code>）。</li>
+        <li><strong>auth-server</strong> 不是 RBAC，而是<strong>第三方平台 Token 代理</strong>：统一获取/缓存/刷新 微信 MP+公众号、支付宝、快手、抖音、美团点评、乐檬(nhsoft) 的 access token / 签名，供全体 BFF 共享。</li>
+        <li><strong>C 端</strong> xlb-mp-bff 以会员 JWT 鉴权，叠加踢出（kick-out）、状态黑名单、同盾风控与灰度金丝雀。</li>
+      </ul>
+      <div class="callout warn">
+        <strong>安全提示</strong> <code>xlb-mp-bff/积分下单安全加固方案.md</code> 记录了 <code>/order/point/*</code> 的 4 项漏洞（member_id 未与 JWT 交叉校验、company_id 可篡改致越权、支付组合校验缺失、活动类型可篡改）及 P0/P1 修复方案，属需持续关注的安全项。
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

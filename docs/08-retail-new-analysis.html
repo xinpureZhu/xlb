@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>retail-new 深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>retail-new 新零售微服务群 · 代码深度分析</h1>
+    <p class="subtitle">52 个 Maven 模块、15 个运行服务、27 个 MQ 消费者。会员卡券 / 订单 / POS / 营销抽奖拼团六大域的真实实现、消息全景与分级风险清单。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>prod</code>（落后远端 22） · 数据来源：<code>retail-new/**</code> 源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html" class="active">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">模块拓扑</a></li>
+        <li><a href="#s2">会员 / 卡券域</a></li>
+        <li><a href="#s3">订单域与 TCC</a></li>
+        <li><a href="#s4">POS 域</a></li>
+        <li><a href="#s5">营销 / 抽奖 / 拼团</a></li>
+        <li><a href="#s6">消息全景</a></li>
+        <li><a href="#s7">数据与基础设施</a></li>
+        <li><a href="#s8">风险清单（分级）</a></li>
+        <li><a href="#s9">优先修复顺序</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · 部分已重校</strong> 分支 <code>prod</code> <code>b04705f980</code>（2026-08-04，落后 0）。
+      <p>本篇正文写于旧快照（当时落后 prod 2265 个提交）。已对 <strong>4 项 Critical 与关键 High 做重新核验</strong>，结果见下方「重校结果」；其余 High/Medium 条目（行号、枚举重复、端口冲突、死代码清单）<strong>仍需复核</strong>。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>Critical 3 仍在 · 1 已修 · 新增 Seata</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>旧结论</th><th>最新 prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>C-2</strong> 券库存扣减 UPDATE 无余量守卫、不校验受影响行数 → 可超发</td>
+              <td>库存模型已<strong>重构</strong>为 <code>coupon_type_stock</code> / <code>coupon_type_share_stock</code>（新增 total/usable/shared 三段）。但扣减语句<strong>仍无守卫</strong>：<code>SET usable_stock = usable_stock - #{delta} WHERE coupon_type_id = ?</code>，WHERE 中<strong>没有 <code>AND usable_stock &gt;= delta</code></strong> → <code>usable_stock</code> 可扣成负数。另外用 <code>&lt;foreach separator=";"&gt;</code> 多语句执行，需开启 <code>allowMultiQueries</code>，本身也是风险面。</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td><strong>C-3</strong> 拼团 TCC 在 Confirm 阶段执行业务写</td>
+              <td><strong>仍存在，且实现已换成 Seata</strong>（<code>BusinessActionContext</code> / <code>xid</code>，全仓 7 处 <code>@TwoPhaseBusinessAction</code>）。<code>commit()</code>（即 Confirm）内仍有：远程调用 <code>groupService.payConfirm</code>、DB 写 <code>pickupOrderService.updateBatchStatusByIdAndStatus</code>、ES 写 <code>esPushService.pushOrderSync/pushPickupOrder</code>。Confirm 失败仍不可回退。</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td><strong>High</strong> 事件先于落库、无 outbox</td>
+              <td>全 <code>oms</code> 模块<strong>仍无</strong> <code>@TransactionalEventListener</code>/<code>AFTER_COMMIT</code>/<code>sendTransactionMessage</code> → 顺序问题未解决。<br><em>对比：<code>oms-plateform</code> 已改用事务消息，本仓尚未跟进。</em></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td><strong>High</strong> 用随机 <code>sleep</code> 代替幂等键</td>
+              <td><code>OrderServiceImpl</code> 中 <code>Thread.sleep(RandomUtil...)</code> <strong>已移除</strong></td>
+              <td><span class="badge ok">已修复</span></td>
+            </tr>
+            <tr>
+              <td><strong>High</strong> 约 630 处 <code>@IgnoreToken</code>；<code>oms-c/OrderController</code> 资金端点全部带该注解</td>
+              <td>仍有 <strong>171 个文件</strong>含 <code>@IgnoreToken</code>；<code>OrderController</code> 的下单/取消端点<strong>仍带</strong>该注解</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>52 个 Maven 模块</td>
+              <td>现为 <strong>53 个</strong></td>
+              <td><span class="badge warn">已变化</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <strong>最重要的架构变化：分布式事务改用 Seata</strong> 旧版描述的自研 TCC（<code>*TccService</code> 手工 Try/Confirm/Cancel）已迁移到 <strong>Seata TCC</strong>（<code>@TwoPhaseBusinessAction</code>，7 处），配置见 <code>oms-c/src/main/resources/application.yaml:246</code>。
+        <p>但<strong>迁移并未修正语义问题</strong>——Confirm（<code>commit()</code>）阶段依旧承载远程调用与业务写。Seata 的 Confirm 同样要求幂等且不应失败，因此该缺陷在新框架下<strong>风险不变甚至更高</strong>（Seata 会重试 Confirm，重复的 ES 推送与状态更新会被放大）。</p>
+      </div>
+      <div class="callout danger">
+        <strong>结论</strong> 本仓在这一个月的迭代中<strong>修掉了随机 sleep、重构了库存模型、引入了 Seata</strong>，但<strong>三项 Critical/High 核心缺陷（库存无守卫、Confirm 写业务、无 outbox）以及大面积鉴权旁路均未处理</strong>。这与 07 篇（oms-plateform）的情况相反——那边补齐了事务消息与死信队列。建议把 oms-plateform 的可靠性做法反向移植到本仓。
+      </div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>15 服务 + 27 消费者 · 4 项 Critical · 630 处鉴权旁路</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">52</div><div class="l">Maven 模块</div></div>
+        <div class="stat"><div class="n">15</div><div class="l">可运行服务</div></div>
+        <div class="stat"><div class="n">27</div><div class="l">MQ 消费者部署单元</div></div>
+        <div class="stat"><div class="n">90+</div><div class="l">RocketMQ Topic 常量</div></div>
+        <div class="stat"><div class="n">78</div><div class="l">零引用的死 Topic 常量</div></div>
+        <div class="stat"><div class="n">630</div><div class="l">@IgnoreToken 鉴权旁路</div></div>
+        <div class="stat"><div class="n">11</div><div class="l">复制了同名契约类的模块</div></div>
+        <div class="stat"><div class="n">13</div><div class="l">共用 8089 端口的消费者</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>Critical 概览</strong>
+        <ul>
+          <li><strong>明文凭据入库</strong>：多处以 <code>${VAR:真实密钥}</code> 形式把生产默认值写进 yml，环境变量缺失时静默回落到真实凭据。</li>
+          <li><strong>券库存扣减无余量守卫</strong>：UPDATE 未校验剩余量也未检查受影响行数，可超发。</li>
+          <li><strong>TCC 语义错位</strong>：拼团把业务写操作放在 Confirm 阶段，违背 Try 预留 / Confirm 幂等推进的契约。</li>
+          <li><strong>契约类在 11 个模块内复制</strong>：<code>PosOrder</code>/<code>BaseResponse</code>/<code>Code</code> 各自漂移，错误码出现 9 份不一致版本。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>模块拓扑 <em>common 为共享内核 · 服务与消费者并列在其上</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph LIB["共享库（无 main）"]
+    CM["common<br/>1718 java · 实体/枚举/MQ常量/鉴权/缓存"]
+    RT["retail<br/>POS 订单核心 + 插件"]
+    MB["member 883"]
+    OM["oms 555"]
+    MK["marketing 220"]
+    LT["lottery 291"]
+    GP["group 90"]
+  end
+  subgraph SVC["可运行服务"]
+    S1["member-c :55117<br/>/member-new"]
+    S2["member-pos :55117"]
+    S3["oms-c<br/>/oms"]
+    S4["retail-c<br/>/retail"]
+    S5["retail-api"]
+    S6["retail-manager"]
+    S7["marketing-c :55122"]
+    S8["group-c :55122"]
+    S9["sse-server"]
+    S10["cron-server"]
+    S11["pos-item-initialization"]
+    S12["store-near"]
+  end
+  subgraph MQC["27 个 MQ 消费者（多数 :8089）"]
+    C1["会员/卡/券同步 ×8"]
+    C2["订单/POS ×9"]
+    C3["营销/抽奖 ×5"]
+    C4["福利/VIP/拼团 ×5"]
+  end
+  CM --> RT & MB & OM & MK & LT & GP
+  MB --> S1 & S2
+  OM --> S3
+  RT --> S4 & S5 & S6
+  MK --> S7
+  GP --> S8
+  CM --> MQC
+  classDef dup fill:#fef2f2,stroke:#dc2626
+  class S2 dup
+        </pre>
+        <p class="arch-title">图 1 · 模块依赖与部署单元（红色 = 与 member-c 高度重复）</p>
+      </div>
+      <div class="callout warn">
+        <strong>端口与应用名冲突</strong> <code>member-c</code> 与 <code>member-pos</code> 同为 <strong>55117</strong>；<code>marketing-c</code>/<code>group-c</code>/<code>group-mqconsumer</code>/<code>member-coupon-cdp</code>/<code>member-vip</code> 同为 <strong>55122</strong>；13 个消费者同为 <strong>8089</strong> 且其中 6 个 <code>spring.application.name</code> 都叫 <code>consumer</code>——指标与链路无法区分。<code>retail-lottery-mqconsumer</code> 与 <code>retail-lottery-xm-mqconsumer</code> 连启动类全限定名都相同（<code>com.hxl.lottery.consumer.LotteryConsumerApplication</code>），运维极易误部署。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>会员 / 卡券域 <em>最大域 · 券发放链路每张券 5 次 Redis 往返</em></h2>
+      <p>实体集中在 <code>common/entity/{member,card,coupon}</code>，控制器按 <code>customer/</code>、<code>manager/</code>、<code>pos/</code> 三端分组。</p>
+
+      <h3>2.1 券发放链路</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  REQ["发券请求"] --> AB["AbstractCouponSender<br/>校验链"]
+  AB --> V1["RateLimiterValidator<br/>限流 300/s"]
+  V1 --> V2["其余校验器"]
+  V2 --> STK["券库存扣减<br/>CouponTypeNewMapper"]
+  STK --> ISS["发放落库"]
+  ISS --> MQ["MQ 异步同步<br/>member_coupon_* topics"]
+  STK -.失败.-> RB["rollbackStock<br/>回滚失败则丢失原始异常"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class STK,RB,V1 bad
+        </pre>
+        <p class="arch-title">图 2 · 优惠券发放链路与两处缺陷点（红色）</p>
+      </div>
+      <div class="grid cols-2">
+        <div class="mech m4">
+          <h4><span class="num">1</span>库存扣减无守卫</h4>
+          <p>UPDATE 语句既未在 WHERE 中校验剩余量，也未检查受影响行数，并发下可<strong>超发</strong>。</p>
+          <div class="loc">member/.../CouponTypeNewMapper.xml:830-840</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>限流器每次 5 次往返</h4>
+          <p><code>trySetRate</code>/<code>getConfig</code>/<code>setRate</code> 属配置操作却每次发券都执行；速率 <code>300</code> 硬编码在代码，Redis 值仅作覆盖。位于校验链首位，每张券都付这笔开销。</p>
+          <div class="loc">member/.../coupon/validator/RateLimiterValidator.java:23-39</div>
+        </div>
+      </div>
+
+      <h3>2.2 其它域能力</h3>
+      <ul>
+        <li><strong>储值卡</strong>：卡类型、充值(deposit)、消费、退款、交易流水、储值权益、充值活动。礼品卡批量创建的分布式锁 key 是<strong>字面量</strong> <code>"com.hxl.member.service.GiftCardService.batchCreate"</code>——全局单锁，无 companyId/批次维度，所有公司互相阻塞 60s（<code>GiftCardDeliverDetailServiceImpl.java:156</code>）。</li>
+        <li><strong>礼品卡</strong>：类型/分类/面额/祝福语/购买订单/交付明细/制卡/操作员。<code>GiftCard</code> 与 <code>GiftCardV2</code>、<code>GiftCardOperationLog</code> 与 <code>...V2</code> 并存且无 <code>@Deprecated</code>。</li>
+        <li><strong>优惠券双轨</strong>：<code>CouponDirect*</code> 与 <code>CouponDirect*New</code>、<code>CouponType</code> 与 <code>CouponTypeNew</code> 全套并存，Controller 亦双份（<code>.../coupondirect</code> 与 <code>.../coupondirect/V2</code>）。</li>
+        <li><strong>积分</strong>：<code>PointOperateTypeEnum</code> 覆盖 POS 消费 / 兑换 / 卡存款 / 人工调整 / 抽奖 / 公益捐赠等 20+ 类型，code 从 10 跳到 30（11-29 无记录）。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>订单域与 TCC <em>发布在提交之前 · 拼团 Confirm 里写业务</em></h2>
+      <p><code>oms</code> 模块约 46 个 service，含 <code>CalculateService</code>（金额计算）、<code>PaymentRecordService</code>、<code>PointPaymentService</code>、<code>XpayService</code>，以及 <code>InventoryTccService</code>/<code>GroupTccService</code>/<code>OrderTccService</code> 等 TCC 服务。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 客户端
+  participant O as OrderServiceImpl
+  participant T as TCC 参与方<br/>库存/卡/券/拼团
+  participant DB as MySQL oms
+  participant MQ as RocketMQ
+  participant ES as Elasticsearch
+  C->>O: 创建订单
+  O->>T: Try 预留
+  T-->>O: 预留结果
+  O->>MQ: 发送事件
+  Note over O,MQ: 事件在落库之前发出<br/>无 outbox，DB 回滚则消息已泄漏
+  O->>DB: 写订单
+  O->>ES: pushOrderSync 同步推送
+  Note over O,ES: 无 try/catch<br/>ES 不可用直接导致下单失败
+  O->>T: Confirm
+  Note over T: 拼团把业务写放在 Confirm<br/>违背 TCC 语义
+  O-->>C: 返回
+        </pre>
+        <p class="arch-title">图 3 · 下单链路的三处一致性缺陷</p>
+      </div>
+
+      <div class="grid cols-3">
+        <div class="mech m4">
+          <h4><span class="num">1</span>事件先于落库</h4>
+          <p>MQ 发送早于 DB 提交，事务回滚后消息已投出，下游收到不存在的订单。无 outbox、无 <code>AFTER_COMMIT</code> 监听。</p>
+          <div class="loc">oms/.../OrderServiceImpl.java:165-167 · OrderTccServiceImpl.java:75-79</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>随机 sleep 代替幂等</h4>
+          <p>用随机休眠规避并发冲突，而非以幂等键收敛——高并发下仍会重复，且拉长事务持有时间。</p>
+          <div class="loc">oms/.../OrderServiceImpl.java:278-279</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">3</span>Confirm 阶段写业务</h4>
+          <p><code>GroupTccService</code> 在 Confirm 里执行业务写入，Confirm 失败无法回退且不可重放，破坏 TCC 契约。</p>
+          <div class="loc">oms/.../GroupTccServiceImpl.java:44-47,62,99</div>
+        </div>
+      </div>
+
+      <h3>3.1 确定性缺陷（恒真 / 恒假分支）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>位置</th><th>问题</th></tr></thead>
+          <tbody>
+            <tr><td><code>CouponPolicyHandler.java:66</code></td><td>判定条件恒定，券策略分支实际不可达</td></tr>
+            <tr><td><code>PaymentPolicyHandler.java:248</code></td><td><code>.orElse(...)</code> 前置 Optional 恒有值，兜底恒不生效</td></tr>
+            <tr><td><code>OrderTccServiceImpl.java:131,203-206</code></td><td><code>if (xPayment != null ...)</code> 恒真</td></tr>
+            <tr><td><code>OrderServiceImpl.java:212-215</code></td><td>条件分支恒定</td></tr>
+            <tr><td><code>AbstractCouponSender.java:178-181</code></td><td>基类 <code>supports()</code> 硬编码 <code>false</code>——子类忘记覆写则 <code>PluginRegistry</code> 静默永不命中，且无启动期校验</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3.2 事件监听器</h3>
+      <p>核销事件 <code>OrderWriteOffEvent</code> 由 <code>PickupWriteOffConsumer.java:50</code> 发布，4 个<strong>同步</strong>监听器订阅（含两个会发 MQ 的）。任一监听器抛异常都会让整条核销消费失败并重投，而先前监听器的 MQ <strong>已经发出</strong> → 重复发放双倍积分与公益积分。</p>
+      <p>另有性能缺陷：<code>DoublePointListener.java:61-63</code> 与 <code>PointPublicWelfareListener.java:52-54</code> 在循环内重复构建同一个与循环变量无关的分组 Map；前者还在循环内对<strong>全量</strong>明细执行 <code>checkQuantity</code>（应为当前退单明细）。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>POS 域 <em>插件式券与支付 · 结算回调经 XPay</em></h2>
+      <ul>
+        <li><code>retail-c</code>（context <code>/retail</code>）：<code>PosController</code>、<code>PosMachineController</code>、<code>PosPayController</code>、<code>PosSettlementController</code>、<code>PosSettlementCouponController</code>、<code>PosShiftController</code>、<code>PromotionActivityController</code>、<code>StoreController</code>、<code>XPayController</code>、<code>XPayNotifyController</code>。</li>
+        <li><code>retail-manager</code>：POS 订单/明细、促销、订单来源、数据看板。</li>
+        <li><code>retail-pos-item-initialization</code>：POS 商品 / 价格 / 门店主数据初始化下发。该模块内含 <code>MyBatisPlusGenerator</code>——<strong>生产源码里的代码生成器，且硬编码生产 RDS 连接串</strong>（<code>:15-18</code>）。</li>
+        <li><code>retail</code> 共享模块提供 coupon / payment 插件注册表，供 POS 结算按类型分派。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>营销 / 抽奖 / 拼团 <em>抽奖含小满变体 · 部分消费者已注释停用</em></h2>
+      <ul>
+        <li><strong>营销</strong>（<code>marketing</code> + <code>marketing-c</code>）：任务体系（Task/Detail/Process/Reward）、邀请裂变、订单赠礼、补发、积分。</li>
+        <li><strong>抽奖</strong>（<code>lottery</code>，约 35 service）：抽奖客户端/市场/明细/兑换/统计/补发/日志/地址/预约/退积分；<code>XiaoManLotteryMarket</code> 为小满渠道变体，对应独立消费者 <code>retail-lottery-xm-mqconsumer</code>。</li>
+        <li><strong>拼团</strong>（<code>group</code> + <code>group-c</code>）：开团/成团、支付超时、回调重试消费者。</li>
+      </ul>
+      <div class="callout warn"><strong>已停用但未删除</strong> 多个消费者的核心逻辑被整段注释：<code>lm-pos-order-mqconsumer/SettlementConsumer.java:51</code>、<code>retail-pospayment-member-mqconsumer/SettlementConsumer.java:49,54</code>、<code>member-coupon-sync-mqconsumer/MemberInfoConsumer.java:83,191</code>、<code>lm-retail-pos-log-mqconsumer/LmRetailPosLogConsumer.java:41</code>。这些消费者仍会启动并消费消息，但不产生业务效果。</div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>消息全景 <em>90+ topic 常量 · 78 个零引用</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph SRC["数据源"]
+    ERP["ERP / 乐檬 LM"]
+    POS["POS 收银机"]
+    OMS["订单服务"]
+  end
+  subgraph BUS["消息总线"]
+    K["Kafka<br/>阿里云 Serverless"]
+    R["RocketMQ 5.x<br/>90+ topic 常量"]
+  end
+  subgraph CONS["27 个消费者"]
+    A["会员/卡/券同步"]
+    B["POS item / payment / order"]
+    C["订单推送 / 履约 / 结算"]
+    D["营销 / 抽奖 / 福利 / VIP"]
+  end
+  subgraph SINK["写入目标"]
+    DB["MySQL member / oms"]
+    RD["Redis 缓存"]
+    ES["Elasticsearch<br/>order-master-{年份}"]
+  end
+  ERP --> K
+  POS --> K
+  OMS --> R
+  K --> A & B
+  R --> C & D
+  A & B & C & D --> DB & RD & ES
+  R -.78 个常量无任何引用.-> DEAD["死代码"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class DEAD bad
+        </pre>
+        <p class="arch-title">图 4 · 消息流向与死常量</p>
+      </div>
+      <div class="callout warn">
+        <strong>Topic 注册表分裂</strong> <code>RocketMqConstants</code> 中 <strong>78 个常量零引用</strong>：OMS 组因被 <code>RocketMqEnum</code> 取代而废弃，<code>VIP_*_GROUP/_TAG</code> 因改用 <code>@Value</code> 而废弃。另有反向情况——消费者存在但常量未接线：<code>marketing-activity-mqconsumer</code> 的 <code>InviteBindConsumer</code>、<code>ActivityRewardConsumer</code>（<code>MARKETING_ACTIVITY_INVITE_BIND_*</code>、<code>MARKETING_ACTIVITY_SEND_RIGHTS_*</code> 全死）。<code>RocketMqEnum:28,30-31</code> 自身也存在错误。
+      </div>
+      <p>另有<strong>幽灵模块</strong> <code>retail-member-point-cache-mqconsumer</code>：有 <code>pom.xml</code> 但未注册在根 <code>pom.xml:327-380</code> 的 <code>&lt;modules&gt;</code> 中，源码仅剩一个空 <code>App.java</code>。</p>
+      <p>消费组命名亦有隐患：<code>lm-pos-order-mqconsumer/LMPosOrderConsumer.java:45</code> 的 <code>groupId = "notify"</code> 无服务前缀，极易与其他系统冲突。</p>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>数据与基础设施 <em>三库分离 · Hikari 上限 300</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>资源</th><th>使用方</th><th>要点</th></tr></thead>
+          <tbody>
+            <tr><td>MySQL <code>member</code></td><td>member-c / member-pos / member-manager</td><td>三服务共享同一库；单服务 <code>hikari.maximum-pool-size: 300</code>、<code>minimum-idle: 2</code>，按副本数放大极易打满 <code>max_connections</code></td></tr>
+            <tr><td>MySQL <code>oms</code></td><td>oms-c / 订单类消费者</td><td>—</td></tr>
+            <tr><td>MySQL <code>erp</code></td><td>retail 系服务引用</td><td>配置键存在拼写错误 <code>REATIL_API_MYSQL</code></td></tr>
+            <tr><td>Redis</td><td>全体</td><td>多逻辑库（common=0、member=2、memberInfo db=8 独立实例）；Redisson 分布式锁；SSE 经 Redis pub/sub</td></tr>
+            <tr><td>Elasticsearch</td><td>oms-c / retail-c / member-c</td><td>索引名按 <code>LocalDate.now().getYear()</code> 动态拼接，<strong>无 alias</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn"><strong>虚拟线程 + 阻塞池的组合</strong> <code>member-c</code> 同时开启 <code>spring.threads.virtual.enabled: on</code> 与 <code>spring.main.lazy-initialization: on</code>；虚拟线程下阻塞式 JDBC 连接池反而成为并发上限。<code>leakDetectionThreshold: 5000</code>（5s）对含远程调用的事务方法会大量误报。</div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>风险清单（分级） <em>Critical 4 · High 精选 · Medium 13 组</em></h2>
+
+      <h3>Critical</h3>
+      <ol>
+        <li><strong>明文凭据入库</strong>——以 <code>${VAR:真实值}</code> 形式把生产默认值写进配置，环境变量缺失即静默回落。
+          <div class="loc">retail-pos-item-initialization/.../MyBatisPlusGenerator.java:15-16 · cron-server/application.yaml:16,18 · member-c/application.yml:239,331-332,345-360,364-420</div></li>
+        <li><strong>券库存扣减无余量守卫、不校验受影响行数</strong> → 可超发。
+          <div class="loc">member/.../CouponTypeNewMapper.xml:830-840</div></li>
+        <li><strong>拼团 TCC 在 Confirm 阶段执行业务写</strong> → Confirm 失败不可回退。
+          <div class="loc">oms/.../GroupTccServiceImpl.java:44-47,62,99</div></li>
+        <li><strong>契约类在 11 个模块内复制</strong>：<code>PosOrder</code>/<code>BaseResponse</code>/<code>Code</code> 各自漂移，<strong>错误码出现 9 份不一致版本</strong>，另有 <code>oms/enums/CodeEnum</code> 独立体系。</li>
+      </ol>
+
+      <h3>High</h3>
+      <ul>
+        <li><strong>630 处 <code>@IgnoreToken</code></strong>（member-c 67 文件、member-pos 37、oms-c 17…）。<code>oms-c/OrderController</code> 中<strong>每个资金/状态端点</strong>都带该注解：<code>/order/create</code>、<code>/order/cancel</code>、<code>/posorder/convert</code>、<code>/updatePayingStatus</code>、<code>/updateWaitVerifyStatus</code>。
+          <div class="loc">oms-c/.../OrderController.java:40,49,61,68,75</div></li>
+        <li><strong>全站鉴权可被单个环境变量关闭</strong>：<code>authority.filter.enable</code> + <code>authority.white-uri</code> AntPath 白名单。若仅依赖网关前置鉴权，则服务在集群内无任何防护（无 mTLS、无内部 token 校验证据）。
+          <div class="loc">common/.../auth/AuthorityFilter.java:45,48,69</div></li>
+        <li><strong>事件与落库顺序颠倒、无 outbox</strong>（见 §03）。<div class="loc">OrderServiceImpl.java:165-167,101-103 · OrderTccServiceImpl.java:75-79</div></li>
+        <li><strong>10 处消费者 <code>@PostConstruct</code> 吞掉启动异常</strong> → 消费者「假启动」，readiness 探针无法感知。</li>
+        <li><strong>ES 同步推送无 try/catch</strong>：ES 不可用直接导致下单失败。<div class="loc">oms/.../OrderServiceImpl.java:99-102</div></li>
+        <li><strong>核销事件同步监听器链</strong>：任一失败即重投，已发 MQ 不回滚 → 重复双倍积分/公益积分。<div class="loc">PickupWriteOffConsumer.java:50</div></li>
+        <li><strong>券发放限流器每请求 5 次 Redis 往返</strong>，速率硬编码 300。<div class="loc">RateLimiterValidator.java:23-39</div></li>
+        <li><strong>member-pos 与 member-c 高度重复</strong>（46 个差异文件），双服务共享库且同端口。</li>
+      </ul>
+
+      <h3>Medium（13 组，摘要）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td>M-1</td><td>ES 索引名按当前年份拼接，跨年瞬间切新索引且无 alias → 动态映射类型推断错误、跨年查不到旧数据</td><td><code>EsPushServiceImpl.java:192,255,369</code></td></tr>
+            <tr><td>M-2</td><td>优惠计算结果缓存 1 小时，<strong>全仓无失效调用点</strong> → 改单后仍返回旧金额</td><td><code>CalculateServiceImpl.java:33-36,70</code></td></tr>
+            <tr><td>M-3</td><td>每次 ES 写入强制 <code>forceRefresh</code> → segment 暴涨、merge 压力大</td><td><code>EsPushServiceImpl.java:200,265,320,371</code></td></tr>
+            <tr><td>M-4</td><td>循环内重复构建与循环无关的分组 Map；对全量明细做校验</td><td><code>DoublePointListener.java:61-65</code>、<code>PointPublicWelfareListener.java:52-54</code></td></tr>
+            <tr><td>M-5</td><td>重复/冲突枚举与实体：两个 <code>PointExchangeTypeEnum</code> 语义不同且无转换、两个 <code>CardType</code>、GiftCard V1/V2、CouponDirect 双轨、两个同名 <code>LotteryRocketMqConstants</code></td><td>多处</td></tr>
+            <tr><td>M-6</td><td><code>PointOperateTypeEnum</code> 对外 <code>description</code> 字符串与实际枚举<strong>完全不匹配</strong>，两个不同类型都标「抽奖扣减」，且遗漏 code 40/41</td><td><code>PointOperateTypeEnum.java:32,39,54-59</code></td></tr>
+            <tr><td>M-7</td><td>死代码：78 个 MQ 常量、幽灵模块、<strong>生产源码中的测试与数据修复 Controller</strong>（<code>XPayTestController</code>、<code>TestController</code>、<code>FixDataController</code>、<code>TaskTestController</code>…）</td><td>多处</td></tr>
+            <tr><td>M-8</td><td>硬编码：生产/开发租户 ID（99665/66600/1000/66666）同置一文件、12 个抖音账户 ID、短信模板码、礼品卡全局单锁 key、<code>cron-server</code> 主配置钉死 <code>dev</code> profile</td><td><code>member-c/application.yml:232-255</code> 等</td></tr>
+            <tr><td>M-9</td><td>路由前缀冲突：<code>member-c</code> 内多组 Controller 共用类级前缀（<code>manager/hxl/member</code> 三个类、<code>pos/hxl/member</code> 四个类）；前导/尾随斜杠混用；<code>FlinkController</code>/<code>InitController</code> 挂根路径</td><td>member-c</td></tr>
+            <tr><td>M-10</td><td>端口与应用名冲突（见 §01）</td><td>多处 <code>application.yml</code></td></tr>
+            <tr><td>M-11</td><td>Hikari 上限 300 × 副本数；虚拟线程与阻塞池组合</td><td><code>member-c/application.yml</code></td></tr>
+            <tr><td>M-12</td><td>异常吞噬：统一替换为「活动太火爆」丢失原始 code；<code>tryLock</code> <strong>返回值未接收</strong>仍进临界区；<code>tryLock()</code> 无参调用依赖看门狗</td><td><code>AbstractCouponSender.java:80,86</code>、<code>WelfareDonateBillServiceImpl.java:106-108</code>、<code>MemberWriteOffLogServiceImpl.java:80</code></td></tr>
+            <tr><td>M-13</td><td>文档漂移：<code>README.md</code> 全文是 sse-server 的 curl 片段，不描述这个 52 模块仓库；<code>doc/flink/</code> 8 个文件均为 2-4 行飞书外链占位；包名 <code>ermueration</code>（应 enumeration）在 7 个模块固化；多处类名拼写错误</td><td>仓库根</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>优先修复顺序 <em>按风险 × 影响面排序</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>动作</th><th>依据</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>轮转全部泄露凭据，清理 git 历史，<strong>移除 <code>${VAR:真实值}</code> 默认值写法</strong></td><td>C-1 / C-2</td></tr>
+            <tr><td>2</td><td>券库存 SQL 加余量守卫并校验受影响行数</td><td><code>CouponTypeNewMapper.xml:830-840</code></td></tr>
+            <tr><td>3</td><td>重构 <code>GroupTccService</code>：业务写移入 Try，Confirm 仅做幂等状态推进</td><td><code>GroupTccServiceImpl.java</code></td></tr>
+            <tr><td>4</td><td>删除随机 sleep，改用幂等键</td><td><code>OrderServiceImpl.java:278-279</code></td></tr>
+            <tr><td>5</td><td>修 5 处确定性缺陷（恒真/恒假分支）</td><td>§03.1</td></tr>
+            <tr><td>6</td><td>消费者启动失败改 fail-fast，readiness 纳入消费者状态</td><td>10 处 <code>@PostConstruct</code></td></tr>
+            <tr><td>7</td><td>Topic 注册表收敛为单一源，删 78 个死常量，修 <code>RocketMqEnum</code></td><td>§06</td></tr>
+            <tr><td>8</td><td>抽取共享契约模块，消除 11 个模块的 <code>PosOrder</code>/<code>BaseResponse</code>/<code>Code</code> 复制</td><td>C-4</td></tr>
+            <tr><td>9</td><td>引入 outbox 或 <code>@TransactionalEventListener(AFTER_COMMIT)</code>，修正事件与落库顺序</td><td>§03</td></tr>
+            <tr><td>10</td><td>审计 630 处 <code>@IgnoreToken</code>，为 <code>oms-c/OrderController</code> 资金端点恢复鉴权</td><td>§08 High</td></tr>
+            <tr><td>11</td><td>合并 <code>member-pos</code> 与 <code>member-c</code>（先对 46 个差异文件做行为 diff 评审）</td><td>C-3</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

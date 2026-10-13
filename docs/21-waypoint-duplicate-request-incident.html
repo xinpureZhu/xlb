@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Waypoint 重复请求事故分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>Waypoint 重复请求事故分析</h1>
+    <p class="subtitle">一次客户端请求经 Istio waypoint 后被执行两次：重发机制、连接重置波、业务影响与修复方向。</p>
+    <p class="meta">最后更新：2026-09-08 · 数据来源：生产 Trace（VictoriaTraces）、VictoriaLogs 访问/应用日志、Prometheus/云监控指标、SLS k8s-event 与 ActionTrail</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html" class="active">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>：代码结论基于 <code>xlb-mp-bff</code>（分支 prod · 4e6cfa194 · 2026-07-28 · 与远端 0/0）与
+      <code>marketing-activity-center</code>（分支 prod · 45cd6989 · 2026-08-06 · 与远端 0/0）；
+      <code>repos/gitops</code> 目录在本机不是 git 工作副本，其结论来自目录内容而非签出状态。
+      事件数据取自生产观测面（2026-09-05 ~ 09-07），与代码分支无关。
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论摘要 <em>waypoint 在首次连接中断后重发同一 POST，业务被执行两次</em></h2>
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#s1">结论摘要</a></li>
+          <li><a href="#s2">请求链路与重发机制</a></li>
+          <li><a href="#s3">关键时间线</a></li>
+          <li><a href="#s4">连接数断崖与重置波</a></li>
+          <li><a href="#s5">业务影响</a></li>
+          <li><a href="#s6">历史案例对照</a></li>
+          <li><a href="#s7">排除项与证据缺口</a></li>
+          <li><a href="#s8">修复建议与跟进</a></li>
+        </ol>
+      </div>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">2</div><div class="l">同构 trace（301c0f27 / f80640c4），间隔 175ms</div></div>
+        <div class="stat"><div class="n">300ms</div><div class="l">第 1 次 BFF 连接死亡时刻（非定时器）</div></div>
+        <div class="stat"><div class="n">160k/10s</div><div class="l">14:23:40 ztunnel 错误爆发（基线约 1.2k/10s）</div></div>
+        <div class="stat"><div class="n">3</div><div class="l">近 7 天 award 120201 事件（marketing 侧严格查询），其中 2 条 trace 为本次 waypoint 重发</div></div>
+      </div>
+      <p>客户端一次 <code>POST /server/marketing-activity-player/c/lottery/draw</code> 经 ingressgateway → waypoint.retail-bff 后，
+      waypoint 把请求派发给 BFF pod A；约 300ms 后该下游连接被中断，waypoint 立即把<b>同一条请求原样重发</b>到 BFF pod B
+      （请求头全量复制、<code>x-envoy-attempt-count</code> 保持 1、traceparent 相同）。两次派发都完整执行业务：
+      第 1 次中奖并发奖成功，第 2 次被幂等键挡下（120201 重复请求）并触发回滚，客户端最终收到第 2 次的 500 响应。</p>
+      <div class="callout danger">
+        <b>用户可见结果与真实状态相反</b>：客户端看到「发奖失败」，但奖品已发、券已落库；第 2 次的回滚又把抽奖记录 cancel，
+        与第 1 次已完成的 confirm/complete 形成状态不一致风险，需按 draw_id 对账。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>请求链路与重发机制 <em>waypoint 只记 1 条 200 访问日志，掩盖了两次派发</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant C as 微信小程序客户端
+  participant IG as ingressgateway-istio
+  participant WP as waypoint.retail-bff
+  participant B1 as xlb-mp-bff pod A 8m2zj
+  participant B2 as xlb-mp-bff pod B 7vfp9
+  participant MK as marketing-activity-player
+  C->>IG: POST lottery/draw · x-request-id 823cf31b
+  IG->>WP: HBONE 转发 · 单一 server span
+  WP->>B1: 派发 attempt 1 · +2.7ms
+  B1->>MK: 转发 · 中奖+发奖成功 530ms
+  Note over WP,B1: +287.6ms 下游连接被中断<br/>B1 的响应无处可写 成为孤儿 span
+  WP->>B2: 重发同一 POST · +302.7ms 头部全复制
+  B2->>MK: 转发 · 120201 重复请求 · 触发回滚
+  MK-->>B2: code 500 发奖SOA调用失败
+  B2-->>WP: 200 HTTP 承载业务 500
+  WP-->>C: 客户端收到第 2 次的失败响应
+        </pre>
+        <p class="arch-title">图 1 · 一次请求被 waypoint 重发为两次业务执行的时序</p>
+      </div>
+      <p>证据要点：</p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>观测点</th><th>事实</th><th>含义</th></tr>
+          <tr><td>waypoint server span</td><td>只有 1 个，507ms，200，response_flags <code>-</code></td><td>对客户端表现为一次成功请求</td></tr>
+          <tr><td>waypoint 访问日志</td><td>同一 x-request-id 仅 1 条，duration 506ms</td><td>重发不产生第二条访问日志，常规监控不可见</td></tr>
+          <tr><td>BFF 应用日志</td><td>两个 pod 各记一次「请求路径」，<code>x-envoy-attempt-count: 1</code></td><td>重发未递增 attempt 计数，头部被原样复制</td></tr>
+          <tr><td>BFF server span</td><td>pod A 的 server span 在 285ms 提前结束，其 axios 子 span 跑到 530ms</td><td>下游连接中断发生在响应返回之前</td></tr>
+          <tr><td>trace 父子关系</td><td>两个 BFF server span 同为 waypoint server span 的子 span</td><td>重发由 waypoint 发起，而非客户端或 BFF</td></tr>
+        </table>
+      </div>
+      <div class="loc">xlb-mp-bff 转发实现：src/common/middlewares/forward.middleware.ts（axios 无超时设置，连接中断后请求在服务端继续跑完）</div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>关键时间线 <em>两次 trace 同构：首次连接死亡后 15~16ms 即重发</em></h2>
+      <div class="table-wrap">
+        <table>
+          <tr><th>相对时间</th><th>trace 301c0f27（14:23:41.579）</th><th>trace f80640c4（14:23:41.404）</th></tr>
+          <tr><td>+0ms</td><td>ingressgateway 收到请求</td><td>ingressgateway 收到请求</td></tr>
+          <tr><td>+1.5 / +2.3ms</td><td>waypoint 接手</td><td>waypoint 接手</td></tr>
+          <tr><td>+2.7 / +3.1ms</td><td>派发 pod A（8m2zj）</td><td>派发 pod A（zjvjs）</td></tr>
+          <tr><td>+287.6 / +301.9ms</td><td>pod A 下游连接中断</td><td>pod A 下游连接中断</td></tr>
+          <tr><td>+302.7 / +321.1ms</td><td>重发到 pod B（7vfp9）</td><td>重发到 pod B（wbpz2）</td></tr>
+          <tr><td>+506 / +602ms</td><td>waypoint 返回 pod B 的结果</td><td>waypoint 返回 pod B 的结果</td></tr>
+        </table>
+      </div>
+      <p>「300ms」并非任何配置的 per-try 超时：gitops 全仓检索无 <code>perTryTimeout / 300ms / backendRequest</code> 配置，
+      ASM 集群（<code>useAliIstio</code>）不渲染 istiod meshConfig；重发与连接中断的间隔仅 15~16ms（新建连接耗时），
+      说明触发条件是「连接死亡」本身。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>连接数断崖与重置波 <em>14:23:41.8 起的全集群连接重置，主峰约 15s，SSE 长连接是放大器</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph 触发窗口 14:23:41.8 至 55 主峰约15s
+    Z[ztunnel HBONE 握手 ConnectionReset 全节点]
+    S[retail-ingressgateway 到 SSE server 长连接批量断开]
+    W[waypoint 到 BFF 的在途连接被重置]
+  end
+  Z --> S
+  Z --> W
+  W --> R[waypoint 重发已派发的 POST]
+  R --> D[业务重复执行 120201]
+  S --> CL[节点同时连接数断崖 随后重连回升]
+        </pre>
+        <p class="arch-title">图 2 · 重置波、重复请求与连接数断崖的因果链</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>指标</th><th>基线</th><th>14:23:40–50</th><th>说明</th></tr>
+          <tr><td>ztunnel 错误日志</td><td>约 1.2k/10s</td><td><b>160,358</b></td><td>约 140 倍爆发；5s 粒度主峰 14:23:40–55（82k/78k/71k），随后 20s 内回落</td></tr>
+          <tr><td>其中 SSE 断连</td><td>—</td><td>采样 3,000 条中约 87%</td><td>retail-ingressgateway 5 个 pod → retail-new-pos-sse-server；另约 10% 为 pushly 长连接</td></tr>
+          <tr><td>其中 HBONE 握手重置</td><td>零星</td><td>14:23:41.8–45.8 全节点同步出现</td><td><code>proxy::h2::client ConnectionReset</code>；两条重复 trace 的首次连接中断落在该段</td></tr>
+          <tr><td>xDS 重连</td><td>约 15 次/4min</td><td>76 次/4min</td><td>控制面在该窗口有推送/重连活动</td></tr>
+          <tr><td>ALB 活跃连接（零售）</td><td>140.2k</td><td>14:27 起阶梯下滑至 94k</td><td>SSE 重连未完全恢复的后续表现</td></tr>
+        </table>
+      </div>
+      <p>节点级「同时连接数」断崖即该波的宏观表现：SSE 长连接占连接数大头，被批量重置后曲线跳水，客户端重连再把曲线拉回。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>业务影响 <em>幂等键挡住重复发奖，但回滚制造了状态不一致</em></h2>
+      <div class="table-wrap">
+        <table>
+          <tr><th>步骤</th><th>第 1 次（pod A）</th><th>第 2 次（pod B）</th></tr>
+          <tr><td>indicator preConsume</td><td>成功预扣</td><td>返回 PRE_CONSUME_EXISTS（幂等命中）</td></tr>
+          <tr><td>lottery draw</td><td>中奖 prize 200358，draw_id bb475087…</td><td>返回同一 draw_id（未重复扣机会）</td></tr>
+          <tr><td>award</td><td>发奖成功，券已发（INSERT member.coupon）</td><td><b>120201 重复请求</b></td></tr>
+          <tr><td>后续</td><td>confirm + indicator complete 全部完成</td><td>触发 rollback：lottery/draw/cancel + indicator/cancel</td></tr>
+          <tr><td>客户端</td><td>—</td><td>收到 code 500「发奖SOA调用失败…重复请求」</td></tr>
+        </table>
+      </div>
+      <div class="callout danger">
+        风险点：第 2 次回滚把 draw 记录置为 cancel，而第 1 次的发奖与 confirm 已完成，形成「记录已取消但券已发」的不一致；
+        需按 draw_id <code>bb475087889542d9b889a01194116b71</code> 核对 <code>marketing.t_yx_lottery_draw_log</code> 与发奖记录最终状态。
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>历史案例对照 <em>7 天 3 起 award 120201：1 起 waypoint 重发、1 起四 pod 并发重复、1 起单发</em></h2>
+      <div class="callout warn">
+        计数口径：以 marketing 侧 <code>{"code":120201,"msg":"重复请求"}</code> 严格匹配为准。早期用裸 token「120201」检索会命中业务字段
+        （如库存 <code>quantity:120201</code>）造成误报，本节已按严格口径重列。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>事件时间（CST）</th><th>表现</th><th>事件窗口 ztunnel 错误</th><th>判定</th></tr>
+          <tr><td>09-07 14:23:42</td><td>2 条 trace（301c0f27 / f80640c4），同秒、同 waypoint pod</td><td>244,473 / ±60s（爆发）</td><td>waypoint 重发 + 重置波触发</td></tr>
+          <tr><td>09-05 10:48:11–15</td><td>同一 request_no 在 <b>4 个 activity-player pod</b> 并发返回 120201</td><td>15,501 / 2min（背景级）</td><td>另一类重复：上游并发重试/多派发，非 waypoint 重发形态</td></tr>
+          <tr><td>09-05 10:55:03</td><td>单 pod 单次 120201</td><td>15,151 / 2min（背景级）</td><td>背景连接抖动或客户端重试，证据不足</td></tr>
+        </table>
+      </div>
+      <p>背景抖动来源：SSE 长连接的常规断开（<code>client disconnected before all data was written</code>）与零星 HBONE broken pipe，
+      基线约 120 条/秒。任何一次重置若落在「waypoint 已派发、响应未回」的窗口内即产生一次重复执行；
+      因此该缺陷是<b>常驻风险</b>，09-07 的重置波把它放大到同秒两例。09-05 10:48 的四 pod 并发形态提示还存在第二条重复路径（上游重试），建议一并排查。</p>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>排除项与证据缺口 <em>数据面/节点/负载均衡均已排除，控制面日志未采集</em></h2>
+      <div class="table-wrap">
+        <table>
+          <tr><th>假设</th><th>核对结果</th></tr>
+          <tr><td>pod 重启 / 滚动发布</td><td>14:15–14:40 ztunnel、retail-ingressgateway、SSE server、涉事 waypoint 均无容器启动；14:24+ 各 ns waypoint 替换在事件之后</td></tr>
+          <tr><td>节点故障</td><td>无 NotReady、无 reboot、无网卡错误、无 conntrack drop；节点 conntrack 分钟级锯齿为采样混叠</td></tr>
+          <tr><td>ALB/SLB 异常</td><td>无 RejectedConnection、无 502/504、5xx 平基线</td></tr>
+          <tr><td>k8s 事件</td><td>窗口内仅 AllocIPFailed（default ns vSwitch IP 耗尽，常态噪音）、探针 Unhealthy、argo WorkflowNodeFailed，与重置波无因果</td></tr>
+          <tr><td>配置来源</td><td>gitops 无 per-try/300ms 重试配置；ASM 集群不渲染 istiod meshConfig（<code>repos/gitops/apps/istio-system/istio/istiod.jsonnet</code> 被 <code>useAliIstio</code> 短路）</td></tr>
+          <tr><td>云管控操作（ActionTrail）</td><td>14:23:20–14:24:50 无 servicemesh/slb/alb/ecs/vpc 写操作；窗口外仅有 CCM 例行的 ALB/SLB 服务器组调和与 ENI 二级 IP 分配，与重置波无时间对应</td></tr>
+          <tr><td><b>缺口</b>：ASM 控制面</td><td>istiod 日志未入 VictoriaLogs（SLS 亦无对应 logstore），无法确认 14:23:41.8 的推送/证书事件；需人工在 ASM 控制台只读查询</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>修复建议与跟进 <em>先止血重发策略，再补幂等语义与观测</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1"><h4><span class="num">1</span>重发策略收紧（根治）</h4>
+          <p>waypoint 重试仅保留「请求未派发」类失败（connect-failure、refused-stream）；已派发的非幂等 POST 禁止重发。
+          配置位置在 ASM 托管侧，需人工只读核对后变更：<code>istioctl pc route &lt;waypoint-pod&gt; -n retail-bff -o yaml | grep -A8 retry</code>。</p></div>
+        <div class="mech m2"><h4><span class="num">2</span>幂等语义修正</h4>
+          <p>award 收到 120201 应回放首次结果而非 rollback；对「客户端 500 但发奖成功」加对账告警；核对本次 draw_id 最终状态。
+          同时排查 09-05 10:48 的第二条重复路径（同一 request_no 并发到达 4 个 activity-player pod）：定位发起重试的一方（客户端或上游代理），套用同样的幂等回放语义。</p></div>
+        <div class="mech m3"><h4><span class="num">3</span>观测补齐</h4>
+          <p>ztunnel 错误速率告警（&gt;1k/10s）、SSE 活跃连接数告警、waypoint 同 request-id 多派发检测、award 同 request_no 多 pod 并发检测（本次与 09-05 事件在现有面板均完全静默）。</p></div>
+        <div class="mech m4"><h4><span class="num">4</span>控制面取证</h4>
+          <p>ASM 控制台查 istiod 14:23:40 前后 push/证书日志、ztunnel workload 证书轮换事件、ALB 该秒事件，闭环重置波触发源。</p></div>
+      </div>
+      <div class="callout ok">
+        本次排查全程只读：Trace/日志/指标经 Grafana 数据源代理查询，k8s 事件经 SLS GetLogs，集群清单经 <code>aliyun cs GET</code>；未执行任何变更操作。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档基于生产观测数据与源码静态分析生成，仅供架构与故障复盘参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

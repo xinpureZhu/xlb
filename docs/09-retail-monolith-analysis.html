@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>retail 单体深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>retail ERP-POS 单体 · 代码深度分析</h1>
+    <p class="subtitle">19.9 万行、1835 个 Java 文件、608 个 HTTP 端点的单 jar 单体。多租户分库、四路持久化并存、插件化结算，以及 7 项 Critical 风险。</p>
+    <p class="meta">最后更新：2026-08-07 · 基准：分支 <code>prod</code> <code>918aa658d</code> · 数据来源：<code>retail/**</code> 源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html" class="active">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">总体结构与分层</a></li>
+        <li><a href="#s2">业务域拆解</a></li>
+        <li><a href="#s3">多租户分库机制</a></li>
+        <li><a href="#s4">集成层与插件机制</a></li>
+        <li><a href="#s5">异步与调度</a></li>
+        <li><a href="#s6">风险清单（分级）</a></li>
+        <li><a href="#s7">演进建议</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · Critical 已全部重校</strong> 分支 <code>prod</code> <code>918aa658d</code>（2026-08-06，落后 0）。
+      <p><strong>7 项 Critical 已逐条重校（见下方「重校结果」）</strong>：6 项仍存在（其中 2 项形式改善）、1 项部分修复。High/Medium 条目仍需复核。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>7 项 Critical：6 仍在 · 仅飞书 webhook 已清</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>旧结论</th><th>prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>C-1</td>
+              <td><code>@IgnoreToken</code> 短路 <code>@Server</code> 校验 → 门店零售价批量写端点无鉴权 + 跨租户写</td>
+              <td><strong>结构完全未变</strong>：<code>@IgnoreToken</code> 仍在前面把 <code>checkToken = false</code>（<code>:11-13</code>），而 <code>@Server</code> 校验仍在 <code>if (checkToken)</code> 内部（<code>:30-32</code>）→ 短路依旧成立</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C-2</td>
+              <td>服务间共享 Token 硬编码在 5+ 处源码；内嵌长期 JWT</td>
+              <td><strong>形式改善，实质未修</strong>。✅ 内嵌的长期 JWT <strong>已移除</strong>；✅ 校验改为读配置 <code>retailConfig.getErpServerToken()</code>，硬编码点从 5+ 收敛到 <strong>2 个文件</strong>。<br>❌ 但改法是 <code>@Value("${erp.server.token:56ca0211…}")</code> 与 <code>@Value("${server.secret.key:d371a4ab…}")</code>——<strong>真实凭据仍作为默认值写在源码里</strong>，环境变量缺失即静默回落（与 retail-new 同一反模式）</td>
+              <td><span class="badge warn">部分改善</span></td>
+            </tr>
+            <tr>
+              <td>C-3</td>
+              <td>生产 JWT RSA 私钥、OSS AK/SK、飞书 webhook 明文入库</td>
+              <td>✅ <strong>飞书 webhook 已清空</strong>（<code>LarkRobotGroupEnum</code> 中 0 处）；❌ OSS AK <strong>仍硬编码</strong>在 <code>config/MyConfiguration.java</code></td>
+              <td><span class="badge warn">部分修复</span></td>
+            </tr>
+            <tr>
+              <td>C-4</td>
+              <td>结算锁在真正扣款前释放 → 重复支付；反结账完全无锁</td>
+              <td><strong>两项均未变</strong>：<code>checkOrder</code> 仍是 <code>return order</code>（<code>:20</code>）在前、<code>finally { unlock }</code>（<code>:25-27</code>）在后 → 返回即释放，调用方在无锁状态下扣款；<code>reverse()</code> 中 <strong>Lock 相关代码 0 处</strong></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C-5</td>
+              <td>排序字段直接拼进原生 SQL → SQL 注入</td>
+              <td><code>.map(order -&gt; order.getProperty() + " " + order.getDirection().name())</code> <strong>仍无白名单、无转义</strong><div class="loc">dao/base/JdbcTemplateBaseDao.java:79</div></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C-6</td>
+              <td>诺诺发票回调无签名校验 → 可伪造开票状态</td>
+              <td>两个回调端点<strong>仍带 <code>@IgnoreToken</code></strong>（<code>:89</code>、<code>:102</code>），全文件<strong>无任何 <code>verifySign</code>/<code>checkSign</code></strong></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C-7</td>
+              <td>Java 8 + Boot 2.7 双 EOL；pdfbox RC 版上生产</td>
+              <td><strong>完全未变</strong>：<code>java.version 1.8</code>、<code>spring-boot-starter-parent 2.7.1</code>、<code>pdfbox 3.0.0-RC1</code></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>结论</strong> 这一个月里本仓只清掉了<strong>飞书 webhook</strong> 与<strong>内嵌长期 JWT</strong>两项，其余 Critical 悉数保留。C-2 的改法尤其值得注意：<strong>把凭据从裸常量改成 <code>${key:真实默认值}</code> 并不算修复</strong>——它只是让「配置正确时安全」，而环境变量一旦缺失就静默回落到真实凭据，且值仍在 git 历史中。
+        <p>三项<strong>可被外部直接利用</strong>的缺陷（C-1 无鉴权跨租户写价、C-5 SQL 注入、C-6 可伪造开票）应优先处理；C-4 属资金正确性问题，同样紧急。</p>
+      </div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>19.9 万行 · 608 端点 · 7 项 Critical</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">199,682</div><div class="l">代码行数</div></div>
+        <div class="stat"><div class="n">1,835</div><div class="l">Java 文件</div></div>
+        <div class="stat"><div class="n">608</div><div class="l">HTTP 端点（75 controller）</div></div>
+        <div class="stat"><div class="n">253</div><div class="l">JPA @Entity</div></div>
+        <div class="stat"><div class="n">4</div><div class="l">并存的持久化范式</div></div>
+        <div class="stat"><div class="n">11</div><div class="l">外部系统 connector</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">RabbitMQ 消费者 / xxl-job handler</div></div>
+        <div class="stat"><div class="n">EOL</div><div class="l">Java 8 + Boot 2.7 均已停止支持</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>Critical 概览（7 项）</strong>
+        <ol>
+          <li><strong>鉴权可被绕过</strong>：<code>@IgnoreToken</code> 会短路 <code>@Server</code> 校验，导致门店零售价批量增删改端点<strong>完全无鉴权</strong>，且 <code>companyId</code> 取自请求体 → 跨租户任意写。</li>
+          <li><strong>服务间共享 Token 硬编码</strong>在 5+ 处源码，持有它即可让所有权限检查无条件通过；另内嵌一枚有效期到 2099 年的 JWT。</li>
+          <li><strong>生产 JWT RSA 私钥、OSS AK/SK、短信 apikey、飞书 webhook</strong> 明文入库。</li>
+          <li><strong>结算分布式锁在真正扣款前就释放</strong> → 并发重复支付；反结账完全无锁 → 重复退款。</li>
+          <li><strong>排序字段直接拼进原生 SQL</strong> → SQL 注入（6 处 DAO 可达）。</li>
+          <li><strong>诺诺发票回调无签名校验</strong> → 可伪造开票状态并批量回写订单。</li>
+          <li><strong>Java 8 + Spring Boot 2.7 双 EOL</strong>，且依赖 guava 20.0(2016)、pdfbox RC 版上生产、fastjson AutoType 作 Redis 序列化器。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>总体结构与分层 <em>四路持久化并存 · 无强约束</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  CTRL["controller · 75 类<br/>608 端点 · 扁平点分路由<br/>hxl.retail.域.动作"]
+  ASP["asp/ControllerAspect<br/>鉴权 + 租户分库路由"]
+  RPC["rpc · 8<br/>内部编排（非远程）"]
+  SVC["service · 130<br/>impl 仅 5 个"]
+  PLG["plugin · 26<br/>coupon / payment / promotion"]
+  subgraph PERSIST["持久化四路并存"]
+    R1["repository · 75<br/>Spring Data JPA"]
+    R2["dao · 131<br/>QueryDSL BaseDao"]
+    R3["dao/base/JdbcTemplateBaseDao<br/>仅 3 个 DAO 使用"]
+    R4["原生 SQL · 80 处<br/>createNativeQuery"]
+  end
+  DS["datasource<br/>CustomRoutingDataSource<br/>多租户分库"]
+  DB[("MySQL 分库 × N")]
+  CONN["connector · 135<br/>11 个外部系统"]
+  CTRL --> ASP --> SVC
+  CTRL --> RPC --> SVC
+  SVC --> PLG
+  SVC --> PERSIST
+  PERSIST --> DS --> DB
+  SVC --> CONN
+  classDef warn fill:#fffbeb,stroke:#d97706
+  class PERSIST warn
+        </pre>
+        <p class="arch-title">图 1 · 分层结构（黄色 = 四种持久化范式并存，无统一约定）</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>包</th><th>文件数</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>dto</code></td><td>771</td><td>req/res/vo/exp/imp/mq/server 七类子包</td></tr>
+            <tr><td><code>entity</code></td><td>259</td><td>其中 253 个 <code>@Entity</code></td></tr>
+            <tr><td><code>connector</code></td><td>135</td><td>11 个外部系统适配</td></tr>
+            <tr><td><code>dao</code></td><td>131</td><td>QueryDSL 为主，834 处 <code>jpaQueryFactory</code> 引用</td></tr>
+            <tr><td><code>service</code></td><td>130</td><td><code>service/impl</code> 仅 5 个——多数是直接 <code>@Service</code> 具体类</td></tr>
+            <tr><td><code>controller</code></td><td>75</td><td>608 个端点；443 个在根路径，60 个在 <code>/old</code> 前缀（促销写操作已迁走但旧实现仍在线）</td></tr>
+            <tr><td><code>quartz</code></td><td>23</td><td>自研多租户调度（非 Quartz 框架）</td></tr>
+            <tr><td><code>listener</code></td><td>3</td><td><strong>Spring 事务事件监听，不是 MQ 监听器</strong></td></tr>
+            <tr><td><code>mq</code></td><td>4</td><td><strong>仅 producer</strong></td></tr>
+            <tr><td><code>health</code></td><td>1</td><td><strong>整文件被注释掉</strong>（<code>health/HealthIndicator.java:1-33</code>）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>1.1 四路持久化的后果</h3>
+      <p>同一实体既可能经 <code>EntityManager</code> 一级缓存写入（<code>BaseDao.update</code> → <code>merge</code>），也可能被 <code>@Modifying</code> JPQL 或原生 SQL 绕过缓存直接改库，<strong>持久化上下文与数据库状态可能不一致</strong>。<code>CustomPageDaoV2</code> 的 <code>setupQuery</code> 有反射白名单校验，说明团队知道该做校验，但同类的 <code>find()</code>/<code>findByTable()</code> 与全部原生 SQL 路径都没有。</p>
+      <div class="loc">dao/BaseDao.java:13-37 · dao/CustomPageDaoV2.java:30-42,49-60,84-116 · repository/PosOrderRepository.java:23-142</div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>业务域拆解 <em>上帝实体 · 中文字符串当枚举</em></h2>
+
+      <h3>2.1 商品与门店</h3>
+      <ul>
+        <li><code>Item</code>（<strong>761 行，最大实体</strong>）内嵌大量业务常量，且用<strong>中文字符串常量当枚举</strong>：成本核算方式 <code>"中心手工批次"</code>/<code>"移动加权平均"</code>、采购范围 <code>"不限"</code>/<code>"总部购配"</code>/<code>"门店采购"</code>。主键由 <code>EntityIdGenerator</code> 以 <code>Redis HINCRBY</code> + <code>String.format("%d%08d", companyId, seq)</code> 生成。<div class="loc">entity/item/Item.java:41,44-78 · common/util/EntityIdGenerator.java:23-40</div></li>
+        <li><code>Store</code>（<strong>672 行、110+ 字段</strong>）是本服务的「上帝实体」，横跨基础地址 / 财务租金 / 配送 / DMS 分红 / BMS 结算 / 支付商户 / 证照 / 价格模板 8 个领域，并<strong>把第三方开票 token 明文存在业务表字段</strong> <code>nuonuoToken</code>。<div class="loc">entity/store/Store.java:34,113-513</div></li>
+        <li>商品 CRUD 已不在本服务（<code>ItemController</code> 仅 4 个端点），本服务只做查询与 POS 侧派生数据。商品图片走定时任务压缩到 200KB → 打 zip → 上传 OSS → POS 拉取。</li>
+      </ul>
+
+      <h3>2.2 POS 订单模型：一次写入 → 多份物化视图</h3>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  UP["POS 上传"] --> TMP["PosOrderTemp<br/>PosOrderDetailTemp"]
+  TMP --> MAIN["PosOrder（主键 fid）<br/>PosOrderDetail"]
+  MAIN --> AGG["REPLACE INTO ... SELECT 重算"]
+  AGG --> D1["PosOrderDay"]
+  AGG --> D2["PosOrderDayHour"]
+  AGG --> D3["PosOrderDetailDay / Month"]
+  AGG --> D4["PosPaymentDay"]
+  MAIN --> SIDE["PosPayment / PosCouponDetail<br/>PosOrderPoint / PosOrderInvoice<br/>PosOrderStockQueue"]
+  SETTLE["PosSettlementOrder（新链路）<br/>571 行"] -->|createPosOrder 降维| MAIN
+  SETTLE --> JSON["PaymentDetail 整体序列化为 JSON 列<br/>无法 SQL 查询/对账/加索引"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class JSON bad
+        </pre>
+        <p class="arch-title">图 2 · POS 订单写入与汇总链路</p>
+      </div>
+      <ul>
+        <li><code>PosOrder</code> 用 4 个 Hibernate <code>@Formula</code> 做派生列——<strong>把 MySQL 方言写进实体</strong>，且 <code>@Formula</code> 列在任何查询中都会被 select，无法关闭。<code>cal()</code> 用 <code>List&lt;String&gt;.contains</code> 去重，O(n²)。<div class="loc">entity/pos/PosOrder.java:275-285,354-381</div></li>
+        <li><strong>结算规则</strong>：应收 = 订单总额 − 抹零 − 券金额 − 四舍五入；<code>dueInMoney &gt; 0</code> 只更新预支付明细，<code>&lt;= 0</code> 才调 <code>processOrder</code> 真实扣款。<div class="loc">service/PosSettlementPayService.java:75-156</div></li>
+        <li><strong>危险默认值</strong>：<code>SettlementPayMethodEnum.getEnum(name)</code> 未匹配时<strong>默认返回 <code>CASH</code></strong>——未知支付方式被静默当现金处理。<div class="loc">common/constants/SettlementPayMethodEnum.java:39-46</div></li>
+      </ul>
+
+      <h3>2.3 其余域</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>域</th><th>要点</th></tr></thead>
+          <tbody>
+            <tr><td>价格与电子价签</td><td>零售价模板 / 门店零售价 / 好价模板 / 固定价 / 价签任务；电子价签经 RabbitMQ 两个队列（华三 <code>PRICETAG_price_sync</code>、中科 <code>_zk</code>）下发</td></tr>
+            <tr><td>调价</td><td>门店零售调价单 + 调价申请单，接 OA 审批中心（Feign）</td></tr>
+            <tr><td>促销</td><td>特价 / 金额折扣 / 多买优惠 / 赠品 / 折扣码 / 商品模板 / 政策活动；写操作已挂 <code>/old</code> 前缀，实际计算走 <code>PromotionPolicyPlugin</code></td></tr>
+            <tr><td>发票</td><td>诺诺 open-sdk + 江苏航信查验；租户路由是硬编码 <code>fid.startsWith()</code> 的 11 分支墙，两个回调方法 130 行几乎逐字重复</td></tr>
+            <tr><td>用户权限</td><td>User / Role / Authority / UserRole / UserToken + <code>xlb-sdk-ancient</code> 的 IAuth</td></tr>
+            <tr><td>AI 能力</td><td>AI 激活码与特征包全部委托六小象 <code>SleConnector</code>；POS 异常操作日志从 OSS 读取后入库并归档</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>多租户分库机制 <em>库配置存 Redis · 连接数可达数千</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph BOOT["启动阶段"]
+    B1["MultiDataSourceConfig.init()"]
+    B2["读 Redis: REDIS_CACHE_DATASOURCE<br/>List{dbname,url,username,password}"]
+    B3["每条建一个 HikariDataSource"]
+    B4["写回 Redis: DATASOURCE_NAMES<br/>供调度器使用"]
+    B1 --> B2 --> B3 --> B4
+  end
+  subgraph REQ["请求阶段"]
+    R1["ControllerAspect.doAround"]
+    R2{"请求体有 companyId?"}
+    R3["Redis hash: companyId → dbname"]
+    R4["读 header DB"]
+    R5["无 @IgnoreDB 则抛：未指定数据源"]
+    R6["CurrentDb.setDbName（ThreadLocal）"]
+    R1 --> R2
+    R2 -->|是| R3 --> R6
+    R2 -->|否| R4 --> R6
+    R4 -.都没有.-> R5
+  end
+  R6 --> RD["CustomRoutingDataSource<br/>determineCurrentLookupKey"]
+  RD --> DB[("对应租户分库")]
+  CI["CustomInterceptor.afterCompletion<br/>清理 ThreadLocal"] -.收尾.-> R6
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class B2 bad
+        </pre>
+        <p class="arch-title">图 3 · 多租户分库路由（红色 = 明文密码存 Redis）</p>
+      </div>
+      <div class="callout danger">
+        <strong>三个隐患</strong>
+        <ul>
+          <li>分库连接信息（<strong>含明文密码</strong>）存在 Redis；Redis 不可用则应用启动直接 NPE 失败。<div class="loc">datasource/MultiDataSourceConfig.java:45-82</div></li>
+          <li>每个租户各占 <code>maximum-pool-size</code> 个连接，生产配置为 <strong>500</strong>，× 分库数 → 潜在<strong>数千连接</strong>。<div class="loc">application-prod.yml:19</div></li>
+          <li>租户判定优先取<strong>请求体的 <code>companyId</code></strong>，与 C-1 的鉴权绕过叠加即形成跨租户任意读写。</li>
+        </ul>
+      </div>
+      <p>双 Redis 客户端（common / retail）各有静态门面工具类；值序列化器是基于 fastjson <strong>AutoType</strong> 的自定义实现。另有一处配置 bug：<code>retailRedisConnectionFactory()</code> 误用了 <code>commonJedisPoolConfig()</code>，导致 <code>retailJedisPoolConfig</code> 成为死 bean。</p>
+      <div class="loc">config/RedisConfig.java:85,151-161,191</div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>集成层与插件机制 <em>11 个 connector · PluginRegistry 多数方法是假实现</em></h2>
+
+      <h3>4.1 connector 概览</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>包</th><th>目标</th><th>客户端</th><th>要点</th></tr></thead>
+          <tbody>
+            <tr><td><code>ama</code></td><td>乐檬 nhsoft 云 POS</td><td>RestTemplate</td><td><strong>无配置项，40+ 个 URL 全部硬编码</strong> <code>https://cloud.nhsoft.cn/api/...</code>；401 时刷 token 重试一次；审核类用 guava-retrying（1s × 3 次）</td></tr>
+            <tr><td><code>approval</code></td><td>OA 审批中心</td><td>OpenFeign</td><td>审批实例与任务；无重试</td></tr>
+            <tr><td><code>erp</code></td><td>ERP 主服务 / MDM / 零售价 / 价签</td><td>RestTemplate + Feign</td><td>6 个 connector 并存</td></tr>
+            <tr><td><code>member</code></td><td>会员中心</td><td>RestTemplate</td><td>卡消费/存款/反冲、积分、券核销；<strong>全部异常统一转「会员系统异常」，吞掉原始 msg</strong></td></tr>
+            <tr><td><code>nuonuo</code></td><td>诺诺发票</td><td>open-sdk + 自建</td><td>URL 硬编码；失败靠 <code>@Async</code> 补偿</td></tr>
+            <tr><td><code>retail</code></td><td><strong>自调用本服务</strong></td><td>Feign</td><td>用 HTTP 调自己触发同步任务</td></tr>
+            <tr><td><code>sle</code></td><td>六小象 AI</td><td>RestTemplate</td><td>设备激活码</td></tr>
+            <tr><td><code>xlb</code></td><td>老新零帮遗留单体</td><td>HttpUtil</td><td>SpEL 解析的 <code>companyId→URL</code> 映射；<strong>51 个端点常量只用了 3 个 → 48 个死代码</strong></td></tr>
+            <tr><td><code>xpay</code></td><td>支付网关</td><td>OkHttp</td><td><code>IOException</code> → 「支付失败」，<strong>丢失网关原因</strong>；readTimeout 200s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>超时策略不一致：<code>restTemplate</code> 3s/60s、<code>snakeRestTemplate</code> <strong>30s/200s</strong>、<code>amaSnakeRestTemplate</code> 3s/90s。</p>
+
+      <h3>4.2 插件机制</h3>
+      <p>三类插件（促销 <code>PromotionPolicyPlugin</code> / 券 <code>CouponPlugin</code> / 支付 <code>SettlementPayPlugin</code>）均继承 Spring Plugin 的 <code>Plugin&lt;D&gt;</code>，由 <code>RetailApplication.registerPlugins()</code> 在 <code>@PostConstruct</code> 时用 <code>getBeansOfType</code> 扫描注册进 <code>static final HashMap</code>。</p>
+      <div class="callout warn">
+        <strong>PluginRegistry 是残缺实现</strong> 三个 registry 除 <code>registerPlugin()</code>/<code>getRequiredPluginFor()</code> 外，其余 15+ 个接口方法全是假实现：<code>countPlugins()</code> 返回 0、<code>contains()</code>/<code>hasPluginFor()</code> 返回 false、<code>getPlugins()</code> 返回空列表、<strong><code>iterator()</code> 直接返回 <code>null</code></strong>；<code>CouponPluginRegistry.getPluginFor()</code> 恒返回 <code>Optional.empty()</code>。任何按接口契约使用这些方法的代码都会静默失效或 NPE。
+        <div class="loc">plugin/registry/PromotionPluginRegistry.java:27,90-114 · CouponPluginRegistry.java:42-44</div>
+      </div>
+      <p>另外 <code>static final HashMap</code> 作为注册表在启动后被写入——虽然当前只在 <code>@PostConstruct</code> 单线程写一次，但缺少不可变封装与启动期完整性校验。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>异步与调度 <em>RabbitMQ 零消费者 · xxl-job 零 handler</em></h2>
+      <div class="grid cols-3">
+        <div class="mech m4">
+          <h4><span class="num">1</span>RabbitMQ 纯生产者</h4>
+          <p>配置了 <code>acknowledge-mode: manual</code> + <code>prefetch: 20</code>，但全库 <code>@RabbitListener</code>/<code>basicAck</code> 匹配数为 <strong>0</strong>——手动 ack 配置完全是死配置。5 个队列有生产者，3 个配置项无任何引用。发送未开 publisher confirm/return。</p>
+          <div class="loc">application.yml:90-106,163-171 · util/RabbitMqUtil.java:17-50</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>xxl-job 空转注册</h4>
+          <p><code>XxlJobSpringExecutor</code> 已注册（port 9999、accessToken <code>default_token</code>），但全库 <code>@XxlJob</code> 匹配数为 <strong>0</strong>；两个类仍 import <code>XxlJobHelper</code> 但未使用。执行器只是空转心跳。</p>
+          <div class="loc">config/XxlJobConfig.java:35-48</div>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">3</span>自研多租户调度</h4>
+          <p><code>@CustomScheduled</code> 复刻 Spring <code>@Scheduled</code>，BeanPostProcessor 对<strong>每个分库 × 每个 job 方法</strong>各注册一个任务，方法签名必须是 <code>void x(String dbName)</code>。线程池 <code>poolSize 300</code> 即为此设计的直接后果。</p>
+          <div class="loc">quartz/config/CustomScheduledAnnotationBeanPostProcessor.java:278-310 · config/MyConfiguration.java:76-82</div>
+        </div>
+      </div>
+      <p><code>listener/</code> 下的是 <strong>Spring 事务事件</strong>而非 MQ 监听：<code>PosOrderListener</code> 在 <code>AFTER_COMMIT</code> 把 <code>PosOrder</code> 推到 <code>amq.topic</code>；<code>TimingEventListener</code> 实际是 OkHttp 的 <code>EventListener</code>，<strong>每个支付请求产生约 14 条 INFO 日志</strong>。</p>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>风险清单（分级） <em>Critical 7 · High 9 · Medium 5 组</em></h2>
+
+      <h3>Critical</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td>C-1</td><td><strong><code>@IgnoreToken</code> 短路 <code>@Server</code> 校验</strong>：<code>@Server</code> 的检查写在 <code>if (checkToken)</code> 内部，被 <code>@IgnoreToken</code> 提前置 false。同时标注两者的端点 = 完全无鉴权，包括<strong>门店零售价 batchSave/batchUpdate/batchDelete/batchClearPrice</strong>。叠加 <code>companyId</code> 取自请求体 → <strong>跨租户任意写</strong></td><td><code>asp/ControllerAspect.java:131-157,239-245</code> · <code>controller/StoreRetailPriceController.java:428-470</code></td></tr>
+            <tr><td>C-2</td><td><strong>服务间共享 Token 硬编码在 5+ 处</strong>；持有 <code>SERVER_TOKEN</code> 即 <code>isServer()==true</code>，使所有 <code>checkAuthority</code>/<code>checkStoreIds</code> 无条件通过。另内嵌一枚 <code>exp=2099年</code> 的长期 JWT。无法轮换、Git 全历史可检索</td><td><code>asp/ControllerAspect.java:60-61,180</code> · <code>common/util/HttpUtil.java:45-65</code></td></tr>
+            <tr><td>C-3</td><td><strong>生产密钥明文入库</strong>：生产 JWT RSA 私钥（PKCS#8 全文）、六小象 secret（dev 与 prod 同一对）、云片 apikey、youyou token、OSS AK/SK（其中一对写在代码里 dev/prod 共用）、6 个飞书/企微机器人 webhook</td><td><code>application-prod.yml:167</code> · <code>config/MyConfiguration.java:65-69</code> · <code>common/constants/LarkRobotGroupEnum.java:18-23</code></td></tr>
+            <tr><td>C-4</td><td><strong>结算锁在扣款前释放 → 重复支付</strong>：<code>checkOrder</code> 在 <code>finally</code> 里解锁后才返回，调用方在无锁状态下走真实扣款。lock key 不含 companyId（多租户可碰撞），lease 10s ≪ 支付链路 200s。<strong>反结账完全无锁 → 重复退款</strong></td><td><code>service/PosSettlementOrderService.java:133-162</code> · <code>PosSettlementPayService.java:77,142,167-206</code></td></tr>
+            <tr><td>C-5</td><td><strong>SQL 注入</strong>：排序字段 <code>getProperty()</code> 从请求体直接拼进 ORDER BY，无白名单无转义；<code>BaseUtil.toCamelCase</code> 只做下划线转驼峰，不过滤引号/空格/逗号/<code>--</code>。可达 6 处 DAO</td><td><code>dao/base/JdbcTemplateBaseDao.java:74-85</code> · <code>dao/StoreRetailPriceDao.java:218,694</code> 等</td></tr>
+            <tr><td>C-6</td><td><strong>诺诺回调无签名校验</strong>：两个端点 <code>@IgnoreToken @IgnoreDB</code>，无签名/时间戳/IP 限制 → 任意人可把任意发票改为 <code>FINISH</code> 并写入伪造发票号，还能批量回写订单的 <code>invoiceId</code></td><td><code>controller/NuoNuoController.java:56-59,155-158</code></td></tr>
+            <tr><td>C-7</td><td><strong>双 EOL</strong>：Java 8 公共更新终止；Spring Boot 2.7 OSS 支持已于 2023-11-24 结束 → Framework 5.3 / Security / Tomcat 9 均不再修 CVE。伴随 guava 20.0(2016)、httpclient 4.5.6(2018)、pdfbox <strong>3.0.0-RC1 上生产</strong>、fastjson AutoType 作 Redis 序列化器、<strong>区间版本依赖导致构建不可重现</strong></td><td><code>pom.xml:18,120</code> · <code>Dockerfile:1</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>High</h3>
+      <ul>
+        <li><strong>H-1 事务内跨网络调用（普遍）</strong>：<code>PosOrderService</code> 类级 <code>@Transactional</code>，类内直接调乐檬/会员/诺诺，其中开票主流程横跨 130 余行，还有<strong>在分页 while 循环内</strong>反复远程调用。长事务 + 连接池占用 + 远程失败即回滚全部。<div class="loc">service/PosOrderService.java:90,1186-1888</div></li>
+        <li><strong>H-2 MQ 消息在事务提交前发出</strong>（与 retail-new 同类问题）。</li>
+        <li><strong>H-3 <code>@Async</code> 落到 <code>SimpleAsyncTaskExecutor</code></strong>：每任务一线程、无界，突发流量可耗尽线程。</li>
+        <li><strong>H-4 全局可变枚举字段被运行时改写</strong> → 线程不安全。</li>
+        <li><strong>H-5 JPA N+1 / EAGER 全表 / 逐条更新</strong>。</li>
+        <li><strong>H-6 四路持久化并存的一致性风险</strong>（见 §01.1）。</li>
+        <li><strong>H-7 无限制 CORS</strong>。</li>
+        <li><strong>H-8 TLS 证书校验被全局关闭</strong>。</li>
+        <li><strong>H-9 约 130 个 <code>@IgnoreToken</code> 的作业触发端点</strong>——未鉴权即可触发同步/重算类任务。</li>
+      </ul>
+
+      <h3>Medium</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th></tr></thead>
+          <tbody>
+            <tr><td>M-1</td><td><strong>单体耦合度</strong>：608 端点 / 253 实体集中一个 jar；<code>Store</code> 110+ 字段、<code>Item</code> 761 行、<code>StoreItemAttributeService</code> 1169 行、<code>PosAbnormalOperateAnalysisController</code> 682 行</td></tr>
+            <tr><td>M-2</td><td><strong>死代码</strong>：<code>xlb</code> connector 48 个未用端点常量、3 个 RabbitMQ 死配置项、<code>sendTopicJsonMessage</code> 无调用点、<code>health/HealthIndicator</code> 整文件注释、<code>retailJedisPoolConfig</code> 死 bean、多个注释掉的 job</td></tr>
+            <tr><td>M-3</td><td><strong>硬编码 URL 与魔法数字</strong>：乐檬 40+ URL、诺诺 URL、诺诺回调的 11 分支 <code>fid.startsWith()</code> 租户墙、dev 环境 <code>retail-manager</code> 内网地址</td></tr>
+            <tr><td>M-4</td><td><strong>缺失校验</strong>：<code>Long.valueOf(fid)</code> 非数字即异常、<code>readInvoice</code> 返回 null 即 NPE、<code>SettlementPayMethodEnum</code> 未匹配静默当现金</td></tr>
+            <tr><td>M-5</td><td><strong>插件与注册相关</strong>：<code>@ComponentScan(basePackages={"com.hxl.retail.plugin"})</code> 覆盖了 <code>@SpringBootApplication</code> 的隐式扫描，当前能工作依赖注解合并语义，语义脆弱且冗余</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>演进建议 <em>先止血，再拆分</em></h2>
+      <ol>
+        <li><strong>立即止血（安全）</strong>：修 <code>ControllerAspect</code> 让 <code>@Server</code> 校验不被 <code>@IgnoreToken</code> 短路；轮换全部硬编码 Token 与明文密钥并清理 Git 历史；给诺诺回调加签名与来源校验；给排序字段加白名单。</li>
+        <li><strong>修资金正确性</strong>：把结算锁的持有范围扩展到真实扣款完成，key 加入 <code>companyId</code>，lease 对齐支付超时；给反结账加锁。</li>
+        <li><strong>事务边界治理</strong>：把 connector 调用移出 <code>@Transactional</code>；MQ 改为 <code>AFTER_COMMIT</code> 或 outbox；给 <code>@Async</code> 配有界线程池。</li>
+        <li><strong>收敛持久化范式</strong>：选定 QueryDSL 或 JPA 其一为主，原生 SQL 集中到少数明确的 DAO 并强制白名单。</li>
+        <li><strong>升级路径</strong>：Java 8 → 17/21、Boot 2.7 → 3.x 是前置条件（已被注释掉的 OTLP/actuator 依赖正因版本不兼容而失效）；同步替换 fastjson 序列化器、升级 guava/poi/pdfbox。</li>
+        <li><strong>拆分方向</strong>：本服务与 <code>retail-new</code> 并存，POS 结算新链路（<code>PosSettlementOrder</code>）与促销写操作（<code>/old</code> 前缀）已在迁移中。建议按 商品查询 / POS 结算 / 价格价签 / 促销 四块继续剥离，多租户分库机制应随之改为按服务独立管理。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

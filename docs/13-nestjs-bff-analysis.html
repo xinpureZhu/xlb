@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NestJS BFF 群深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>NestJS BFF 群 · 代码深度分析</h1>
+    <p class="subtitle">6 个 NestJS 服务 + 1 个骨架。鉴权装配的系统性缺陷、遗留 BFF 双活风险、积分下单加固方案的逐条落地核验，共 10 项 Critical。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>prod</code>×5 · 数据来源：各仓源码 + gitops 部署清单交叉验证</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html" class="active">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">鉴权装配全景</a></li>
+        <li><a href="#s2">积分下单加固核验</a></li>
+        <li><a href="#s3">遗留 BFF 双活风险</a></li>
+        <li><a href="#s4">auth-server Token 代理</a></li>
+        <li><a href="#s5">cms-server 权限模型</a></li>
+        <li><a href="#s6">bff_pos 结算链路</a></li>
+        <li><a href="#s7">mall-mcp 骨架</a></li>
+        <li><a href="#s8">风险清单（分级）</a></li>
+        <li><a href="#s9">修复排序</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · 部分已重校</strong> 现均在 <code>prod</code>：xlb-mp-bff <code>4e6cfa194</code>、xlb_bff_retail <code>e187d58ad</code>、xlb_retail_bff_pos <code>b6972e4d</code>、cms-server <code>7910af2</code>、auth-server <code>642dc76</code>（均落后 0）；mall-mcp 仍无提交。
+      <p><strong>§01 鉴权装配</strong>与<strong>§02 积分下单加固</strong>已按最新 prod <strong>逐文件重新核验</strong>（结论见下）。<strong>§03 之后各节仍写于更新之前</strong>，其中上游依赖清单、Redis/ES 用法、cms 权限细节与风险行号需再复核。</p>
+    </div>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>10 项 Critical · 鉴权是系统性缺陷</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">10</div><div class="l">Critical 风险</div></div>
+        <div class="stat"><div class="n">15</div><div class="l">High 风险</div></div>
+        <div class="stat"><div class="n">4/6</div><div class="l">服务的全局 Guard 实际无效</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">服务有分布式限流</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>最严重的发现：生产 JWT 密钥是可猜字符串</strong> gitops 中 <code>JWT_SECRET</code> 的 prod 值是完整的字母表序列（<code>0123456789ABC...xyz</code>）。任何人可为<strong>任意 C 端会员</strong>签发合法 token，绕过 mp-bff / bff_retail 的全部 AuthGuard；配合下文的积分下单缺口，可任意冒名下单、消费他人积分/储值/券。
+      </div>
+      <div class="callout danger">
+        <strong>鉴权装配的系统性缺陷</strong>
+        <ul>
+          <li><code>xlb_retail_bff_pos</code>（prod <strong>400-450 副本</strong>）与 <code>auth-server</code> 的 AuthGuard <strong><code>return true</code> 无条件放行</strong>——两者都实现了 <code>getUser()</code> 却<strong>从未调用</strong>，<code>@NoNeedLogin()</code> 装饰器全是死代码。</li>
+          <li><code>cms-server</code> 用 <code>jwt.decode()</code> <strong>不验签</strong>，且 iAuth 权限校验被注释掉。</li>
+          <li><code>cms-server-c</code> 形态（prod <strong>80-150 副本 + 公网可达</strong>）<strong>完全没有注册全局 Guard</strong>——Guard 只在 <code>APP === 'cms'</code> 时注册，而同一镜像的全部 admin 写接口在 C 端形态下零鉴权暴露。</li>
+          <li><code>xlb-mp-bff</code> 的 <code>ForwardMiddleware</code> 代理链路同样只 <code>decode</code> 不验签，却把解析出的 <code>memberId</code> 写进下游转发头。</li>
+          <li><code>auth-server</code> 还暴露一个<strong>转储全部缓存 token 的接口</strong>——内网任意调用方可拉取微信/支付宝/快手/抖音/乐檬全平台的 access_token 与 refresh_token 明文。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>鉴权装配全景 <em>只有 2 个服务真正验签</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph OK["真实 JWT 验签 ✅"]
+    MP["xlb-mp-bff<br/>prod 120-200 副本<br/>verifyAsync + 踢出 + 黑名单"]
+    BR["xlb_bff_retail（遗留孪生）<br/>prod 20-200 副本<br/>verifyAsync"]
+  end
+  subgraph BAD["Guard 实际无效 ❌"]
+    POS["xlb_retail_bff_pos<br/>prod 400-450 副本<br/>return true"]
+    AUTH["auth-server<br/>return true<br/>+ 暴露 token 转储接口"]
+    CMS["cms-server (APP=cms)<br/>jwt.decode 不验签<br/>iAuth 校验被注释"]
+    CMSC["cms-server-c<br/>prod 80-150 副本 + 公网<br/>完全无 Guard"]
+  end
+  MID["ForwardMiddleware<br/>代理 lottery/xlbapi/openapi/server<br/>decode 不验签 → 写下游 memberId 头"]
+  MP -.-> MID
+  JWT["JWT_SECRET (prod)<br/>= 完整字母表字符串"]
+  JWT -.可伪造任意会员.-> OK
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class BAD,MID,JWT bad
+        </pre>
+        <p class="arch-title">图 1 · 六个服务的鉴权实际效果</p>
+      </div>
+      <p><strong>共性缺失</strong>：4 个 BFF/CMS <strong>无任何限流</strong>（无 <code>ThrottlerModule</code>/<code>rate-limiter-flexible</code>），Body 上限 <strong>100MB</strong>；全仓 DTO <strong>无 class-validator 规则</strong>且 <code>ValidationPipe</code> 未开 <code>whitelist</code>/<code>forbidNonWhitelisted</code> → 参数可为任意类型/负数/超长值并经 <code>...rest</code> 透传给下游（mass assignment）。<code>auth-server</code> 是唯一有限流的仓，但它是<strong>进程内内存</strong>限流（实际额度 = 200 × 副本数），超限抛裸 <code>Error</code> 被转成 500 而非 429，且集群内 <code>request.ip</code> 常为网关 IP → 全局共享一个桶。</p>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>积分下单加固核验 <em>已按最新 prod 重校：1 已修 · 1 大幅修复 · 1 部分 · 1 未修</em></h2>
+      <div class="callout ok">
+        <strong>本节已按最新 prod 重新核验</strong>（<code>xlb-mp-bff</code> <code>4e6cfa194</code>，2026-07-28）。文件已从 2892 行增长到 <strong>3459 行</strong>，加固有实质进展，下表为<strong>当前真实状态</strong>。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>漏洞</th><th>xlb-mp-bff 最新 prod</th><th>xlb_bff_retail（遗留孪生）</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><code>member_id</code> 未与 JWT 交叉校验</td><td><span class="badge warn">部分修复</span> <code>create</code>(:1691) 与 <code>flashSaleCreate</code>(:2555) 有校验，<strong><code>promotionCreate</code>(2368-2535) 仍无</strong></td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td>2</td><td><code>company_id</code> 可篡改</td><td><span class="badge danger">仍未修复</span> 装饰器仍读请求头，JWT payload 仍无 <code>companyId</code></td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td>3</td><td><code>order_payments</code> 组合校验缺失</td><td><span class="badge ok">已大幅修复</span> 新增金额一致性校验 + 支付项服务端白名单重建</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td>4</td><td><code>activity_type</code>/<code>policy_type</code> 可篡改</td><td><span class="badge ok">已修</span> <code>policy_type</code> 硬编码（:2504 JFDH / :2723 JFMS）</td><td><span class="badge danger">仍存在</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <strong>漏洞 3 的修复方式值得肯定</strong> 新增了两层防护，把「金额可篡改」这条路基本封死：
+        <ul>
+          <li><strong><code>assertPaymentAmountMatch</code></strong>（:1825-1841）：比对前端提交的 <code>point</code>/<code>price</code> 与服务端计算的 <code>payPoint</code>/<code>payMoney</code>，不一致直接抛「商品信息变更请重新下单」。</li>
+          <li><strong><code>buildOmsOrderPayments</code></strong>（:2009-2056）：<strong>白名单式重建</strong>支付项——用 <code>baseOf()</code> 剥离前端传入的 <code>point</code>/<code>price</code>，只输出 <code>[pointPayment]</code> 或 <code>[pointPayment, wxPayment]</code>，且 <code>amount</code> 一律取服务端计算值。<strong>攻击者提交的任何其它 <code>payment_type</code> 都会被直接丢弃</strong>——旧版指出的「隐式 else 保留原 amount」漏洞已封堵。</li>
+        </ul>
+      </div>
+
+      <div class="callout danger">
+        <strong>漏洞 1 出现覆盖缺口</strong> 三个下单入口中<strong>只有两个</strong>做了 <code>member_id</code> 与 JWT 的一致性校验：
+        <pre><code>create         (993-2367)  → 校验在 :1691  ✅
+promotionCreate (2368-2535) → 无校验        ❌
+flashSaleCreate (2536+)     → 校验在 :2555  ✅</code></pre>
+        <code>promotionCreate</code> 仅校验了 <code>activity_no</code> 非空，<strong>未校验会员身份</strong> → <code>/order/point/promotion/create</code> 仍可用他人 <code>member_id</code> 下单消耗其积分。
+      </div>
+
+      <div class="callout danger">
+        <strong>漏洞 2 仍完全未修复</strong> 逐文件确认：
+        <ul>
+          <li><code>src/common/decorators/companyId.decorator.ts</code> 仍是 <code>headers?.['company_id']</code> —— <strong>取值来源仍是客户端可控的请求头</strong>。</li>
+          <li><code>modules/login/interface/user.interface.ts</code> 的 <code>UserInterface</code> 仍<strong>不含 <code>companyId</code></strong>（只有 customerId/name/phone/branchNum/defaultCard/openid/unionid/memberId/iat）。</li>
+          <li>签发处 <code>login.service.ts:935-946</code> 的 <code>userFilter</code> 同样<strong>不含 company</strong>。</li>
+        </ul>
+        因此无法做任何交叉校验，<strong>跨租户下单仍然可行</strong>。修复只有两条路：把 <code>companyId</code> 写入 JWT payload，或在 Service 内用服务端配置覆盖。
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>遗留 BFF 双活风险 <em>安全补丁只覆盖一半生产流量</em></h2>
+      <div class="callout danger">
+        <strong>遗留仓仍在生产双活</strong> gitops 显示 <code>mp-bff</code>（镜像 <code>bff-retail</code>）prod 为 true、minReplicas 20 / max 200，且其 prod 制品 SHA 与 <code>xlb_bff_retail</code> 本地 HEAD <strong>完全一致</strong>。两套代码同时在生产接同类 C 端流量。
+      </div>
+      <div class="grid cols-2">
+        <div class="mech m4">
+          <h4><span class="num">1</span>安全补丁只打在新仓</h4>
+          <p>同一批 <code>/order/point/*</code> 接口，<strong>遗留仓 4 个漏洞全未修</strong>。攻击者只需把请求打到遗留域名而非新域名，即可用他人积分下单、跨公司下单。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>灰度语义不兼容</h4>
+          <p>旧仓读 <code>whitelist:point</code>，新仓读 <code>canary_whitelist:point</code> 且需要总开关；同一用户在两条链路上会命中<strong>不同的会员资产数据源</strong>（旧 ES vs V2 ES）→ 读写视图分裂。CLS 键名也不同，下游按旧键判断的逻辑在新仓恒为 <code>undefined</code>。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">3</span>共享 Redis 与队列</h4>
+          <p>两仓共用同一 Redis 与同一 Bull 队列名，旧仓的 Processor 可能消费新仓投递的任务（反之亦然），而两边卡类型枚举与服务实现<strong>已分叉</strong>。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">4</span>新仓的正向改进</h4>
+          <p>Token 调试日志改为仅非 prod 输出（旧仓无条件 <code>console.log</code> 解码后的 token）；新增 marketing-activity-player 模块与 V2 会员资产 ES；删除了乐檬相关代码。</p>
+        </div>
+      </div>
+      <p><strong>但也有退化</strong>：证书配置从「文件路径」改为<strong>内联私钥内容</strong> → 明文 PEM 进 gitops YAML；灰度匹配从 <code>SISMEMBER</code>（O(1)）退化为 <code>SMEMBERS</code> 全集拉取到内存（O(N) + 每请求全量传输），且匹配手机号末 1/2/3 位——<strong>白名单里放一个 <code>"8"</code> 即命中全量 10% 用户</strong>。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>auth-server Token 代理 <em>无防击穿 · 支付宝 key 读写不一致</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>平台</th><th>TTL 策略</th><th>问题</th></tr></thead>
+          <tbody>
+            <tr><td>乐檬 LM</td><td>access 用 <code>expires_in</code>；<strong>refresh 无 TTL（永久）</strong></td><td>读取路径<strong>不查 Redis</strong>直接刷新；30 分钟定时刷新<strong>在每个 pod 独立执行</strong>（无分布式锁），N 副本 = N 次刷新，refresh_token 轮换型接口下可能互相踩失效</td></tr>
+            <tr><td>微信 MP / 公众号</td><td><code>expires_in - 60</code></td><td>缓存过期瞬间 N pod × M 并发全部打微信，且 <code>getStableAccessToken</code> 会<strong>使旧 token 失效</strong> → 短暂全站 token 抖动</td></tr>
+            <tr><td>支付宝</td><td>按 <code>expires_in</code> 折算</td><td><strong>写用带 company 后缀的 key，读用不带后缀的 key</strong> → ① <code>getAccessTokenByCode</code> 写的缓存永远读不到；② 回写到无后缀全局键，<strong>多租户互相覆盖 access_token</strong></td></tr>
+            <tr><td>快手 / 抖音</td><td>access −1h / refresh −5 天</td><td>常量名与值错配（<code>ALIPAY_REFRESH_TOKEN</code> 的值是 <code>CACHE_WX_ALIPAY_TOKEN</code>）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>并发刷新无任何保护（stampede）</strong>：所有平台都是「查缓存 miss → 直接调上游」，无 Redlock / SETNX / in-flight Promise 合并。</p>
+      <p><strong>支付宝证书</strong>：<code>endpoint</code> <strong>硬编码生产网关</strong>（测试环境也指生产）；<strong>私钥 PEM 已提交进 git</strong>。<strong>Token 明文进日志</strong>（多处，含授权 code）。<code>package.json</code> 的 name 还是 <code>xlb_retail_bff_pos</code>（复制残留），依赖里塞了大量无用包。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>cms-server 权限模型 <em>三重失效 · 门店隔离是死代码</em></h2>
+      <p>权限元组结构为 <code>{user_id, authority:{app_type:'MEM', path:'小程序装修'|'空白码管理', action:'查询|新增|编辑|删除'}}</code>，经 iAuth 的 <code>internal.authority.check</code> 校验。但实际有三重失效：</p>
+      <ol>
+        <li><strong>Guard 层的批量校验被整段注释掉</strong>。</li>
+        <li><strong>JWT 不验签</strong>（<code>jwt.decode</code>）——只要带任意 <code>Bearer &lt;base64&gt;</code>，<code>name</code> 与 <code>company_id</code> 由攻击者自定义。</li>
+        <li><strong>权限校验下沉到 Service 且条件可绕</strong>：调用形如 <code>if (headers) { checkAuthority({user_id: headers['user-id'], ...}) }</code>——<code>user_id</code> <strong>直接取自未认证的请求头</strong>，伪造成任意管理员 id 即通过；<code>headers</code> 未传则整段跳过。空白码<strong>批次创建/更新的权限校验被整块注释</strong>。</li>
+      </ol>
+      <div class="callout danger">
+        <strong>租户与门店隔离未实现</strong> <code>UserInterface</code> 声明了 <code>storeId</code>/<code>userStoresQuery</code>/<code>admin</code>/<code>userType</code>，但 <strong><code>userStoresQuery</code> 全仓仅定义处一处、零引用</strong>——门店维度数据隔离<strong>完全是死代码</strong>；<code>storeId</code>/<code>admin</code>/<code>userType</code> 同样从未被任何服务读取。<code>company_id</code> 仅在空白码导出时用于过滤，且值来自<strong>未验签的 JWT</strong> → 篡改即可导出其他公司的数据。权限粒度也只有 <code>app_type='MEM'</code> + 两个 path，<strong>不含 company/store 维度</strong>。
+      </div>
+      <p><strong>空白码与企微活码业务流</strong>：Admin 面 24 个 POST（批次 CRUD、导出、码管理、场景、排期、版本）；<strong>App 面全部 <code>@NoNeedLogin()</code></strong>（含 <code>batch/bind</code>）→ 未鉴权即可批量绑定/查询空白码；<strong>企微活码 7 个 admin 写接口完全没有任何权限校验调用</strong>。唯一定时任务每分钟扫排期且<strong>无分布式锁</strong>，多副本重复执行。</p>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>bff_pos 结算链路 <em>信任 body.customer_id · 会员解析异常被吞</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant P as POS 收银机
+  participant B as bff_pos（Guard 恒放行）
+  participant X as xpay
+  participant E as ES 会员资产
+  participant M as member-c
+  participant S as retail 结算
+  P->>B: POST /retail/.../settlement/pay
+  Note over B: body.customer_id 若已传<br/>则整段会员解析被跳过
+  B->>X: queryOpenidByPaycode（付款码换 openId）
+  X-->>B: openId
+  B->>E: getMercuryMember(openid)
+  B->>M: readMemberIdByExternalId
+  M-->>B: 内部 memberId
+  Note over B: catch (ex) { logger.info }<br/>解析失败后继续结算<br/>静默降级为非会员单
+  B->>S: settlementPay（customer_id 取 body 优先）
+  S-->>B: 支付结果
+  B-->>P: 返回（console.log 打印支付返回体）
+        </pre>
+        <p class="arch-title">图 2 · POS 结算的身份信任缺口</p>
+      </div>
+      <ul>
+        <li><strong><code>body.customer_id</code> 完全被信任</strong>——传了就跳过整个付款码→会员解析链路，可把交易/积分/权益挂到<strong>任意会员</strong>头上。（<code>company_id</code> 走服务端配置，这点比 mp-bff 好。）</li>
+        <li><strong>会员解析异常被吞</strong>且日志级别是 info，失败后继续结算。</li>
+        <li><strong><code>member:canary</code> 灰度逻辑缺陷</strong>：Redis <strong>string</strong> 类型用 <code>String.includes()</code> 做<strong>子串匹配</strong> → 白名单含 <code>"1234567"</code> 时 <code>member_id=234</code> 也命中；<code>member_id</code> 取自<strong>请求头</strong>，任何 POS 都能自行进入/规避灰度；每请求一次 Redis GET（400 副本 × QPS 全打同一 key）；通过<strong>改写 <code>request.body.selfDeveloped</code></strong> 切链路（DTO 里无该字段，污染透传）。</li>
+        <li><strong>组合接口「核销 + 下单 + 支付」串行且无幂等/补偿</strong> → 核销成功但支付失败即券损失。</li>
+        <li><strong>全局热数据开关可被无鉴权写入</strong>，配合 Guard 恒放行 → 任何人可全局切换数据源。</li>
+        <li><strong>以完整 access_token 作 Redis key 后缀</strong> → token 泄漏面扩大到 Redis。</li>
+        <li><code>bigNumberStrings: false</code> + bigint 主键 → <strong>大整数转 JS number，&gt;2^53 精度丢失</strong>。</li>
+        <li>生产代码里<strong>无条件注册测试模块</strong>。</li>
+      </ul>
+      <p><strong>正向</strong>：19 处数据访问全部使用 TypeORM <code>createQueryBuilder</code>，未见字符串拼接 SQL（<strong>无注入</strong>）；DB 账号为只读；未开 <code>synchronize</code>。</p>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>mall-mcp 骨架 <em>确认非功能性 · git 无任何提交</em></h2>
+      <p>确认为纯空壳：<strong>git 无任何提交</strong>；全仓无 MCP SDK、无 transport、无 HTTP server；「server」只导出一个 <code>getHealthStatus()</code>；API client 全部返回回显对象与空数组，<strong>无一行网络调用</strong>。有 <code>node --test</code> 单测但只测内存 mock。</p>
+      <p><strong>8 个规划的 tool 契约</strong>：<code>search_products</code>、<code>get_product_detail</code>、<code>get_cart</code>、<code>add_cart_item</code>、<code>update_cart_item_quantity</code>、<code>remove_cart_item</code>、<code>create_order_from_cart</code>（需显式 <code>confirmed:true</code>）、<code>get_order_status</code>。共享上下文 <code>MallContext{storeId,userId,sessionId,requestId,locale,currency}</code>，统一错误模型含 <code>retryable</code> 标志。<code>spec.md</code> 中已写入真实上游 Swagger 地址与 curl 示例。</p>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>风险清单（分级） <em>Critical 10 · High 15 · Medium 20</em></h2>
+      <h3>Critical</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>风险</th></tr></thead>
+          <tbody>
+            <tr><td>C1</td><td><strong>生产 JWT 密钥是可猜字符串</strong>（完整字母表序列）→ 可为任意会员签发合法 token</td></tr>
+            <tr><td>C2</td><td><code>bff_pos</code> AuthGuard 无条件 <code>return true</code>，prod 400-450 副本，全部接口（结算支付、券核销、盘点、库存、交班）零鉴权</td></tr>
+            <tr><td>C3</td><td><code>cms-server</code> JWT 不验签 + iAuth 校验被注释 + 空白码批次授权被注释</td></tr>
+            <tr><td>C4</td><td><code>cms-server-c</code> 形态完全无 Guard 且<strong>公网可达</strong>（prod 80-150 副本），全部 admin 写接口暴露</td></tr>
+            <tr><td>C5</td><td><code>auth-server</code> Guard 恒放行 + <strong>暴露全平台 token 转储接口</strong></td></tr>
+            <tr><td>C6</td><td><code>ForwardMiddleware</code> 代理链路 JWT 不验签，却把 <code>memberId</code> 写进下游头</td></tr>
+            <tr><td>C7</td><td><strong>明文凭据大规模提交</strong>：gitops 中 Redis/ES/MySQL 密码、微信支付 key、ICC/同盾/CDP secret、ADMIN_API_TOKEN，以及<strong>内联的支付宝私钥与微信商户私钥完整 PEM</strong></td></tr>
+            <tr><td>C8</td><td><strong>支付宝私钥 PEM 提交进 git</strong>（auth-server 与 cms-server 各一份）；五个仓的 <code>.env.*</code> 均被跟踪</td></tr>
+            <tr><td>C9</td><td>遗留 <code>xlb_bff_retail</code> 与新仓<strong>双活</strong>，且 4 个积分下单漏洞<strong>全未修</strong></td></tr>
+            <tr><td>C10</td><td><code>company_id</code> 仍由客户端控制（漏洞 2 未真正修复）→ 跨租户 IDOR</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>High（15 项摘要）</h3>
+      <ul>
+        <li><strong>H1</strong> <code>order_payments</code> 非法 <code>payment_type</code> 未拦截，<code>amount</code> 可自定；<code>promotionCreate</code> 连基础校验都没有。</li>
+        <li><strong>H2</strong> 全仓 DTO 无 class-validator，<code>ValidationPipe</code> 未开 whitelist；bff_pos 更用 <code>Record&lt;any,any&gt;</code> 直通上游。</li>
+        <li><strong>H3</strong> POS 结算信任 <code>body.customer_id</code>，会员解析异常被吞。</li>
+        <li><strong>H4-H5</strong> cms iAuth 的 <code>user_id</code> 取自未认证请求头且 <code>if(headers)</code> 可绕；租户/门店隔离字段是死代码。</li>
+        <li><strong>H6</strong> 4 个服务无任何限流 + 100MB Body。</li>
+        <li><strong>H7-H8</strong> auth-server token 刷新无防击穿；支付宝 Redis key 读写不一致致缓存永不命中 + 跨租户覆盖。</li>
+        <li><strong>H9</strong> Token / 凭据 / 手机号 / 授权 code 进日志（多仓多处，含 <code>Authorization</code> 头与全量请求响应体）。</li>
+        <li><strong>H10-H11</strong> 空白码 app/mini 写接口 <code>@NoNeedLogin()</code>（含绑定）；企微活码 7 个 admin 写接口零权限校验。</li>
+        <li><strong>H12</strong> POS 灰度可由客户端自选 + 子串误判 + 隐式改写 body。</li>
+        <li><strong>H13-H14</strong> POS 用完整 access_token 作 Redis key；全局热数据开关可被无鉴权写入。</li>
+        <li><strong>H15</strong> 组合结算「核销+下单+支付」无幂等/补偿。</li>
+      </ul>
+      <h3>Medium（20 项，选摘）</h3>
+      <p>无重试/无熔断/无降级（声明了 <code>async-retry</code> 但零引用）；灰度 <code>SMEMBERS</code> 全集拉取 + 末 3 位匹配；总开关关闭时 CLS 标记为 <code>undefined</code> 而非 <code>false</code>；Redis key 前缀过短且有<strong>重复值</strong>（两个不同语义的常量值都是 <code>'r'</code>）；ES 查询无 size 上限、分页疑似跳页；N+1 上游调用；Redlock 混淆锁失败与业务异常且无续期；空 <code>catch {}</code>；<code>mongoose.checkRequired</code> 全局放宽必填；Bull <code>maxRetriesPerRequest: null</code> 致 Redis 故障时无限阻塞；定时任务多副本重复执行；乐檬 refresh_token 无 TTL；常量名值错配；<strong>AuthGuard 内隐式创建会员（副作用型 Guard）</strong>；支付宝 endpoint 硬编码生产；bigint 精度丢失；生产注册测试模块；大量死代码。</p>
+      <div class="callout ok">
+        <strong>核查后排除的问题</strong> <strong>SSRF</strong>：<code>ForwardMiddleware</code> 的目标 host 全部来自配置，仅 path 来自 <code>originalUrl</code>（Express 保证以 <code>/</code> 开头，无法覆盖 <code>baseURL</code>）→ 不构成 SSRF。<strong>SQL 注入</strong>：bff_pos 全部走 TypeORM QueryBuilder，无字符串拼接。<strong><code>synchronize: true</code></strong>：未出现。
+      </div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>修复排序 <em>P0 全是鉴权与密钥</em></h2>
+      <h3>P0（立即）</h3>
+      <ol>
+        <li><strong>轮换 <code>JWT_SECRET</code></strong>（当前是字母表字符串）+ 轮换 gitops 中全部明文凭据 + <strong>吊销并重签支付宝/微信支付证书</strong>；密钥迁至外部 Secret 管理（仓内已有 <code>IAC__*</code> 占位机制，能力存在但未统一使用）。</li>
+        <li><code>bff_pos</code> 与 <code>auth-server</code> 的 AuthGuard 改为调用<strong>已实现但从未被调用</strong>的 <code>getUser()</code> 并读取 <code>NO_NEED_LOGIN_KEY</code>。</li>
+        <li><code>cms-server</code>：<code>decode</code> → <code>verifyAsync</code>；恢复被注释的授权校验；把 AuthGuard 从 <code>APP==='cms'</code> 条件中<strong>提出来</strong>。</li>
+        <li><code>ForwardMiddleware</code>：<code>decode</code> → <code>verifyAsync</code>。</li>
+        <li><strong>删除 auth-server 的 token 转储接口</strong>（注释已自称废弃）。</li>
+        <li><strong>下线 <code>xlb_bff_retail</code></strong>（gitops 置 <code>prod: false</code>）；若必须保留，先把 4 项加固反向移植。</li>
+      </ol>
+      <h3>P1</h3>
+      <ol start="7">
+        <li>漏洞 2 真修：<code>companyId</code> 写入 JWT payload 或服务端配置覆盖，弃用 header 语义。</li>
+        <li>漏洞 3 补齐：<strong>白名单式</strong> <code>payment_type</code> 校验 + 纯积分长度校验，并同步到 <code>promotionCreate</code>/<code>flashSaleCreate</code>。</li>
+        <li>所有 req DTO 补 class-validator，<code>ValidationPipe({whitelist:true, forbidNonWhitelisted:true})</code>。</li>
+        <li>POS 结算：<code>customer_id</code> 必须由付款码解析产生，异常不得吞；组合接口加幂等键。</li>
+        <li>引入网关级/Redis 级分布式限流；Body 上限从 100MB 降到合理值。</li>
+        <li>日志脱敏：<code>Authorization</code>、token、私钥、手机号。</li>
+      </ol>
+      <h3>P2</h3>
+      <ol start="13">
+        <li>auth-server token 刷新加分布式锁/单飞；修支付宝 key 不一致；定时任务加锁；refresh_token 补 TTL。</li>
+        <li>灰度改回 <code>SISMEMBER</code>、限制后缀匹配位数、总开关关闭时显式写 <code>false</code>。</li>
+        <li>Redis key 前缀规范化消除重复；ES 查询强制 size 上限与 <code>from+size ≤ 10000</code> 保护。</li>
+        <li>清理死代码：测试模块、backup 服务文件、空 Controller、重复实体、未用的 ScheduleModule、错误的 package name 与无用依赖。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>k6 接入发布 CI/CD 方案设计 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>k6 接入发布 CI/CD 方案设计</h1>
+    <p class="subtitle">以 <b>自动触发的业务冒烟</b> 为主干、压测为辅：k6 做接口级业务功能冒烟（断言业务语义而非 200），由环境子流程部署后自动触发并自动判定通过/拦截；一次采集三处消费（节点判定 / VictoriaMetrics 指标 / 报告留痕进门禁）。压测退化为按需的容量层，生产侧只保留灰度指标门禁。</p>
+    <p class="meta">最后更新：2026-10-12 · 数据来源：efficiency / gitops / agent-square / quality-* 源码与 GitOps 定义静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html" class="active">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>（各仓均在本工作区，采集于 2026-10-12）：
+      <code>efficiency</code> <code>prod</code>·<code>84ef8f0c</code>·2026-09-17（与远端 0/0）；
+      <code>repos/gitops/apps</code> 工作副本 <code>test</code>·<code>33ef7ae23c4e</code>·2026-10-09（<b>落后远端 2402 个提交</b>，非 prod 分支，GitOps 结论以工作副本内容为准）；
+      <code>quality-case</code> <code>prod</code>·<code>1aec52a</code>·2026-09-18；
+      <code>quality-ai</code> <code>prod</code>·<code>4a44fca</code>、<code>quality-metric</code> <code>prod</code>·<code>e62f053</code>、<code>quality-web</code> <code>prod</code>·<code>923094f</code>；
+      <code>agent-square</code> <code>dev</code>·<code>e5ebe8d9</code>·2026-09-03（<b>非 prod 分支</b>，k6 脚本现状可能不代表生产）。
+      <b>quality-portal / quality-autotest 无本地工作副本</b>（CodeUp 无读权限，<code>git ls-remote</code> 返回「找不到代码库」），相关结论来自 quality-web 手册、quality-ai/quality-metric 只读 SQL 与 efficiency 调用契约，属接口契约级证据。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">结论与判据</a></li>
+        <li><a href="#s2">现状：发布链路与插入位置</a></li>
+        <li><a href="#s3">现状：质量门禁体系</a></li>
+        <li><a href="#s4">现状：冒烟与自动化测试资产</a></li>
+        <li><a href="#s5">现状：k6 资产与缺口</a></li>
+        <li><a href="#s6">冒烟与压测：两类测试的工程差异</a></li>
+        <li><a href="#s7">插入点与触发矩阵</a></li>
+        <li><a href="#s8">目标方案：冒烟主干 + 压测按需</a></li>
+        <li><a href="#s9">备选路线：独立于效能平台</a></li>
+        <li><a href="#s10">两条路线对比与桥接</a></li>
+        <li><a href="#s11">冒烟用例工程规范</a></li>
+        <li><a href="#s12">判定口径与阈值治理</a></li>
+        <li><a href="#s13">风险、约束与失效模式</a></li>
+        <li><a href="#s14">分期实施与验收</a></li>
+        <li><a href="#s15">待确认项与跨团队依赖</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论与判据 <em>冒烟是主干、压测是按需层；自动触发靠既有编排、不靠人点按钮</em></h2>
+
+      <div class="callout ok">
+        <b>结论</b>：k6 的价值大头在<b>日常、自动触发的业务冒烟</b>，压测只是其中一小块。落地方式是把 3 个既有机制拼起来：
+        <b>执行</b>复用已装在 test 集群的 k6-operator（<code>repos/gitops/apps/observability/grafana-k6/</code>）；
+        <b>触发与阻断</b>复用 Argo 环境子流程 + efficiency 的 <code>/callback/execute</code> job 注册表（新增 <code>job_type=smoke</code>）；
+        <b>留痕与发布卡点</b>复用坚果 / quality-portal 现有检查项与发布单 fail-closed 链。
+      </div>
+
+      <div class="grid cols-3">
+        <div class="stat"><span class="n">4</span><span class="l">自动触发方式：部署后 / 晋级前 / 定时巡检 / 平台手工</span></div>
+        <div class="stat"><span class="n">0</span><span class="l">需要的人点按钮：判定由 k6 断言驱动</span></div>
+        <div class="stat"><span class="n">1</span><span class="l">次采集三处消费：节点判定 / VM 指标 / 门禁报告</span></div>
+      </div>
+
+      <p>四条判断依据：</p>
+      <ol>
+        <li><b>现有的「冒烟」不是自动化测试</b>：Argo 环境流程里的 <code>smoke_test</code> 是<b>人工审批节点</b>（<code>ApprovalNodes</code> 白名单 + <code>approval-polling</code> 模板，14 天超时），efficiency 里唯一的「自动完成冒烟」能力 <code>auto-complete-smoke-node</code> 完成的是<b>飞书项目工作项节点</b>，不是 Argo 节点（<code>config/feishu.go:34-38</code>、<code>pkg/jianguo/feishu_node_completion.go</code>）。所以「日常自动触发的业务冒烟」目前<b>不存在</b>，需要新建。</li>
+        <li><b>自动触发不需要新平台</b>：Argo pod 已经会用公开无鉴权的 <code>POST /api/v1/workflow/callback/execute</code> 触发 CodeUp 构建（<code>job_type=pipeline</code> / <code>action=trigger_ci</code>，<code>cicd-node.yaml:68-74</code> → <code>job/adapter_pipeline.go:175-200</code>）。测试任务可以用同一条通道：新增 <code>job_type=smoke</code>。</li>
+        <li><b>不要劫持人工审批节点</b>：<code>smoke_test</code> / <code>test_verification</code> / <code>product_verification</code> 的放行只能走私有鉴权路由 <code>POST /api/v1/workflow/approval/submit</code>（JWT + Casbin），公开的 <code>/workflow/node/complete</code> 会话不校验审批状态。正确做法是<b>在 <code>cd</code> 之后新增一个自判定的 <code>smoke-gate</code> 节点</b>，人工审批节点保持原样（业务确认），两者职责不重叠。</li>
+        <li><b>质量平台的执行计划不是量测口径的合适容器</b>：<code>case_execute_plan/case/case_result</code> 无环境维度、无「接口/UI/自动化」类型标记，用例来自 quality-case 自带用例库，写结果要走飞书 OAuth 的 JWT 会话（<code>AuthCheck</code> + <code>AuthService.login(code)</code>）；且 通过率<b>不落库</b>（读时按 <code>latest_execute_result</code> 计算），quality-metric 又按 <code>first_execute_result</code> 统计——同一批数据两套口径。贸然写入会制造第三套口径。</li>
+      </ol>
+
+      <div class="callout">
+        <b>两条落地路线</b>：<b>§08 平台内</b>（进环境子流程与发布单，能力最全，需 efficiency 改动）；<b>§09 独立于效能平台</b>（资产全在 <code>repos/gitops/apps/</code> + Argo + k6-operator，<b>零 Go 改动</b>、1–2 周可上线，但进不了发布单）；§10 给出逐维对比与「先用独立平面拿到能力、再把结论桥接进平台拿口径」的混合落地顺序。
+      </div>
+
+      <div class="callout warn">
+        <b>反向结论（不推荐）</b>：① 不要把 k6 只放在服务仓的 CodeUp 流水线里 —— 那是构建期，看不到部署结果；② 不要为冒烟新建独立测试平台 —— 执行、编排、门禁、观测四处都已存在；③ 不要把「自动通过」做成自动调用审批接口 —— 那会绕过人工审批语义，且公开路由不校验审批状态，等于把门禁交给任何集群内进程。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>现状：发布链路与插入位置 <em>构建 → ACR → GitOps → ArgoCD → 环境子流程 → 灰度</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>层</th><th>载体</th><th>关键文件</th><th>能否在这一层跑冒烟</th></tr></thead>
+          <tbody>
+            <tr><td>构建（服务仓）</td><td>CodeUp YAML 流水线，一服务一条，平台接管（无 push 触发）</td><td><code>efficiency/tests/pipeline_yaml.yaml</code>、<code>pipeline_yaml_1.yaml</code></td><td>只能冒烟「已部署的稳定版本」，看不到本次镜像</td></tr>
+            <tr><td>制品/GitOps</td><td><code>artifacts-webhook</code> 写 <code>apps/&lt;group&gt;/artifacts.libsonnet</code></td><td><code>devops-utils/artifacts-webhook/src/main.rs</code></td><td>否，纯写制品</td></tr>
+            <tr><td>部署（集群侧）</td><td>ArgoCD Application → Rollout（canary + <code>istio-success-rate</code>）</td><td><code>repos/gitops/apps/templates/App/Workload.libsonnet</code>、<code>templates/AnalysisTemplate.libsonnet</code></td><td>只能做指标门禁，不能做业务断言</td></tr>
+            <tr><td>编排（环境推进）</td><td>Argo Workflows v3 环境子流程 + v4 quality + v5 prod</td><td><code>efficiency/deploy/argo-workflows/environments/v3/*.yaml</code>、<code>templates/*.yaml</code></td><td><b>主战场</b>：<code>cd</code> 之后、审批节点之前</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>环境</th><th>子流程节点（v3）</th><th>节点性质</th></tr></thead>
+          <tbody>
+            <tr><td>dev</td><td>submitted → check_promotion_gate → ci → retag_image → cd → release_test</td><td><code>release_test</code> 是 suspend（<code>release_test_auto_pass=true</code> 时 1 分钟自动放行）</td></tr>
+            <tr><td>test</td><td>ci → retag_image → cd → <b>smoke_test</b> → apply_transfer → test_verification</td><td>三个节点全是<b>人工审批</b>（approval-polling）</td></tr>
+            <tr><td>staging</td><td>init-environment-lock → ci → retag → cd → product_verification</td><td>人工审批</td></tr>
+            <tr><td>prod-gray</td><td>retag → check_image → wait_release_approval → wait_workload_ready → cd → product_verification</td><td>发布单相关节点为 poll 型（自完成），验收为人工</td></tr>
+            <tr><td>prod</td><td>retag → wait_release_approval → wait_workload_ready → cd → product_verification → merge_to_prod</td><td>同上，发布不由工作流执行</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">efficiency/deploy/argo-workflows/environments/v3/*.yaml · model/workitem/workflow_approval.go:52-57（ApprovalNodes）</div>
+
+      <p>job 类型是<b>显式枚举</b>——这是扩展成本低、也必须走平台后端的证据：</p>
+      <pre><code>// efficiency/pkg/workitem/job/types.go:8-38
+JobTypeCallback / Provision / GitOp / Pipeline / Rollout / Approval /
+Release / ReleaseApproval / Notification / Retag / CheckImage /
+WorkloadReady / PromotionGate      // ← 新增 JobTypeSmoke = "smoke" 的落点</code></pre>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  A[服务仓 CodeUp 流水线<br/>构建镜像 → 同步镜像] --> B[ACR xlb-acr]
+  B --> C[artifacts-webhook]
+  C --> D[ArgoCD Application]
+  D --> E[Argo Rollouts<br/>canary + istio-success-rate]
+  subgraph ORCH[Argo Workflows 环境子流程]
+    F[ci → retag → cd] --> G[人工审批节点<br/>smoke_test / 验收]
+  end
+  D --> E
+  F -->|触发| A
+  H[k6-operator v0.0.23<br/>仅 test 集群]:::gap
+  I[坚果 quality-portal 门禁<br/>test-in / staging-out / prod-in] --> J[发布单<br/>checkReleaseQualityReports]
+  E --> J
+  G -.人工点按钮.-> J
+  A -.构建期无冒烟.-> H
+  H -.结果未进任何门禁.-> I
+  classDef gap fill:transparent,stroke-dasharray:4 3
+  classDef plain fill:transparent
+        </pre>
+        <p class="arch-title">图 1 · 现状：执行面（k6-operator）已存在但与编排、门禁、观测三面全断；环境冒烟停留在人工点按钮</p>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>现状：质量门禁体系 <em>三个 stage/action 组合 · 检查项可扩展 · 提交时 fail-closed</em></h2>
+
+      <pre><code>飞书/平台「质量准入/准出」按钮
+  → efficiency pkg/jianguo/service.go  Admission(test,in) / Exit(staging,out) / CheckProdInResult(prod,in)
+  → POST &lt;JianGuo_URL&gt;   body: {stage, action, story_id}     // quality-portal /quality/gate/check
+  → 响应 {passed, report_url, items[]}
+  → 落库 jian_guo_gate_records(stage, action, passed, report_url, items_json)
+  → 发布单 SaveReleasePlanV2 → checkReleasePlanV2QualityReports → ReportsReady=false 时提交阻断</code></pre>
+      <div class="loc">efficiency/pkg/jianguo/{service.go,client.go} · model/jianguo/jianguo.go · pkg/system/system/release_plan_v2.go:340-545</div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>检查项</th><th>语义</th><th>数据来源</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td><code>DEVELOP_SMOKE_CASE</code></td><td>研发冒烟通过率</td><td>quality-case 执行计划 <code>DEVELOP_SMOKE</code></td><td>✅ 已实现</td></tr>
+            <tr><td><code>TEST_CASE</code> / <code>STAGING_CASE</code></td><td>测试/预发阶段用例通过率</td><td><code>TEST</code> / <code>STAGING</code> 计划</td><td>✅ 已实现</td></tr>
+            <tr><td><code>AUTOTEST_CASE</code></td><td>接口自动化用例通过率</td><td>接口自动化平台（quality-autotest，无读权限）</td><td>🚧 桩</td></tr>
+            <tr><td><code>CODE_SONAR_BLOCKER</code> / <code>CODE_AI_BLOCKER</code> / <code>OVERALL_BUG</code></td><td>代码扫描 / 缺陷关闭率</td><td>Sonar、缺陷系统</td><td>✅</td></tr>
+            <tr><td><code>CODE_COVERING</code> / <code>UNIT_TEST</code> / <code>LOG_SCAN</code></td><td>覆盖率 / 单测 / 日志巡检</td><td>—</td><td>🚧 桩</td></tr>
+            <tr><td><b>本次要补的口径</b></td><td>自动冒烟与性能结果</td><td>k6 运行结果（见 §08）</td><td>❌ 不存在</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">quality-web/docs/quality-gate-user-guide.md §4.3 · quality-ai/.../QualityGateCheckItemEnum.java · GatePointEnum.java</div>
+
+      <div class="callout danger">
+        <b>三个必须尊重的既有语义</b>：
+        <b>①</b> 阈值「未配置 = 不检查该项」，不是「不通过」——自动冒烟必须单独定义「配置了但无结果 = 失败」；
+        <b>②</b> portal 策略异常时兜底 <code>passed=true</code>（手册 Q9：流水线通过 ≠ 一定检查过）——结论不能只看布尔值；
+        <b>③</b> 发布单就绪判定只读 <code>test/in</code> 与 <code>staging/out</code> 记录（按 <code>work_item_id</code> + <code>iteration_branch_id</code> 定位），<code>prod/in</code> 不参与，且需存在 <code>requirement_iteration_binding</code> 的 <code>active|merged</code> 绑定 —— 冒烟结果必须能归属到「工作项 + 迭代分支」，不能只有「某服务跑过一次」。
+      </div>
+      <div class="loc">efficiency/pkg/system/system/release_quality_report.go:296-341, 343-473 · model/workitem/requirement_iteration_binding.go</div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>现状：冒烟与自动化测试资产 <em>有「冒烟」这个词，但没有自动跑的冒烟</em></h2>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>飞书「冒烟测试」节点（人工 + 条件自动完成）</h4>
+          <p>efficiency 可在坚果准入通过后自动完成<b>飞书项目工作项</b>的「冒烟测试」节点（<code>auto-complete-smoke-node</code>，默认关闭；实现 <code>pkg/jianguo/feishu_node_completion.go</code>，按名称或 <code>state_key</code> 定位节点，无负责人时改发飞书卡片找人工）。</p>
+          <p>这是「准入通过 → 手动节点的自动化」，<b>与「自动跑一遍业务功能」无关</b>。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>quality-case 执行计划（人工填报为主）</h4>
+          <p>5 表模型：<code>case_execute_plan</code>（按 <code>(story_id, type)</code> upsert）→ <code>case_execute_case</code>（<code>uk_execute_plan_case</code>，存 <code>latest_execute_result</code>）→ <code>case_execute_result</code>（append-only 历史） + <code>_bug</code> / <code>_attachment</code>。</p>
+          <p>计划类型按需求自动生成 5 份：<code>DEVELOP_SMOKE</code>/<code>TEST_SMOKE</code>/<code>TEST</code>/<code>STAGING</code>/<code>UAT</code>；用例取自 quality-case 用例库（<code>case_node</code>）并按 <code>case_story_case</code> 收窄。<b>无环境维度、无接口/UI/自动化类型标记</b>。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">C</span>结果写入与统计口径</h4>
+          <p>唯一写入口：<code>POST /quality-case/execute-plan/{plan_id}/result</code>（<code>ExecutePlanController:64-70</code>），鉴权是 <code>AuthCheck</code> 强制的 <code>Authorization</code> JWT（RS256 + <code>sys_auth</code> 会话，登录需飞书 OAuth <code>code</code>）；<b>没有静态 token 或 <code>@NoAuth</code> 写入端点，也没有外部结果摄取任务</b>。</p>
+          <p>通过率不落库，读时按 <code>latest_execute_result='SUCCESS'</code> / 非空计数计算；<code>TEST_SMOKE</code> 结果会同步到 <code>TEST</code>，<code>STAGING</code> 结果触发迭代回归计划创建（<code>ExecutePlanListener</code>）。quality-metric 读同一批表但用 <code>first_execute_result</code> —— <b>两套口径</b>。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">D</span>仓内已有的「自动冒烟框架」先例</h4>
+          <p>agent-square 的 <code>test/inspection</code> 已把门禁语义做出来了：suite 分层 <code>smoke ⊂ P0-full ⊂ P1-full ⊂ P2-full</code>、<code>staging-gate</code> profile、以及「缺失外部依赖 = SKIP = 门禁判红」的 <code>INSPECTION_REQUIRE_NO_SKIP=1</code> 口径，<code>.gitlab-ci.yml</code> 驱动。</p>
+          <p>但它只在 agent-square 仓内生效，k6 层（<code>k6-all</code>）仅出现在 P2-full，且 <code>wrappers/k6.sh</code> 是自述占位实现 —— 说明<b>框架有了、执行引擎和平台级落点还没有</b>。</p>
+        </div>
+      </div>
+
+      <h3>缺口（决定方案边界）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>缺口</th><th>本方案对应动作</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>没有任何自动触发的业务冒烟（依赖外部系统的 UI/接口冒烟、巡检都靠人）</td><td>S1：<code>job_type=smoke</code> + <code>smoke-gate</code> 节点，部署后自动跑</td></tr>
+            <tr><td>2</td><td>没有「按服务」的冒烟场景清单（唯一近似物是 <code>cart-wanquan</code> ConfigMap）</td><td>S0：<code>repos/gitops/apps/observability/grafana-k6/&lt;service&gt;-smoke.jsonnet</code> 约定</td></tr>
+            <tr><td>3</td><td>没有定时巡检引擎（无 CronWorkflow 实例；prod-136 <code>cronJobMode=off</code>）</td><td>S2：test/staging 用 Argo CronWorkflow 或 k8s CronJob</td></tr>
+            <tr><td>4</td><td>k6 不在任何必经门禁里（<code>k6-all</code> 仅 P2-full；wrapper 是占位）</td><td>S1 节点 + S3 门禁检查项</td></tr>
+            <tr><td>5</td><td>结果无长期归档（本机 gitignore 目录）</td><td>S0：归档到对象存储 + 报告 URL 进结果表</td></tr>
+            <tr><td>6</td><td>质量平台 5 表模型无环境/自动化维度，且写入口需 OAuth 会话</td><td>S3 选口径：efficiency 侧自建（推荐）或按伪用例回写（见 §08）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>现状：k6 资产与缺口 <em>两座孤岛：本机手动跑 · 集群 operator 只跑手工下发的购物车脚本</em></h2>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>agent-square/scripts/k6（成熟但手动）</h4>
+          <p>14 个脚本/wrapper：任务 API 压测、SSE 聊天、LiteLLM 流式、评估基线；配套 <code>lib/env-file.sh</code> 配置分层、<code>generate-html-report.mjs</code> 报告、<code>observe-cluster.sh</code> 观测与 Pod 阶梯脚本。<b>无镜像、无版本 pin、无 CI 接线</b>。</p>
+          <p>阈值写法可直接复用（<code>p(95)&lt;…</code>、<code>rate&gt;0.8</code>），但脚本是「压测型」——断言多为 HTTP 层与耗时，不是业务语义。</p>
+          <div class="loc">agent-square/scripts/k6/{tasks-load-test.js:150-153, config/test.env.example}</div>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>gitops observability/grafana-k6（执行面就绪）</h4>
+          <p>k6-operator <b>v0.0.23</b> 定义生效但守卫限定 <b>test 集群</b>；两个示例工作负载被写死 <code>|| true</code> 永不渲染，且引用的 <code>victorialogs-test</code> ConfigMap 在仓内不存在。真正可用的是 <code>cart-wanquan</code> ConfigMap + 两个购物车脚本，TestRun 由人手工 <code>kubectl</code> 下发；<b>无 remote-write、无面板</b>。</p>
+          <p>operator 细节：starter 命令由 operator 固定生成 <code>sh -c "curl …"</code>，k6 官方镜像无 <code>curl</code>，starter 必须用带 curl 的镜像；<code>arguments</code> 会被原样塞进 argv，因此 <code>summaryTrendStats</code> 等带引号参数要写在脚本里。</p>
+          <div class="loc">repos/gitops/apps/observability/grafana-k6/{k6-operator.jsonnet:6, grafana-k6.jsonnet:7, cart-wanquan-test.jsonnet, cart-list-test.js}</div>
+        </div>
+      </div>
+      <p><b>实测补充</b>：三个观测端点查询 <code>count({__name__=~"k6_.*"})</code> 均为空集 —— k6 结果确实从未进入 VictoriaMetrics。</p>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>冒烟与压测：两类测试的工程差异 <em>同名工具，不同工艺</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>业务冒烟（主干）</th><th>压测 / 容量（按需层）</th></tr></thead>
+          <tbody>
+            <tr><td>回答的问题</td><td>「这条业务链路现在还能走通吗」</td><td>「在 X QPS 下会不会劣化」</td></tr>
+            <tr><td>断言对象</td><td><b>业务语义</b>：业务码、状态机流转、字段一致性、幂等、金额/库存守恒</td><td>耗时分布（P95/P99）、错误率、吞吐、饱和度</td></tr>
+            <tr><td>失败含义</td><td>功能缺陷或环境不可用 → <b>立即阻断</b></td><td>容量不足或劣化 → 阻断晋级 / 触发容量动作</td></tr>
+            <tr><td>频率</td><td>每次部署后、每次晋级前、定时巡检（可达每天多次）</td><td>发布前按需、 nightly、大促前阶梯</td></tr>
+            <tr><td>时长预算</td><td>目标 &lt; 5 分钟（小集 &lt; 2 分钟）</td><td>分钟级到小时级</td></tr>
+            <tr><td>压力模型</td><td>低并发、少样本（1–5 VU，几条到几十条链路）</td><td>constant-arrival-rate 目标 RPS，多 VU</td></tr>
+            <tr><td>数据要求</td><td>可重复、可清理、幂等；写路径优先用专用账号/沙箱数据</td><td>数据量级要能反映真实分布，需造数与清理方案</td></tr>
+            <tr><td>环境</td><td>dev / test / staging（部署后自动）</td><td>test / staging；<b>prod 不压测</b></td></tr>
+            <tr><td>对环境的干扰</td><td>低（但要避免写脏数据）</td><td>高（需环境互斥与窗口）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <b>为什么必须分开设计</b>：冒烟是<b>高频、低频次压力、强断言</b>，压测是<b>低频、高压力、弱断言强指标</b>。把二者塞进同一个脚本/同一个门禁，会出现「冒烟把环境压出噪声」与「压测断言写不出业务缺陷」的双输。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>插入点与触发矩阵 <em>插入点 7 处取 2 处；触发方式 4 类，全部复用既有机制</em></h2>
+
+      <h3>插入点（按侵入性排序）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>插入点</th><th>位置</th><th>能否阻断</th><th>取舍</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>环境子流程新增自判定节点（<code>cd</code> 后、人工审批前）</td><td><code>environments/v3/{dev,test,staging}-workflow.yaml</code>、<code>*-redeploy-workflow.yaml</code></td><td>✅</td><td><b>主选</b>：语义最正确，改动是 <code>depends</code> + 一个 task 块</td></tr>
+            <tr><td>2</td><td>新增 job 类型 <code>JobTypeSmoke</code>（创建/轮询 TestRun，自判定）</td><td><code>pkg/workitem/job/types.go:8-38</code>、<code>registry_init.go:21-98</code>、节点常量与节点序 <code>model/workitem/code_branch.go:159-215, 240-400</code></td><td>✅</td><td><b>与第 1 项配套</b>；复用公开 <code>/callback/execute</code></td></tr>
+            <tr><td>3</td><td>借用 <code>quality-gate-polling</code> 契约加一个 gate stage/action</td><td><code>templates/quality-gate-polling.yaml</code>；v4 <code>*-quality-workflow.yaml</code></td><td>✅</td><td>与发布门禁同源；但第四组 stage/action 需同步 portal + quality-ai + 前端</td></tr>
+            <tr><td>4</td><td>Rollout AnalysisTemplate 增加指标</td><td><code>templates/AnalysisTemplate.libsonnet</code></td><td>✅（指标级）</td><td>prod 侧唯一自动门禁，建议加延迟维度</td></tr>
+            <tr><td>5</td><td>CodeUp 流水线追加 stage</td><td><code>efficiency/tests/pipeline_yaml.yaml</code> schema</td><td>⚠️</td><td>只能红流水线且看不到部署结果；仅适合编译期内小集冒烟</td></tr>
+            <tr><td>6</td><td><code>updatehook</code> 追加消费方</td><td><code>repos/gitops/apps/argo-rollouts/updatehook.jsonnet</code></td><td>❌</td><td>仅通知；适合触发异步巡检，不做阻断</td></tr>
+            <tr><td>7</td><td>晋级门禁中间件</td><td><code>pkg/workitem/middleware/promotion_gate_middleware.go</code></td><td>✅</td><td>可补「晋级前必须有一次通过的冒烟记录」，语义弱于第 1 项</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>触发矩阵（4 类，全部有现成机制）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>触发</th><th>时机</th><th>复用机制</th><th>阻断点</th></tr></thead>
+          <tbody>
+            <tr><td><b>部署后自动</b>（主干）</td><td>每次 <code>cd</code> 成功后，自动</td><td>Argo 子流程新节点 → <code>/callback/execute</code>（<code>job_type=smoke</code>）→ k6 TestRun</td><td>节点失败即停止推进（人工审批节点不再可达）</td></tr>
+            <tr><td><b>晋级前</b></td><td>dev→test 晋级、发布前</td><td><code>check_promotion_gate</code> 节点 / <code>promotion_gate_service</code> 既有检查项扩展</td><td>晋级请求 403 <code>PROMOTION_GATE_FAILED</code></td></tr>
+            <tr><td><b>定时巡检</b></td><td>每天 N 次（test/staging）</td><td>新增 Argo <code>CronWorkflow</code>（控制器与 CRD 已装、零实例）或 gitops k8s CronJob（<code>cronJobMode</code> 在 prod-136 为 <code>off</code>）</td><td>不阻断发布；失败告警 + 生成问题单</td></tr>
+            <tr><td><b>平台手工</b></td><td>调试、复现、发布前临检</td><td>MCP / 平台按钮 → 同一 <code>job_type=smoke</code> 入口（与自动路径同一实现）</td><td>不阻断，产出报告</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">efficiency/deploy/argo-workflows/templates/cicd-node.yaml:68-74 · pkg/workitem/job/adapter_pipeline.go:175-200 · repos/gitops/apps/clusterParams.libsonnet:88-98 · initialize/timer.go:18-120（现有 cron 任务，无测试类）</div>
+      <div class="callout warn">
+        <b>prod 不要用 k8s CronJob 做巡检</b>：<code>cronJobMode</code> 在 <code>prod &amp;&amp; version&gt;=136</code> 时被硬编码为 <code>off</code>（该集群与旧 prod 共用 DB/中间件，避免重复执行）。定时巡检放 test/staging 即可。
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>目标方案：冒烟主干 + 压测按需 <em>S1 自动冒烟节点 · S2 巡检 · S3 门禁入账 · P 按需压测 · G 灰度指标</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  CD[环境子流程 cd.Succeeded] --> SG[smoke-gate 节点<br/>自判定 · 自动触发]
+  SG --> BE[efficiency job_type=smoke]
+  BE --> TR[k6 TestRun<br/>k6-operator]
+  TR --> RUN[集群内 runner<br/>场景脚本来自 ConfigMap]
+  RUN --> A1[断言结果 通过/失败]
+  A1 --> SG
+  RUN --> A2[summary JSON + HTML<br/>归档到对象存储]
+  RUN --> A3[remote write<br/>VictoriaMetrics]
+  A2 --> ST[smoke_result 结果表]
+  ST --> G1[发布单就绪判定<br/>按工作项+迭代分支]
+  A3 --> GRA[Grafana 面板与告警 / observability-mcp]
+  A3 --> L3[prod 灰度指标门禁<br/>延迟 + 错误率]
+  CW[定时巡检 CronWorkflow<br/>test/staging] -.同一入口.-> BE
+  MCP[平台/MCP 手工触发] -.同一入口.-> BE
+  P1[按需压测 场景<br/>staging / 大促前] -.同一 runner.-> TR
+        </pre>
+        <p class="arch-title">图 2 · 目标架构：冒烟为默认路径（部署后自动、定时巡检、手工三入口同一实现），压测复用同一 runner 但独立场景与频率</p>
+      </div>
+
+      <h3>L0 执行基础（一次性）</h3>
+      <ul>
+        <li><b>镜像</b>：自建 k6 运行镜像（pin 版本）推 ACR，登记进 <code>grafana-k6/versions.libsonnet</code>；TestRun <code>starter</code> 继续用带 <code>curl</code> 的镜像。</li>
+        <li><b>场景清单落点</b>：<code>repos/gitops/apps/observability/grafana-k6/&lt;service&gt;-smoke.jsonnet</code>（ConfigMap，<code>importstr</code> 打包脚本，<code>clusterType</code> 守卫）——<b>沿用 <code>cart-wanquan-test.jsonnet</code> 的现成形状</b>，随服务清单一起评审、无需平台改动。脚本目录建议 <code>perf/&lt;service&gt;/smoke/&lt;scene&gt;.js</code> 与 <code>perf/&lt;service&gt;/load/&lt;scene&gt;.js</code> 分家。</li>
+        <li><b>结果通道</b>：<code>summary JSON</code>（<code>--summary-export</code>，脚本 <code>handleSummary</code> 也能产出）+ HTML 归档到对象存储；指标 <code>--out experimental-prometheus-rw</code> 写 VictoriaMetrics。</li>
+        <li><b>判定</b>：k6 <code>thresholds</code> 退出码（非 0 即失败）+ 后端复核 summary；缺脚本 / 环境不可达 / 无结果一律<b>判失败</b>（对齐 agent-square 的 <code>SKIP=红</code> 口径）。</li>
+      </ul>
+
+      <h3>S1 部署后自动冒烟（主干）</h3>
+      <ol>
+        <li>新增 <code>JobTypeSmoke JobType = "smoke"</code>，实现 <code>JobExecutor</code>（<code>pkg/workitem/job/executor.go:8-43</code>）并在 <code>registry_init.go:21-98</code> 注册；轮询型节点同时进 <code>NodePollingJobType</code>（<code>types.go:216-219</code>）。职责：按 <code>branch_id/service_id/environment</code> 解析场景清单 → 创建 <code>k6.io/v1alpha1 TestRun</code> → 轮询终态 → 读退出码与 summary → 报告 URL。</li>
+        <li>新增 WorkflowTemplate <code>smoke-gate.yaml</code>（形状克隆 <code>quality-gate-polling.yaml</code>：渲染节点注解 + 轮询 <code>/node/status</code>）；落地后调 <code>POST /api/v1/workflow/node-capabilities/refresh</code>，节点即可在流程编辑器中自服务编排。</li>
+        <li>环境子流程插入（<code>depends: "cd.Succeeded"</code>）：
+          <pre><code>- name: smoke-gate
+  depends: "cd.Succeeded"
+  templateRef: {name: smoke-gate, template: wait-smoke-gate}
+  arguments:
+    parameters:
+      - {name: node_name,   value: smoke-gate}
+      - {name: environment, value: test}
+      - {name: suite,       value: "service-smoke"}</code></pre>
+          test：<code>cd → smoke-gate → smoke_test（人工）</code>；staging：<code>cd → smoke-gate → product_verification（人工）</code>；dev：小集冒烟（可选，2 分钟内）。</li>
+        <li>开关与灰度：按「服务 × 环境」配置启用（对齐 <code>quality_workflow_enabled</code>、<code>promotion-gate.prod-gray-baseline-block-enabled</code> 风格），默认关闭；先试点 1–2 个服务。</li>
+        <li>并发与隔离：冒烟写入路径使用专用账号 + 请求头标记（<code>X-Smoke-Test</code>）；同环境同时只允许一个冒烟套件在跑（复用 <code>init-environment-lock</code> 的 Redis 锁思路）。</li>
+      </ol>
+
+      <h3>S2 定时巡检与手工触发</h3>
+      <ul>
+        <li>新增 Argo <code>CronWorkflow</code>（控制器 + CRD 已装、当前零实例）或在 test/staging 用 gitops k8s CronJob，每天固定时段跑全套冒烟；失败发飞书卡片并可选自动建问题单。</li>
+        <li>手工/平台触发走同一个 <code>job_type=smoke</code> 入口，产出报告但不阻断。</li>
+      </ul>
+
+      <h3>S3 冒烟结果入账：两条路线，推荐前者</h3>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>efficiency 侧自建（推荐，本仓可控）</h4>
+          <p>新增静态 token 的机机接口（如 <code>POST /api/v1/workitem/smoke/result</code>）+ 结果表（<code>work_item_id / iteration_branch_id / service_id / environment / suite / passed / total / failed / executed_at / report_url</code>），并在 <code>release_quality_report</code> 的就绪判定里作为一个新来源与现有 <code>jian_guo_gate_records</code> 并列。</p>
+          <p>优点：无需飞书 OAuth 会话、无伪用例、口径由我们定义、可在 <code>prod</code> 分支直接实现；缺点：报告不在质量平台聚合页，需与质量团队对齐口径表述。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>写 quality-case 执行计划（口径对齐，跨团队）</h4>
+          <p>把冒烟套件登记为 quality-case 用例库里的「伪用例」，机器执行人通过 <code>POST /execute-plan/{plan_id}/result</code> 提交 <code>SUCCESS/FAIL/BLOCK</code>，从而复用现有 <code>DEVELOP_SMOKE_CASE</code>/<code>TEST_CASE</code>/<code>STAGING_CASE</code> 检查项与聚合报告。</p>
+          <p>代价：需要服务账号的飞书 OAuth 会话（JWT 与 <code>sys_auth</code> 会话绑定，需刷新）；用例库被自动化伪用例污染；无环境/服务维度；与 quality-metric 的 <code>first_execute_result</code> 口径不一致。适合作为二期「口径统一」议题，不适合作为一期主干。</p>
+        </div>
+      </div>
+      <div class="callout warn">
+        发布单校验只在<b>提交</b>时做一次快照（<code>ReleaseOrderValidityTime</code> 默认次日 06:00 失效；范围变化抛 <code>RELEASE_SCOPE_CHANGED</code>），且发布动作<b>不再复查报告</b>。因此冒烟结果必须有<b>时效口径</b>：结果时间必须晚于该迭代分支最近一次 <code>cd</code> 成功。
+      </div>
+
+      <h3>P 按需压测（降级为独立层）</h3>
+      <ul>
+        <li>沿用现有 k6-operator + 压测脚本（<code>constant-arrival-rate</code> + 目标 RPS），触发方式为发布前按需 / nightly / 大促前阶梯；不进入「每次部署后」路径。</li>
+        <li>阈值与基线见 §12；结果同样归档并写 <code>summary</code>，供容量报告与趋势面板使用。</li>
+      </ul>
+
+      <h3>G prod 灰度指标门禁（不跑 k6）</h3>
+      <ul>
+        <li>扩展 <code>istio-success-rate</code> AnalysisTemplate：新增 P95 延迟 metric（现仅 5xx 比率），作为 <code>analysis.templates[]</code> 第二项。指标可用性已实测：prod 观测后端存在 <code>istio_request_duration_milliseconds_bucket</code>（645,720 条序列）与 <code>istio_requests_total</code>（32,965 条）。</li>
+        <li>prod 不压测、不冒烟打真实业务写路径；生产性能风险由灰度真实流量 + 指标门禁吸收。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>备选路线：独立于效能平台 <em>把门禁下沉到 Rollout 层，用 Argo 自己的能力闭环</em></h2>
+
+      <div class="callout ok">
+        <b>关键洞察（决定这条路可行）</b>：阻断<b>不需要</b>平台配合。Argo Rollouts 的 AnalysisTemplate 已支持 <b>Job provider</b>（<code>repos/gitops/apps/argo-rollouts/crd.yaml:3935</code>，Rollouts 版本 <code>test-v1.9.0</code>），每个命名空间的 Rollout 已经挂了 <code>analysis.templates[]</code>（<code>templates/App/Workload.libsonnet:234-256</code>）。用 Job provider 跑 k6 冒烟：<b>AnalysisRun 失败 → Rollout Degraded → efficiency 的 <code>cd</code> 节点本来就在轮询 Rollout 状态（Degraded 是它已识别的首个 CD 失败信号）→ 环境推进被阻断</b>，全程不新增/修改 efficiency 代码。
+      </div>
+
+      <p>这条路的定义：<b>不调用 efficiency 的任何 API / DB / 工作流，不自建平台服务</b>，全部资产声明在 <code>repos/gitops/apps/</code>（ArgoCD 同一套 Application 渲染 <code>&lt;ns&gt;/**/*.jsonnet</code>），由 Argo + k6-operator + VictoriaMetrics + Alertmanager 承载「执行—判定—阻断—通知」。</p>
+
+      <h3>三件套（全部 GitOps 原生）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>载体</th><th>证据 / 既有先例</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>执行</td>
+              <td>k6-operator <code>TestRun</code>，脚本来自 GitOps ConfigMap（<code>&lt;service&gt;-smoke.jsonnet</code>）</td>
+              <td><code>observability/grafana-k6/cart-wanquan-test.jsonnet</code>（ConfigMap + <code>importstr</code>）；operator 守卫需从 <code>['test']</code> 扩到 <code>['test','staging']</code></td>
+            </tr>
+            <tr>
+              <td>判定与阻断</td>
+              <td>Rollout <code>analysis.templates[]</code> 增加一个 <b>job-provider</b> 模板（canary 期跑冒烟；失败即 Degraded）</td>
+              <td>CRD 支持 <code>provider.job</code>（含完整 Job spec：<code>activeDeadlineSeconds</code>/<code>backoffLimit</code> 等）；<code>Compose.libsonnet:639</code> 已为每个命名空间渲染 AnalysisTemplate</td>
+            </tr>
+            <tr>
+              <td>定时巡检</td>
+              <td>新增 Argo <code>CronWorkflow</code> → 一个 Workflow 用 <code>resource:</code> 模板创建 TestRun 并轮询</td>
+              <td>CronWorkflow CRD 已随 <code>argo-workflows/crd.yaml</code> 安装、当前<b>零实例</b>；<code>resource:</code> 创建子资源的写法已在 <code>orchestration/feat-orchestration-workflow.yaml:319</code> 使用</td>
+            </tr>
+            <tr>
+              <td>通知与告警</td>
+              <td>k6 指标 remote write → VictoriaMetrics → vmalert 规则 → Alertmanager → <code>alert-webhook</code> → 飞书</td>
+              <td>Alertmanager 已是 <code>alert-webhook</code> 接收器（<code>alertmanager.ConfigMap.jsonnet:25-45</code>）；vmalert 规则目录 <code>observability/victoria-metrics-alert/rules</code> 可直接加 k6 规则</td>
+            </tr>
+            <tr>
+              <td>报告与状态</td>
+              <td><b>零服务方案</b>：summary JSON + HTML 存对象存储；趋势看 VM；「门禁状态」= Argo 执行状态 + VM 指标</td>
+              <td>jmeter 已用 OSS 桶 + ossutil 归档的现成模式（<code>repos/gitops/apps/jmeter/*.jsonnet</code>）；如需查询 API/看板，再加一个薄服务（非必需）</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>触发路径（同样 4 类，但零平台依赖）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>触发</th><th>实现</th><th>阻断效果</th></tr></thead>
+          <tbody>
+            <tr><td>部署/灰度</td><td>Rollout <code>analysis</code>（job provider）或 <code>postPromotionAnalysis</code>（CRD 已支持：<code>crd.yaml:14233</code>）</td><td><b>强</b>：AnalysisRun 失败 → Rollout Degraded → 平台 <code>cd</code> 节点失败、环境不推进</td></tr>
+            <tr><td>构建后</td><td>服务仓 CodeUp 流水线追加 <code>Command</code> stage 跑小集冒烟（对已部署的稳定版本）</td><td>中：红流水线；看不到本次镜像</td></tr>
+            <tr><td>定时巡检</td><td>Argo CronWorkflow（test/staging）</td><td>弱：告警+建单，不阻断</td></tr>
+            <tr><td>手工</td><td><code>kubectl</code>/Argo UI 提交 Workflow，或平台无关的 CI 触发</td><td>无：出报告</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <b>必须诚实列出的能力边界</b>：
+        <b>①</b> 进不了发布单 —— 发布单是 efficiency 的 Mongo 对象（<code>release_order</code>），就绪判定只认它自己的 <code>jian_guo_gate_records</code> 与人工报告；独立平面没有「工作项 + 迭代分支」归属，也就无法参与 <code>checkReleaseQualityReports</code>；
+        <b>②</b> 报告不进质量平台聚合页，质量趋势与「冒烟通过率」口径不会自动出现在坚果报表里；
+        <b>③</b> 不能自动放行/否决人工审批节点（那是平台私有鉴权路由），只能通过 Rollout Degraded 让推进链路自然失败；
+        <b>④</b> Rollout 内跑冒烟的代价：canary 时长被拉长，套件必须 &lt; 2 分钟并设 <code>activeDeadlineSeconds</code>/<code>failureLimit</code>，否则会把正常发布拖成超时；
+        <b>⑤</b> 运行环境：k6-operator 现在只在 test 集群，staging 需扩装（GitOps 守卫改一行，但要确认 staging 集群资源与网络可达）。
+      </div>
+
+      <h3>适用场景</h3>
+      <ul>
+        <li>非平台接管的仓/团队（例如 agent-square 这类有自己的 CI 与 inspection 框架的仓），想先拿到自动冒烟而不等平台排期。</li>
+        <li>需要「我的服务我不依赖别人也能有质量门禁」的自治诉求，或平台发布节奏不可控时期。</li>
+        <li>作为**过渡平面**：先独立跑起来，等平台侧接口就绪再把结论桥接进发布单（见 §10）。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s10">
+      <h2><span class="num">10</span>两条路线对比与桥接 <em>执行平面独立、发布语义按需桥接</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>平台内（§08）</th><th>独立（§09）</th></tr></thead>
+          <tbody>
+            <tr><td>依赖面</td><td>efficiency 代码 + 数据库 + Argo 模板；S3 若要写质量平台则再加 OAuth 会话</td><td><b>仅 GitOps + Argo + k6-operator + VM/Alertmanager</b>（都在本仓可控范围）</td></tr>
+            <tr><td>主阻断点</td><td>环境子流程 <code>smoke-gate</code> 节点（语义最准，<code>cd</code> 后立刻判）</td><td>Rollout AnalysisRun（Degraded 传导到平台 <code>cd</code> 节点）</td></tr>
+            <tr><td>部署收敛语义</td><td>节点判定「服务是否可达 + 业务是否通」</td><td>判定发生在 canary 阶段，天然只压 canary 服务（<code>&lt;app&gt;-canary</code>）</td></tr>
+            <tr><td>发布单卡点</td><td>✅ 可进（S3 方案 A/B）</td><td>❌ 不可进（无工作项/迭代分支归属）</td></tr>
+            <tr><td>报告与口径</td><td>可对齐质量平台检查项与聚合页</td><td>自持报告（对象存储 + VM），口径自定</td></tr>
+            <tr><td>改动量</td><td>efficiency（Go：job 类型 + adapter + 节点序）+ Argo 模板 + gitops</td><td>gitops jsonnet（AnalysisTemplate / CronWorkflow / ConfigMap）+ 镜像；<b>零 Go 改动</b></td></tr>
+            <tr><td>失效模式</td><td>平台侧改动需发版；版本族漏插；门禁 fail-open 口径要对齐</td><td>Rollout 拉长/超时风险；无法形成组织级统一报表；每个集群要各自装 operator</td></tr>
+            <tr><td>上线速度</td><td>S0/S1 ≈ 3–4 周（含平台发版节奏）</td><td><b>S0′ ≈ 1–2 周</b>（纯 GitOps 声明 + 一个试点服务）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>桥接（单向、后置、可选）</h3>
+      <ol>
+        <li><b>报告链接桥接</b>（零代码）：独立平面把 k6 报告 URL 写入对象存储；需求发布时由人把它填进发布单的人工报告字段（<code>manual_test_reports</code>）——语义上等价于「已有的手工报告」路径，不增加新机制。</li>
+        <li><b>结论桥接</b>（少量代码，等价于 §08 的 S3-A）：平台侧新增一个只读接口读取归档结果/VM 指标，作为发布单就绪判定的新来源。这是把独立平面的结论「转正」为组织口径的唯一必要改动。</li>
+        <li><b>不做反向依赖</b>：独立平面永不调用平台；桥接只从独立平面流向平台，避免两条链路互相阻塞。</li>
+      </ol>
+
+      <div class="callout ok">
+        <b>推荐落地顺序（混合路线）</b>：<b>先用独立平面拿到能力，再用平台侧桥接拿到口径。</b>
+        <ol>
+          <li>第 1 步（1–2 周，纯 GitOps）：k6 镜像 pin + <code>&lt;service&gt;-smoke</code> ConfigMap + Rollout job-provider AnalysisTemplate（试点 1 个服务，staging）+ 归档 + remote write + Grafana/vmalert。此时「部署后自动冒烟、失败阻断灰度」已经成立，且不依赖任何平台发版。</li>
+          <li>第 2 步（+1 周）：CronWorkflow 定时巡检（test/staging）+ 飞书告警（Alertmanager → <code>alert-webhook</code>）。</li>
+          <li>第 3 步（按需）：把结论桥接进发布单（§08-S3-A），完成组织级口径；此步可与平台团队并行，不阻塞前两步。</li>
+        </ol>
+      </div>
+      <div class="callout warn">
+        <b>不要两条路都做一半</b>：如果最终目标是发布单必须卡住不合格版本，那么「独立平面 + 桥接」是完整方案；如果只要「部署后自动冒烟、失败就停」，只做 §09 即可，不必引入平台改动。
+      </div>
+    </section>
+
+    <section class="card" id="s11">
+      <h2><span class="num">11</span>冒烟用例工程规范 <em>断言业务语义 · 可重复可清理 · 5 分钟内出结论</em></h2>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>分层与范围</h4>
+          <p>每服务一个 <b>service-smoke</b> 集（该服务对外接口的核心正向 + 关键异常分支）；跨服务用 <b>story-smoke</b>（需求链路，如「下单 → 支付 → 履约」）与 <b>env-gate</b>（环境级基础依赖：网关、鉴权、配置中心、MQ 可达）。三层共用 runner，按触发场景选择集。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>断言口径</h4>
+          <p>禁止只断言 HTTP 200。必须断言：<b>业务码</b>（<code>code=0</code> 之类）、<b>关键字段</b>（订单号/金额/库存）、<b>状态机</b>（创建→支付→完成，或失败态）、<b>幂等</b>（重复请求不产生第二笔）、<b>可观测副作用</b>（查询接口能查到刚才写的数据）。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>数据策略</h4>
+          <p>专用冒烟账号与专用门店/会员（沿用 agent-square <code>loadtest-</code> 前缀思路）；写路径优先幂等键；每条链路自带 <code>teardown</code> 清理（k6 <code>teardown()</code> 或脚本级 cleanup 场景）；串行依赖的链路用 <code>setup()</code> 准备、<code>exec</code> 分组推进，互不依赖的链路可并行。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>稳定性与 flaky 治理</h4>
+          <p>一次自动重试（仅对网络类错误与 5xx，业务断言失败不重试）；重试后仍失败即判红。连续 N 次同一条链路失败的用例进入「隔离清单」并建单，避免门禁噪声化。</p>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">5</span>时长与反馈</h4>
+          <p>service-smoke 目标 &lt; 2 分钟、env-gate &lt; 5 分钟；失败信息直接给出「链路 + 断言 + 实际值 + 追踪 ID」，节点详情页可跳报告。慢链路（跨系统异步）用 <code>MAX_WAIT</code> 轮询终态，不靠 <code>sleep</code> 硬等。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">6</span>报告与留痕</h4>
+          <p>统一产出 <code>summary JSON</code>（机器解析，落结果表）+ HTML（人看，归档到对象存储，URL 进 <code>detail_url</code>）。脚本用 <code>group()</code> 划分链路、<code>tags</code> 标注场景与服务，便于后续按服务聚合趋势。</p>
+        </div>
+      </div>
+      <div class="callout">
+        <b>不要做的事</b>：把 UI 断言塞进 k6（k6 是协议层工具，浏览器场景交给已有 UI 自动化）；把冒烟写成「全部接口遍历」（那是回归集，不是冒烟）；让冒烟脚本直接依赖生产数据（prod 只跑只读探活）。
+      </div>
+    </section>
+
+    <section class="card" id="s12">
+      <h2><span class="num">12</span>判定口径与阈值治理 <em>冒烟看通过率，压测看分布；都遵循 no_data=fail</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>类别</th><th>判定</th><th>阈值来源</th><th>无数据</th></tr></thead>
+          <tbody>
+            <tr><td>冒烟（主干）</td><td>套件内<b>所有</b>必跑链路断言通过；<code>checks</code> 通过率 100%（可配 99% + 白名单）</td><td>场景文件内联 <code>thresholds</code> + 门禁侧通过率阈值</td><td><b>判失败</b>（缺脚本/环境不可达/未执行）</td></tr>
+            <tr><td>压测（按需）</td><td>延迟：读 P95 &lt; 500ms / P99 &lt; 1000ms，写 P95 &lt; 800ms；<code>http_req_failed rate&lt;0.01</code>；<code>dropped_iterations == 0</code></td><td>P1 固定阈值；P2 与上次发布同场景对比，劣化 &gt; 20% 判失败</td><td>判失败</td></tr>
+            <tr><td>目标压力</td><td>线上实测峰值 × 1.5（从 VictoriaMetrics 取峰值）</td><td>容量评估会确定</td><td>—</td></tr>
+            <tr><td>灰度（prod）</td><td>5xx 比率 + P95 延迟同时满足</td><td>AnalysisTemplate 参数</td><td>分析无数据 → 由 <code>successCondition</code> 显式定义</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>阈值归属：冒烟由服务 owner 提供、QA 复核；门禁侧通过率阈值走服务树就近覆盖（Application → Module → System → ProductLine → 全局默认），与现有门禁同口径。</p>
+    </section>
+
+    <section class="card" id="s13">
+      <h2><span class="num">13</span>风险、约束与失效模式 <em>门禁被噪声淹没 · 数据污染 · 共享环境互扰 · 版本漏插</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>风险</th><th>机理</th><th>处置</th></tr></thead>
+          <tbody>
+            <tr><td>冒烟噪声化（最可能失败的模式）</td><td>环境不稳 / 数据缺失导致频繁误红，团队开始忽略门禁</td><td>一次重试 + 隔离清单 + 环境前置检查（<code>env-gate</code> 先跑）；门禁先告警期 2 个迭代再硬阻断</td></tr>
+            <tr><td>写脏数据</td><td>冒烟会真实写入、触发下游 MQ 与风控</td><td>专用账号 + 请求头标记 + 幂等键 + <code>teardown</code> 清理；prod 只跑只读探活</td></tr>
+            <tr><td>共享环境互扰</td><td>test/staging 多需求共用，冒烟与被测部署互相影响</td><td>环境级互斥锁（复用 <code>init-environment-lock</code>）；同一环境同一时间只跑一个套件</td></tr>
+            <tr><td>门禁 fail-open</td><td>portal 异常返回 <code>passed=true</code>；阈值未配置 = 不检查</td><td>「无结果 = 失败」独立分支；efficiency 快照记录明细有无；定期核对「通过但无明细」</td></tr>
+            <tr><td>误把冒烟当回归</td><td>套件膨胀到几百条，时长不可控，部署后被拖住</td><td>硬性时长预算 + 集分层（service-smoke / env-gate / 回归集分离）</td></tr>
+            <tr><td>环境流程版本漏插</td><td>v1–v5 + hotfix + redeploy 共存，只改 v3 会静默漏掉 v4/v5 与 redeploy</td><td>按版本族清单化插入并在验收时逐文件核对</td></tr>
+            <tr><td>报告失效</td><td>本机 <code>reports/</code> 被 gitignore</td><td>服务端归档 + 结果表存 <code>detail_url</code></td></tr>
+            <tr><td>operator / 镜像版本漂移</td><td>operator 版本内联写死、k6 镜像曾用 <code>:latest</code></td><td>版本进 <code>versions.libsonnet</code>，镜像 pin 到具体 tag 并记录 digest</td></tr>
+            <tr><td>越权放行企图</td><td>有人想用公开无鉴权路由 <code>/workflow/node/complete</code> 自动放行审批节点</td><td>明确禁止：审批节点保持人工语义；自动判定只走自建 <code>smoke-gate</code> 节点</td></tr>
+            <tr><td>Rollout 内跑冒烟拖长发布（独立路线特有）</td><td>canary AnalysisRun 期间执行 k6，套件过长会把正常发布拖成超时，或在灰度窗口内放大干扰</td><td>套件 &lt; 2 分钟；设 <code>activeDeadlineSeconds</code> / <code>failureLimit</code> / <code>initialDelay</code>；只压 <code>&lt;app&gt;-canary</code></td></tr>
+            <tr><td>独立平面无组织级报表（独立路线特有）</td><td>结论只在对象存储与 VM，管理层看不到统一口径</td><td>接受或按 §10 桥接进平台；先明确「谁看什么」再落地</td></tr>
+            <tr><td>operator 覆盖不足（独立路线特有）</td><td>k6-operator 现仅 test 集群，staging 需扩装；扩装后需确认资源与网络可达</td><td>先只上 test；staging 扩装单独评审（GitOps 守卫一行，但属集群变更）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s14">
+      <h2><span class="num">14</span>分期实施与验收 <em>S0 骨架（1 周可跑通）→ S1 自动阻断 → S2 巡检 → S3 门禁入账 → P/G</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>范围</th><th>产出</th><th>验收（可观察）</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>S0<br/>冒烟骨架</td>
+              <td>k6 镜像 pin + 场景清单落点（<code>&lt;service&gt;-smoke.jsonnet</code>）+ 归档 + remote write；选 1 个服务（可先 <code>cart-wanquan</code>）</td>
+              <td>镜像、2–3 条业务链路冒烟脚本、对象存储归档、Grafana 面板</td>
+              <td>集群内手工跑一轮：链路断言全绿；故意改坏一条断言 → 退出码非 0、报告标出失败链路；Grafana 出现本次运行指标</td>
+            </tr>
+            <tr>
+              <td>S1<br/>自动阻断</td>
+              <td><code>JobTypeSmoke</code> + <code>smoke-gate</code> 模板 + test/staging 子流程插入 + 开关</td>
+              <td>部署后自动冒烟，失败即阻断推进</td>
+              <td>造一个功能回归（如改错业务码）：<code>cd</code> 成功后 <code>smoke-gate</code> 失败，后续人工审批节点不可达；修复后同版本重跑转绿</td>
+            </tr>
+            <tr>
+              <td>S2<br/>定时巡检</td>
+              <td>CronWorkflow / k8s CronJob（test、staging）</td>
+              <td>每日多次全链路巡检 + 失败告警/建单</td>
+              <td>连续 3 天有巡检记录；人为停一个依赖，巡检在下一个周期报红并发出飞书告警</td>
+            </tr>
+            <tr>
+              <td>S3<br/>门禁入账</td>
+              <td>efficiency 结果表 + 机机接口 + 就绪判定新来源（或按 §08-B 与质量团队对齐口径）</td>
+              <td>发布单能读到冒烟结论并阻断</td>
+              <td>构造未通过冒烟的需求：发布单提交被阻断并给出明细；通过的需求正常提交；「通过但无明细」可告警</td>
+            </tr>
+            <tr>
+              <td>P<br/>按需压测</td>
+              <td>压测场景（staging）+ 基线对比</td>
+              <td>容量报告与劣化门禁</td>
+              <td>制造一次性能劣化（如放大慢查询）能被基线与阈值拦下</td>
+            </tr>
+            <tr>
+              <td>G<br/>灰度指标</td>
+              <td>AnalysisTemplate 增加延迟 metric</td>
+              <td>prod 灰度期延迟+错误率门禁</td>
+              <td>灰度期注入延迟劣化，AnalysisRun 失败 → Rollout Degraded</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><b>若选独立路线（§09）</b>，上表退化为三小步，且不占用任何平台发版窗口：S0′（1–2 周）＝ 镜像 pin + <code>&lt;service&gt;-smoke.jsonnet</code> + Rollout job-provider 冒烟模板 + 归档/指标；S1′（+1 周）＝ CronWorkflow 定时巡检 + 飞书告警；S2′（按需）＝ 桥接进发布单（等价 S3-A）。验收口径同年表：<b>先证明「部署后自动冒烟、失败阻断灰度」，再谈报表与发布单</b>。</p>
+
+      <p>依赖顺序是硬约束：<b>S0/S1/S2 全部在本仓可控</b>（efficiency + gitops），不依赖 quality-portal / quality-autotest；S3 的 A 方案同样本仓可控，B 方案才需要跨团队。建议把跨团队事项排到 S3 之后。</p>
+      <div class="callout">
+        <b>估算（非承诺）</b>：S0 ≈ 1 周（1 人 + 服务 owner 提供链路）；S1 ≈ 2–3 周（1 后端 + 0.5 测试平台）；S2 ≈ 1 周；S3-A ≈ 2 周；P/G 各 ≈ 1–2 周。人力仅作排期参考。
+      </div>
+    </section>
+
+    <section class="card" id="s15">
+      <h2><span class="num">15</span>待确认项与跨团队依赖 <em>链路责任人 · 口径归属 · 巡检窗口 · 结果落点</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>待确认</th><th>为什么必须由人决定</th><th>建议默认</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>每个服务的冒烟链路清单与责任人</td><td>只有业务 owner 知道「哪几条是必须走通的」</td><td>试点服务先 2–3 条核心链路，逐步扩</td></tr>
+            <tr><td>2</td><td>冒烟结论的官方口径归属（efficiency 自建 vs 质量平台执行计划）</td><td>跨团队口径与报告归属</td><td>一期 efficiency 自建（§08-A），二期谈口径统一</td></tr>
+            <tr><td>3</td><td>定时巡检窗口与告警落点（飞书群 / 问题单）</td><td>影响值班与噪声</td><td>test 每小时、staging 每天 2 次，失败进值班群</td></tr>
+            <tr><td>4</td><td>是否把冒烟设为硬阻断，还是先告警期</td><td>组织流程选择</td><td>先告警期 2 个迭代，再转硬阻断</td></tr>
+            <tr><td>5</td><td>报告与结果归档位置（对象存储桶 / 结果表）</td><td>存储与权限</td><td>对象存储 + 结果表存 URL</td></tr>
+            <tr><td>6</td><td>压测目标 RPS 与容量承诺的负责人</td><td>涉及容量承诺</td><td>线上实测峰值 × 1.5 起步</td></tr>
+            <tr><td>7</td><td><b>落哪条路线</b>：平台内（§08）/ 独立（§09）/ 混合（§10 推荐）</td><td>决定是否需要平台发版、是否能进发布单、谁维护</td><td>混合：先独立拿到能力，再桥接进发布单</td></tr>
+            <tr><td>8</td><td>是否把 k6 场景清单纳入服务上线准入（新服务必须提供冒烟场景）</td><td>流程准入</td><td>纳入服务模板与上线 checklist</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <b>最小可行起点</b>：先做 S0 —— 把一个服务的 2–3 条业务链路写成冒烟脚本、按 <code>&lt;service&gt;-smoke.jsonnet</code> 入库、跑通归档与指标；随后 S1 用 <code>smoke-gate</code> 节点在一个服务上实现「部署后自动冒烟 + 失败阻断」，此时已经拿到用户要的日常能力，S3 门禁与压测再逐步叠加。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码与 GitOps 定义静态分析生成，仅供架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

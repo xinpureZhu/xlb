@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>oms-plateform 深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>oms-plateform 订单中台 · 代码深度分析</h1>
+    <p class="subtitle">21 个 Maven 模块、1304 个 Java 文件的 DDD 订单中台。本篇已基于最新 <code>prod</code> 完全重写——此前基于个人分支的结论多数已失效。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>prod</code> <code>de2e6a506</code>（2026-07-15，落后 0） · 数据来源：<code>oms-plateform/**</code> 源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html" class="active">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="callout ok" id="provenance">
+      <strong>分析基准 ✅ prod</strong> 分支 <code>prod</code>（<code>de2e6a506</code>，2026-07-15，<strong>与 <code>origin/prod</code> 同步</strong>）。
+      本篇为<strong>重写版</strong>——上一版基于个人分支 <code>zxg</code>（落后 prod 2489 个提交），其核心结论已被证伪，详见 §01。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">与旧版结论的差异</a></li>
+        <li><a href="#s2">模块拓扑</a></li>
+        <li><a href="#s3">oms-core 订单核心</a></li>
+        <li><a href="#s4">oms-adapter 渠道接入</a></li>
+        <li><a href="#s5">履约 / 逆向 / 结算 / 检索</a></li>
+        <li><a href="#s6">消息与可靠性</a></li>
+        <li><a href="#s7">风险清单（分级）</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>21 模块 · 1304 文件 · 已非骨架项目</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">21</div><div class="l">Maven 顶层模块</div></div>
+        <div class="stat"><div class="n">1,304</div><div class="l">Java 文件</div></div>
+        <div class="stat"><div class="n">12</div><div class="l">独立 MQ 消费者模块</div></div>
+        <div class="stat"><div class="n">17</div><div class="l">Controller / Flyway 迁移各 17</div></div>
+      </div>
+      <p>技术栈（<code>pom.xml</code> 确认）：<strong>Java 25 + Spring Boot 4.0.3 + MyBatis-Flex 1.11.6</strong>。与 README 写的「Java 21 / Boot 3.3.2 / MyBatis-Plus」仍不符——<strong>文档滞后依旧，以构建文件为准</strong>。</p>
+      <div class="callout ok">
+        <strong>整体判断变化</strong> 这已<strong>不是</strong>「adapter + core 可用、其余四模块骨架」的项目。履约、逆向、结算、检索四域<strong>全部有实现</strong>，并各自拆出独立消费者模块；消息侧新增<strong>事务消息</strong>与<strong>死信队列</strong>。
+      </div>
+      <div class="callout danger">
+        <strong>但一项 Critical 依然存在</strong> <strong>渠道回调仍未做签名校验</strong>——对 <code>oms-adapter</code> 全量 grep <code>verifySign</code>/<code>checkSign</code>/<code>validateSign</code>/<code>.getSig()</code> <strong>零命中</strong>。外部仍可伪造回调驱动下单/完成/取消。
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>与旧版结论的差异 <em>6 条已失效 · 2 条仍成立</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>旧版结论（基于 zxg）</th><th>prod 实际</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td><code>ChannelCallbackMessageGateway</code> 接口缺失，分支可能不能构建</td><td>该文件<strong>存在</strong>于 <code>oms-adapter-domain/.../gateway/</code></td><td><span class="badge danger">已失效</span></td></tr>
+            <tr><td><code>FulfillmentOrder</code>/<code>FulfillmentStateMachine</code> 不存在 → 无法编译</td><td>两者<strong>均存在</strong>；模块 57 文件 + 独立 <code>fulfillment-consumer</code>（36 文件）</td><td><span class="badge danger">已失效</span></td></tr>
+            <tr><td><code>oms-reverse</code> 仅持久层（10 文件）</td><td><strong>四层齐全</strong>：domain 36 / application 36 / infrastructure 58 / bootstrap 7，共 137 文件 + 退款消费者</td><td><span class="badge danger">已失效</span></td></tr>
+            <tr><td><code>oms-search</code> 仅配置、0 行业务代码（2 文件）</td><td><strong>125 文件、4 个检索控制器</strong> + 3 个索引消费者</td><td><span class="badge danger">已失效</span></td></tr>
+            <tr><td><code>oms-settlement</code> 仅贫血聚合 + 无实现 Repository（3 文件）</td><td>66 文件 + <strong>正向/逆向两个结算消费者</strong></td><td><span class="badge danger">已失效</span></td></tr>
+            <tr><td><code>channel_order_status_mapping</code> 建表但代码从不读取</td><td>已改<strong>枚举驱动</strong>：<code>ChannelOrderStatusMapping</code> 枚举 + <code>MeituanOrderPaidAssembler</code> 使用 + 单测</td><td><span class="badge warn">已变化</span></td></tr>
+            <tr><td>渠道回调无签名校验</td><td>仍无——全模块无任何验签实现</td><td><span class="badge ok">仍成立</span></td></tr>
+            <tr><td>AI 自然语言→SQL 未实现</td><td>仍未实现——<code>langchain4j</code>/<code>dashscope</code> 只出现在 <code>pom.xml</code> 与 <code>README.md</code>，<strong>零 Java 引用</strong>。但模块本身已是真实 ES 检索服务</td><td><span class="badge ok">仍成立</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn"><strong>教训</strong> 「模块仅骨架 / 无法编译」这类结论对分支极度敏感——在个人开发分支上属正常的进行中状态。这也是本仓规范新增「必须标注分析基准」条款的直接原因。</div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>模块拓扑 <em>域模块 + 配套消费者的成对结构</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph BASE["基座"]
+    ST["oms-starter 91"]
+    CM["oms-common 184"]
+  end
+  subgraph DOMAIN["业务域（域模块 + 消费者）"]
+    CO["oms-core 142"]
+    CO3["orderprint-consumer 73"]
+    AD["oms-adapter 208"]
+    TP["oms-thirdparty-adapter 28"]
+    FU["oms-fulfillment 57"]
+    FU1["fulfillment-consumer 36"]
+    RV["oms-reverse 137"]
+    SE["oms-settlement 66"]
+    SR["oms-search 125"]
+    SR1["search 消费者 ×3 = 76"]
+  end
+  GR["oms-grafana 7"]
+  ST --> CM --> DOMAIN
+  CO --> CO3
+  AD --> TP
+  FU --> FU1
+  SR --> SR1
+        </pre>
+        <p class="arch-title">图 1 · 21 个模块的成对结构（数字为 Java 文件数）</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>模块</th><th>Java</th><th>模块</th><th>Java</th></tr></thead>
+          <tbody>
+            <tr><td>oms-adapter</td><td>208</td><td>oms-fulfillment</td><td>57</td></tr>
+            <tr><td>oms-common</td><td>184</td><td>oms-fulfillment-consumer</td><td>36</td></tr>
+            <tr><td>oms-core</td><td>142</td><td>oms-search-order-consumer</td><td>29</td></tr>
+            <tr><td>oms-reverse</td><td>137</td><td>oms-thirdparty-adapter</td><td>28</td></tr>
+            <tr><td>oms-search</td><td>125</td><td>oms-search-reverseorder-consumer</td><td>24</td></tr>
+            <tr><td>oms-starter</td><td>91</td><td>oms-search-updateorder-consumer</td><td>23</td></tr>
+            <tr><td>oms-core-orderprint-consumer</td><td>73</td><td>oms-reverse-orderrefund-consumer</td><td>11</td></tr>
+            <tr><td>oms-settlement</td><td>66</td><td>oms-grafana</td><td>7</td></tr>
+            <tr><td colspan="4">另有 5 个小型消费者各 3-4 文件：orderpaid / ordercancel / adapter-callback / settlement-forward / settlement-reverse</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>结构演进</strong>：从 8 个模块变为「<strong>域模块 + 配套独立消费者</strong>」成对模式——每个域把 MQ 消费拆成独立可部署单元，便于按消息量独立扩缩容。</p>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>oms-core 订单核心 <em>142 文件 · 已改用事务消息</em></h2>
+      <ul>
+        <li><strong>订单聚合与 COLA 状态机</strong>承载 <code>PAID → CONFIRMED → FINISHED</code> 主链路与各态到 <code>CANCELED</code> 的迁移，主链路语义未变。</li>
+        <li><strong>三个消费者拆分</strong>：<code>orderpaid</code>（已支付建单）、<code>ordercancel</code>（取消）、<code>orderprint</code>（<strong>73 文件，订单打印</strong>——新增的完整子域，含死信队列）。</li>
+        <li><strong>MQ 生产者已升级为事务消息</strong>：<code>OrderMQProducer</code> 调用 <code>xlbRocketMqClient.sendTransactionMessage(...)</code>（<code>:444</code>），配合 <code>TX_TOPIC</code>。<strong>这实质性缓解了旧版指出的「发布先于提交、无 outbox」问题</strong>——半事务消息 + 回查可保证本地事务与消息最终一致。</li>
+        <li><strong>Topic 常量</strong>：<code>OMS_ORDER_TOPIC</code>、<code>OMS_ORDER_STATUS_CHANGE_TOPIC</code>、<code>OMS_ORDER_PRINT_TOPIC</code>、<code>DLQ_OMS_ORDER_PRINT_TOPIC</code>、<code>ADAPTER_TOPIC</code>、<code>TX_TOPIC</code>。</li>
+      </ul>
+      <div class="callout ok"><strong>可靠性改进</strong> 出现<strong>死信队列</strong>（<code>DLQ_OMS_ORDER_PRINT_TOPIC</code>）与 <code>OrderPrintDeadLetterConsumerBootstrap</code>（含单测）。旧版「重试耗尽后仅打日志、消息丢失无法追溯」在打印链路上已解决。</div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>oms-adapter 渠道接入 <em>208 文件 · 最大模块 · 但仍无验签</em></h2>
+      <ul>
+        <li>已成为全项目最大模块（208 文件），另有独立的 <code>oms-adapter-callback-consumer</code> 与 <code>oms-thirdparty-adapter</code>（28 文件）。</li>
+        <li><strong><code>ChannelCallbackMessageGateway</code> 已存在</strong>于 domain 层 <code>gateway</code> 包——旧版「接口缺失致不可构建」不成立。</li>
+        <li><strong>状态映射改为枚举驱动</strong>：<code>ChannelOrderStatusMapping</code> 枚举 + <code>MeituanOrderPaidAssembler</code> 使用 + 单测覆盖。旧版「建表却不读」已通过换实现方式解决——但 DB 表可能已成冗余，<strong>值得确认后清理</strong>。</li>
+      </ul>
+      <div class="callout danger">
+        <strong>Critical 仍在：回调无签名校验</strong> 渠道回调仍只做幂等与落库，不验证来源真实性 → 外部可伪造回调驱动下单、完成、取消。
+        <p><strong>建议</strong>：按美团开放平台规范实现 <code>sig</code> 校验（app_secret + 参数规范化 + 摘要比对），并加时间戳窗口与来源 IP 限制。</p>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>履约 / 逆向 / 结算 / 检索 <em>四域均已落地</em></h2>
+      <div class="grid cols-4">
+        <div class="mech m3">
+          <h4><span class="num">1</span>履约 57+36</h4>
+          <p>聚合与状态机均已存在。状态机是<strong>手写的 <code>Map&lt;Integer, Set&lt;Integer&gt;&gt;</code> 白名单迁移表</strong>（非 COLA）：如 <code>WAIT_ACCEPT → {ACCEPTED, READY, PICKING, WAIT_PICK, CANCEL}</code>，基于 <code>OrderFulfillStatusEnum</code>。</p>
+          <div class="loc">oms-fulfillment-domain/.../statemachine/FulfillmentStateMachine.java</div>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">2</span>逆向 137+11</h4>
+          <p>四层齐全（36/36/58/7），不再是「仅持久层」。配套 <code>oms-reverse-orderrefund-consumer</code>。</p>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">3</span>结算 66+3+4</h4>
+          <p>已实现，并拆出<strong>正向</strong>与<strong>逆向</strong>两个结算消费者——对应正单结算与退单冲销。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>检索 125+76</h4>
+          <p><strong>4 个真实控制器</strong>：B 端 / C 端 / App 端 / 数据修复。3 个索引消费者：正单 / 逆向单 / 更新。</p>
+          <p><strong>但 AI NL→SQL 仍未实现</strong>。</p>
+        </div>
+      </div>
+      <div class="callout warn"><strong>两点跟进</strong> ① 履约状态机是手写白名单表，缺少 guard/action 钩子与统一的非法迁移异常处理，状态变更副作用需靠调用方自觉；② <code>oms-search</code> 携带整套未使用的 AI 依赖，建议明确路线——实现或移除以减小体积与审计面。</div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>消息与可靠性 <em>事务消息 + DLQ 已引入</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  MT["美团等渠道"] --> AD["oms-adapter<br/>幂等 + 落库<br/>无验签"]
+  AD -->|ADAPTER_TOPIC| ADC["adapter-callback-consumer"]
+  ADC --> CORE["oms-core<br/>事务消息 TX_TOPIC"]
+  CORE --> MQ["RocketMQ 5.x"]
+  MQ -->|OMS_ORDER_TOPIC| PAID["orderpaid-consumer"]
+  MQ -->|STATUS_CHANGE| CAN["ordercancel-consumer"]
+  MQ -->|ORDER_PRINT| PR["orderprint-consumer 73"]
+  PR -.重试耗尽.-> DLQ["DLQ 死信消费者"]
+  MQ --> FU["fulfillment-consumer"]
+  MQ --> RV["orderrefund-consumer"]
+  MQ --> SE["settlement forward/reverse"]
+  MQ --> SR["search ×3"]
+  classDef ok fill:#f0fdf4,stroke:#16a34a
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class DLQ,CORE ok
+  class AD bad
+        </pre>
+        <p class="arch-title">图 2 · 消息拓扑（绿色 = 新增可靠性机制，红色 = 仍存缺口）</p>
+      </div>
+      <p>相比旧版有两项实质改进：<strong>① 事务消息</strong>解决本地事务与消息的原子性；<strong>② 死信队列</strong>（打印链路）解决重试耗尽后的可追溯性。持久化侧共 <strong>17 个 Flyway 迁移</strong>。</p>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>风险清单（分级） <em>Critical 由 4 降至 1~2</em></h2>
+      <h3>Critical</h3>
+      <ol>
+        <li><strong>渠道回调无签名校验</strong>——唯一确定仍存在的 Critical。</li>
+        <li><strong>明文凭据</strong>：旧版曾发现生产库与三方密钥以明文或 <code>${VAR:真实值}</code> 形式入库。本次<strong>未逐文件复核</strong>，按未修复对待并优先审计。</li>
+      </ol>
+      <h3>待复核（旧版 High，本次未确认状态）</h3>
+      <ul>
+        <li>幂等实现是否仍将 Redis 异常吞成「冲突」（fail-closed）。</li>
+        <li><code>finishOrder</code> 是否仍在 DB 事务内调用库存服务。</li>
+        <li><code>InventoryService</code>/<code>PushService</code> 是否仍为 stub（本次未见 TODO 命中，可能已实现）。</li>
+        <li>幂等短路路径是否仍不重发事件。</li>
+        <li><code>BusinessCode</code> 是否仍有 15+ 组重复 code。</li>
+        <li>雪花 ID 的 32 IDs/秒瓶颈与 UUID 哈希分片是否仍在。</li>
+        <li>GraalVM 原生镜像是否已补齐 profile 与 reachability 元数据。</li>
+      </ul>
+      <div class="callout warn">
+        <strong>本篇核验范围说明</strong> 本次重写在有限预算内完成了<strong>结构性事实</strong>的全面复核（模块、分层、状态机、消息、控制器、AI 状态、验签状态），但<strong>未逐文件复核全部旧版 High/Medium 条目</strong>。上表已明确区分「已确认」与「待复核」。如需完整的 prod 风险清单，建议对 <code>oms-core</code> 与 <code>oms-adapter</code> 两个大模块做一轮专项审计。
+      </div>
+      <h3>建议优先动作</h3>
+      <ol>
+        <li>补齐渠道回调签名校验 + 时间戳窗口 + 来源限制。</li>
+        <li>审计并轮换 prod 配置中的凭据，统一走外部 Secret 管理。</li>
+        <li>明确 <code>oms-search</code> 的 AI 路线：实现或移除依赖。</li>
+        <li>确认无读取后清理 <code>channel_order_status_mapping</code> 表。</li>
+        <li>为履约状态机补 guard/action 钩子与非法迁移的统一异常处理。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

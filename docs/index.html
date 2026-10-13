@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XLB 零售平台 · 文档中心</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 新零帮 · 零售中台</p>
+    <h1>系统架构与业务能力 · 文档中心</h1>
+    <p class="subtitle">
+      对整个零售代码仓（<code>/Users/xinpure/Project/xlb</code>）进行的架构与业务能力扫描汇总。
+      覆盖 31 个代码仓、5 大技术栈、159 个命名空间、699 个部署服务。
+    </p>
+    <p class="meta">最后更新：2026-08-07 · 数据来源：源码静态分析 · 格式规范见 <code>docs/文档格式规范.md</code></p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html" class="active">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <section class="card">
+      <h2><span class="num">00</span>平台一览</h2>
+      <p>
+        XLB（新零帮）是一套面向连锁零售的 SaaS 中台，覆盖<strong>商品、库存、门店、POS 收银、会员、卡券、营销活动、订单履约、结算对账</strong>等全域能力。
+        系统由多技术栈微服务 + 多端应用组成：Java（核心业务与中台）、Rust（高性能网关/计算/消费者）、NestJS（各端 BFF）、React Native（App 微前端）、Taro（小程序），
+        统一由 ArgoCD + Jsonnet 的 GitOps 体系部署至阿里云/腾讯云 Kubernetes 集群。
+      </p>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">31</div><div class="l">代码仓（含新增 retail-review-center）</div></div>
+        <div class="stat"><div class="n">5</div><div class="l">技术栈（Java/Rust/Node/RN/小程序）</div></div>
+        <div class="stat"><div class="n">159</div><div class="l">命名空间目录</div></div>
+        <div class="stat"><div class="n">699</div><div class="l">GitOps 部署服务定义</div></div>
+        <div class="stat"><div class="n">2</div><div class="l">云 (阿里云 / 腾讯云)</div></div>
+        <div class="stat"><div class="n">4+</div><div class="l">环境 (dev/test/staging/prod + gray)</div></div>
+        <div class="stat"><div class="n">90+</div><div class="l">RocketMQ Topic (retail-new)</div></div>
+        <div class="stat"><div class="n">3</div><div class="l">多租户货道 (主/万橙/万群)</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">01</span>文档导航</h2>
+      <div class="grid cols-3">
+        <a class="tile" href="01-architecture-overview.html">
+          <h3>架构总览</h3>
+          <p>分层架构、端到后端调用链、自研/遗留双轨、灰度路由、多租户货道模型。</p>
+        </a>
+        <a class="tile" href="02-service-catalog.html">
+          <h3>服务清单</h3>
+          <p>按仓库/技术栈枚举全部服务、模块、可部署单元及其职责与端口。</p>
+        </a>
+        <a class="tile" href="03-business-capabilities.html">
+          <h3>业务能力地图</h3>
+          <p>商品 / 会员卡券 / 订单履约 / POS / 营销活动 / 结算 等域能力与归属服务。</p>
+        </a>
+        <a class="tile" href="04-tech-stack.html">
+          <h3>技术栈</h3>
+          <p>各语言框架版本、存储、缓存、搜索、消息、可观测性与工程约定。</p>
+        </a>
+        <a class="tile" href="05-infrastructure-deployment.html">
+          <h3>部署与基础设施</h3>
+          <p>GitOps（ArgoCD + Jsonnet + Pulumi）、集群/环境拓扑、灰度发布、可观测。</p>
+        </a>
+        <a class="tile" href="06-integrations-messaging.html">
+          <h3>集成与消息</h3>
+          <p>MQ Topic 目录、第三方平台（美团/抖音/快手/支付/飞鹅）、网关与路由。</p>
+        </a>
+        <a class="tile" href="07-oms-plateform-analysis.html">
+          <h3>oms-plateform 深度分析</h3>
+          <p>订单中台代码级深读：状态机、Adapter 回调流水线、MQ/幂等/持久化契约与全部风险清单。</p>
+        </a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">02</span>专题深度分析 <em>9 篇 · 覆盖 31 个代码仓</em></h2>
+      <p>与 07 篇同级的代码级深读：还原真实实现、核对文档与代码的偏差，并给出 Critical / High / Medium 分级风险清单。</p>
+      <div class="grid cols-3">
+        <a class="tile" href="08-retail-new-analysis.html">
+          <h3>retail-new <span class="badge java">Java</span></h3>
+          <p>52 模块 / 15 服务 / 27 消费者。会员卡券、订单 TCC、消息全景，4 项 Critical。</p>
+        </a>
+        <a class="tile" href="09-retail-monolith-analysis.html">
+          <h3>retail 单体 <span class="badge legacy">遗留</span></h3>
+          <p>19.9 万行、608 端点。多租户分库、四路持久化、插件化结算，7 项 Critical。</p>
+        </a>
+        <a class="tile" href="10-marketing-center-analysis.html">
+          <h3>营销活动中心 <span class="badge java">Java</span></h3>
+          <p>编排引擎精确语义、三套并行 TCC、两层缓存，并核对 7 处文档偏差。</p>
+        </a>
+        <a class="tile" href="11-goods-inventory-analysis.html">
+          <h3>门店商品库存（两代）</h3>
+          <p>迁移对齐分析：数据面共享、13 项缺口、Node 下线前置条件。</p>
+        </a>
+        <a class="tile" href="12-rust-services-analysis.html">
+          <h3>Rust 服务群 <span class="badge rust">Rust</span></h3>
+          <p>优惠促销引擎、会员动态码安全性、路由中心、第三方网关，5 项 Critical。</p>
+        </a>
+        <a class="tile" href="13-nestjs-bff-analysis.html">
+          <h3>NestJS BFF <span class="badge node">Node</span></h3>
+          <p>鉴权系统性缺陷、遗留 BFF 双活、积分下单加固逐条核验，10 项 Critical。</p>
+        </a>
+        <a class="tile" href="14-frontend-apps-analysis.html">
+          <h3>前端与端应用 <span class="badge rn">RN</span> <span class="badge mp">小程序</span></h3>
+          <p>Module Federation 真实机制、shared 不对称、远程 bundle 无验签。</p>
+        </a>
+        <a class="tile" href="15-platform-ops-analysis.html">
+          <h3>平台运维 <span class="badge infra">Infra</span></h3>
+          <p>Jsonnet 渲染内核、三套灰度机制、金丝雀门槛有效性、巡检静默失效。</p>
+        </a>
+        <a class="tile" href="16-review-center-analysis.html">
+          <h3>评价中心 <span class="badge new">新增</span> <span class="badge rust">Rust</span></h3>
+          <p>新仓首轮分析：6 crate DDD 分层、31 张表、7 个 worker 形态。工程成熟度明显高于同期其它 Rust 服务。</p>
+        </a>
+        <a class="tile" href="17-efficiency-api-manual.html">
+          <h3>效能平台接口手册 <span class="badge new">新增</span> <span class="badge infra">Go</span></h3>
+          <p>712 条路由的可调用清单与鉴权分层、v1/v2 版本确认，以及「修改服务环境变量」的审批式路径与调试后门对照。</p>
+        </a>
+        <a class="tile" href="18-agent-square-analysis.html">
+          <h3>Agent Square <span class="badge infra">Go</span> <span class="badge node">React</span></h3>
+          <p>多 Runtime Agent 托管平台：Go 控制面经 gRPC / CRD / pod-exec 三条通道驱动 ATE 调度面与 gVisor 沙箱。五个子模块已于 08-18 全部解锁，调度、沙箱、netns-socket 均源码验证。</p>
+        </a>
+        <a class="tile" href="25-k6-cicd-integration.html">
+          <h3>k6 冒烟与性能门禁 <span class="badge new">新增</span> <span class="badge infra">CI/CD</span></h3>
+          <p>以自动触发的业务冒烟为主干、压测为辅：环境子流程新增自判定的 smoke-gate 节点，复用 k6-operator 与 /callback/execute 注册表；4 类触发（部署后 / 晋级前 / 定时巡检 / 平台手工）；含冒烟用例工程规范、结果入账两条路线与「生产不压测」口径。</p>
+        </a>
+        <a class="tile" href="24-mobile-automation-comparison.html">
+          <h3>自动化方案对比 <span class="badge new">新增</span></h3>
+          <p>Appium 实现机制深读：伞驱动与独立 driver 包、W3C 会话模型、UiAutomator2 设备侧 instrumentation 与 8200-6790 端口转发、WebDriverAgent 链路与 XCUIElementQuery；含定位/等待/并行机制表与「谁在设备上监听 HTTP」路线对照。</p>
+        </a>
+
+        <a class="tile" href="23-mobilerun-analysis.html">
+          <h3>mobilerun 移动 Agent <span class="badge new">新增</span></h3>
+          <p>用 LLM 直接操作 Android/iOS 的开源框架：MobileAgent 编排、FastAgent 与 Manager+Executor 双模式、13 个原子工具、ADB + Portal 接入；含官方 91.4% 榜单与第三方 43% 实测的对照，及设备端 AGPL、Portal 权限面与 13 处文档漂移清单。</p>
+        </a>
+
+        <a class="tile" href="22-worktool-analysis.html">
+          <h3>worktool 企微机器人 <span class="badge new">新增</span></h3>
+          <p>依附企微的无障碍 RPA 机器人源码深读：WS 指令通道、39 分支指令目录、单 Handler 串行队列、图片旁路抓取，与 8 项安全问题评估。</p>
+        </a>
+
+        <a class="tile" href="21-waypoint-duplicate-request-incident.html">
+          <h3>Waypoint 重复请求事故 <span class="badge new">新增</span></h3>
+          <p>一次请求经 waypoint 被执行两次的完整复盘：重发机制、14:23 连接重置波、120201 幂等与回滚的状态风险、修复方向。</p>
+        </a>
+        <a class="tile" href="20-domain-model-anemic-vs-rich.html">
+          <h3>贫血 vs 充血模型 <span class="badge new">新增</span></h3>
+          <p>用中性订单场景可视化两种领域模型：对象是只有数据的名词，还是自带行为与不变量的活物；附三问自检。</p>
+        </a>
+        <a class="tile" href="19-pos-qt-analysis.html">
+          <h3>POS Qt 客户端 <span class="badge new">新增</span> <span class="badge infra">C++/Qt</span></h3>
+          <p>收银桌面端：一主五辅多进程、纯编译期环境切换、SSE 会员登录与离线收银。高风险集中在可逆「加密」的 OSS 凭据、全局关闭的 TLS 校验与无签名自升级。</p>
+        </a>
+      </div>
+      <div class="callout danger">
+        <strong>横向共性风险</strong> 8 篇专题共发现 <strong>30+ 项 Critical</strong>，高度集中在三类：<strong>① 明文凭据入库</strong>（几乎每个仓都有，含生产私钥与可猜的 JWT 密钥）；<strong>② 鉴权缺失或形同虚设</strong>（Guard 恒放行、JWT 不验签、管理端无验签、回调无签名）；<strong>③ 一致性缺口</strong>（MQ 先于落库无 outbox、读改写无锁、缓存无回源）。建议优先按各篇的「修复排序」推进。
+      </div>
+      <div class="callout ok">
+        <strong>务必先看分析基准</strong> 全部仓已同步到最新 <code>prod</code>（<code>repos/gitops/apps</code> 用 <code>test</code>），<strong>07-16 篇的 Critical 结论均已在最新代码上逐条重校</strong>：07 篇整篇重写，其余各篇顶部有「分析基准」、正文首节有「重校结果」表。判断生产影响面前请先读这两处——多数结论仍成立，但失效的那部分若照旧引用会误导排期。High/Medium 条目尚未全量复核。
+      </div>
+    </section>
+
+    <section class="card" id="provenance">
+      <h2><span class="num">03</span>分析基准 · 分支对照表 <em>已于 2026-08-07 再次同步最新 prod</em></h2>
+      <p>所有仓已于 <strong>2026-08-07</strong> 再次从 <code>origin/prod</code> 同步（<code>repos/gitops/apps</code> 按部署约定用 <code>test</code>）。目前 <strong>07 篇已完整重写</strong>，<strong>08-16 篇的 Critical 结论已全部在最新 prod 上逐条重校</strong>（各篇正文首节新增「重校结果」章节）。High/Medium 条目尚未全量复核。分支现状：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>仓</th><th>分支</th><th>提交</th><th>日期</th><th>与远端</th><th>文档</th></tr></thead>
+          <tbody>
+            <tr><td><code>marketing-activity-center</code></td><td><span class="badge ok">prod</span></td><td><code>45cd6989</code></td><td>2026-08-06</td><td>0</td><td>10 ✅Critical已重校</td></tr>
+            <tr><td><code>host-app-xlb</code></td><td><span class="badge ok">prod</span></td><td><code>8bb9c1853</code></td><td>2026-08-01</td><td>0</td><td>14 ✅部分重校</td></tr>
+            <tr><td><code>repos/gitops/apps</code></td><td><span class="badge ok">test</span></td><td><code>5184831706c</code></td><td>2026-08-07</td><td>0</td><td>15 ✅部分重校</td></tr>
+            <tr><td><code>retail-new</code></td><td><span class="badge ok">prod</span></td><td><code>b04705f980</code></td><td>2026-08-04</td><td>0</td><td>08 ✅部分重校</td></tr>
+            <tr><td><code>cms-server</code></td><td><span class="badge ok">prod</span></td><td><code>7910af2</code></td><td>2026-07-30</td><td>0</td><td>13</td></tr>
+            <tr><td><code>member-weapp</code></td><td><span class="badge ok">prod</span></td><td><code>e6bd34c8a</code></td><td>2026-07-30</td><td>0</td><td>14</td></tr>
+            <tr><td><code>remote-app-base</code></td><td><span class="badge ok">prod</span></td><td><code>9cd1004</code></td><td>2026-07-30</td><td>0</td><td>14</td></tr>
+            <tr><td><code>retail</code></td><td><span class="badge ok">prod</span></td><td><code>918aa658d</code></td><td>2026-08-06</td><td>0</td><td>09 ✅Critical已重校</td></tr>
+            <tr><td><code>xlb-mp-bff</code></td><td><span class="badge ok">prod</span></td><td><code>4e6cfa194</code></td><td>2026-07-28</td><td>0</td><td>13 ✅部分重校</td></tr>
+            <tr><td><code>xlb-retail-bff-goods</code></td><td><span class="badge ok">prod</span></td><td><code>0c0baa76</code></td><td>2026-08-05</td><td>0</td><td>11</td></tr>
+            <tr><td><code>xlb_retail_bff_pc</code></td><td><span class="badge ok">prod</span></td><td><code>e98d4af8</code></td><td>2026-08-06</td><td>0</td><td>11</td></tr>
+            <tr><td><code>remote-app-erp</code></td><td><span class="badge ok">prod</span></td><td><code>f3d4eefc9</code></td><td>2026-08-05</td><td>0</td><td>14 ✅部分重校</td></tr>
+            <tr><td><code>remote-app-mem</code></td><td><span class="badge ok">prod</span></td><td><code>f6caedc</code></td><td>2026-07-28</td><td>0</td><td>14</td></tr>
+            <tr><td><code>goods_consumer</code></td><td><span class="badge ok">prod</span></td><td><code>dac1aa6</code></td><td>2026-07-28</td><td>0</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>retail-review-center</code></td><td><span class="badge ok">prod</span></td><td><code>7708e21</code></td><td>2026-08-06</td><td>0</td><td>16 ✅新增</td></tr>
+            <tr><td><code>oms-plateform</code></td><td><span class="badge ok">prod</span></td><td><code>d6bc4c2b2</code></td><td>2026-08-06</td><td>0</td><td>07 ✅已重写</td></tr>
+            <tr><td><code>xlb_bff_retail</code></td><td><span class="badge ok">prod</span></td><td><code>e187d58ad</code></td><td>2026-07-15</td><td>0</td><td>13</td></tr>
+            <tr><td><code>retail-thirdpart-gateway</code></td><td><span class="badge ok">prod</span></td><td><code>9c5fed7</code></td><td>2026-07-15</td><td>0</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>remote-app-im</code></td><td><span class="badge ok">prod</span></td><td><code>4907ffa</code></td><td>2026-07-13</td><td>0</td><td>14</td></tr>
+            <tr><td><code>xlb_retail_bff_pos</code></td><td><span class="badge ok">prod</span></td><td><code>b6972e4d</code></td><td>2026-06-24</td><td>0</td><td>13</td></tr>
+            <tr><td><code>logs-monitor</code></td><td><span class="badge legacy">master（无 prod）</span></td><td><code>b2d8f57</code></td><td>2026-06-04</td><td>—</td><td>15</td></tr>
+            <tr><td><code>icc-task</code></td><td><span class="badge ok">prod</span></td><td><code>a5dc997</code></td><td>2026-06-01</td><td>0</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>retail-route-center</code></td><td><span class="badge ok">prod</span></td><td><code>558a25c</code></td><td>2026-05-27</td><td>0</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>auth-server</code></td><td><span class="badge ok">prod</span></td><td><code>642dc76</code></td><td>2026-05-12</td><td>0</td><td>13</td></tr>
+            <tr><td><code>rs-gray-ms</code></td><td><span class="badge warn">test（无 prod）</span></td><td><code>919740f</code></td><td>2026-02-10</td><td>—</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>goods_cart</code></td><td><span class="badge ok">prod</span></td><td><code>8715ea6</code></td><td>2026-01-19</td><td>0</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>rust-for-order</code></td><td><span class="badge warn">dev（prod 更旧）</span></td><td><code>925b57c</code></td><td>2025-08-19</td><td>0</td><td>12 ✅Critical已重校</td></tr>
+            <tr><td><code>xlb_app</code></td><td><span class="badge legacy">master（无 prod）</span></td><td><code>226bf3293d</code></td><td>2025-07-01</td><td>—</td><td>14</td></tr>
+            <tr><td><code>mall-mcp</code></td><td><span class="badge danger">无任何提交</span></td><td>—</td><td>—</td><td>—</td><td>13</td></tr>
+            <tr><td><code>remote-app-meme</code></td><td><span class="badge infra">非 git 工作副本</span></td><td>—</td><td>—</td><td>—</td><td>14</td></tr>
+
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>当前状态与后续工作</strong>
+        <ol>
+          <li><strong>07 篇已按最新 prod 重写</strong>。重写后发现旧结论 6 条失效——「4 个模块仅骨架」「接口缺失致不可编译」全部不成立（项目已从 8 个模块扩展到 21 个、1304 个 Java 文件），仅「回调无验签」「AI 未实现」两条仍成立。</li>
+          <li><strong>08 / 13 / 14 篇已对关键结论重校</strong>（各篇新增「重校结果」章节）。规律很清晰：<strong>「缺失 / 骨架 / 死代码」类结论失效率高</strong>（07 篇 6 条失效、14 篇 2 项 High 已修、08 篇随机 sleep 已移除），而<strong>「明文凭据入库 / 鉴权缺失 / 一致性缺口」类结论几乎全部仍成立</strong>。</li>
+          <li><strong>11 篇已重校</strong>：两项 🔴 阻塞缺口（库存 TCC 引擎、ChangeStream OSS 分发）<strong>均未迁移 → Node 仍不可下线</strong>；Java 侧从 10 个模块增至 15 个，但扩张集中在新渠道而非承接 Node 核心能力。</li>
+          <li><strong>12 篇（Rust）5 项 Critical 已全部重校 → 无一修复</strong>：管理端 authjwt 仍是未验签 JSON、第三方凭据代理仍无鉴权、飞鹅回调仍可伪造、POS 结算空数组仍会 panic、明文 .env 仍被跟踪。这是本次重校中<strong>唯一「零修复」</strong>的一组。</li>
+          <li><strong>15 篇（平台运维）关键指标已重校</strong>：规模增至 699 服务定义 / 159 命名空间；<strong>明文密码的 app.yaml 从约 348 降到 155</strong>（唯一正向信号）；但自动 prune、金丝雀空结果判成功、PDB 非生产为 0、89 个服务无资源限制等<strong>模板层缺陷零变化</strong>。</li>
+          <li><strong>09 篇（retail 单体）7 项 Critical 已全部重校 → 6 项仍在</strong>：仅飞书 webhook 与内嵌长期 JWT 被清除。C-2 的改法值得警惕——凭据从裸常量改成 <code>${key:真实默认值}</code>，环境变量缺失即静默回落，不算修复。C-1 无鉴权跨租户写价、C-5 SQL 注入、C-6 可伪造开票三项仍可被外部直接利用。</li>
+          <li><strong>10 篇（营销活动中心）2 项 Critical + 4 项关键 High 已重校 → 6 项全部仍存在、零修复</strong>。并新增一处<strong>文档性回退</strong>：<code>PlayCommandEnhance</code> 新写的 Javadoc 声称 <code>failurePolicy</code> 取自 YAML 模板，但实现仍无条件返回 <code>ROLLBACK</code> 且无子类覆写——注释描述了一套不存在的能力，比没有注释更易误导。</li>
+          <li><strong>新仓 <code>retail-review-center</code> 已补上 16 篇</strong>（首轮结构性分析）。该仓工程成熟度明显高于平台内其它 Rust 服务，若其待复核项无重大缺陷，可作为参考实现。</li>
+          <li><strong>值得注意的反差</strong>：<code>oms-plateform</code> 补齐了事务消息与死信队列，而 <code>retail-new</code> 同期引入 Seata 却仍把业务写放在 Confirm 阶段、仍无 outbox。建议把前者的可靠性做法反向移植。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">04</span>系统全景（分层）</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph L1["端应用层"]
+    A1["商家 App<br/>host-app-xlb + remote-app-*"]
+    A2["遗留 App<br/>xlb_app"]
+    A3["会员小程序<br/>member-weapp"]
+  end
+  subgraph L2["BFF 接入层"]
+    B1["xlb-mp-bff<br/>小程序/H5"]
+    B2["bff_pc<br/>PC 后台"]
+    B3["bff_pos<br/>POS 收银"]
+    B4["cms-server<br/>装修"]
+    B5["auth-server<br/>三方 Token"]
+  end
+  subgraph L3["业务中台层"]
+    C1["retail-new<br/>会员/订单/POS/营销"]
+    C2["retail<br/>ERP-POS 单体"]
+    C3["marketing-activity-center<br/>营销活动"]
+    C4["oms-plateform<br/>订单中台"]
+    C5["xlb-retail-bff-goods<br/>门店商品库存"]
+  end
+  subgraph L4["Rust 高性能层"]
+    D1["rust-for-order<br/>优惠计算/会员码"]
+    D2["goods_cart / goods_consumer"]
+    D3["retail-route-center<br/>路由决策"]
+    D4["retail-thirdpart-gateway<br/>三方网关"]
+  end
+  subgraph L5["基础设施层"]
+    E1["K8s + Istio + ArgoCD"]
+    E2["MySQL / MongoDB / Redis / ES"]
+    E3["RocketMQ / Kafka / RabbitMQ"]
+    E4["OpenTelemetry + Grafana"]
+  end
+  A1 --> B2 & B3
+  A2 --> B2
+  A3 --> B1
+  B1 --> C1 & C3 & D1
+  B2 --> C5 & C2
+  B3 --> C2 & C1 & D1
+  B4 --> C1
+  B1 -.鉴权.-> B5
+  C1 --> C4
+  C4 --> D4
+  D3 -.灰度路由.-> B1
+  L3 --> L5
+  L4 --> L5
+        </pre>
+        <p class="arch-title">图 1 · XLB 零售平台五层架构全景</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>层</th><th>代表项目</th><th>技术栈</th><th>职责</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>客户端 / 端应用</strong></td>
+              <td>host-app-xlb + remote-app-*、xlb_app、member-weapp</td>
+              <td><span class="badge rn">React Native</span> <span class="badge mp">Taro 小程序</span></td>
+              <td>商家 App（微前端）、遗留单体 App、C 端会员小程序</td>
+            </tr>
+            <tr>
+              <td><strong>BFF 接入层</strong></td>
+              <td>xlb-mp-bff、xlb_retail_bff_pc/pos、cms-server、auth-server、xlb-retail-bff-goods</td>
+              <td><span class="badge node">NestJS</span> <span class="badge java">Java</span></td>
+              <td>按端聚合（小程序/PC/POS）、鉴权、装修、商品 BFF</td>
+            </tr>
+            <tr>
+              <td><strong>业务中台</strong></td>
+              <td>retail-new、retail、marketing-activity-center、oms-plateform</td>
+              <td><span class="badge java">Java (Spring Boot)</span></td>
+              <td>会员/卡券/订单/POS/营销/履约核心域 + 大量 MQ 消费者</td>
+            </tr>
+            <tr>
+              <td><strong>高性能服务</strong></td>
+              <td>rust-for-order、goods_cart、goods_consumer、icc-task、retail-route-center、retail-thirdpart-gateway、rs-gray-ms</td>
+              <td><span class="badge rust">Rust (axum)</span></td>
+              <td>优惠计算/会员码/购物车/库存同步/路由中心/第三方网关/灰度</td>
+            </tr>
+            <tr>
+              <td><strong>平台与运维</strong></td>
+              <td>gitops、logs-monitor</td>
+              <td><span class="badge infra">Jsonnet / Python</span></td>
+              <td>GitOps 部署编排、日志覆盖率巡检与飞书告警</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <strong>提示</strong> 本文档中心由源码静态分析生成，用于架构参考与新人上手。修改与新增请遵循 <code>docs/文档格式规范.md</code>（由根目录 <code>AGENTS.md</code> 引用生效）。
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "efficiency": {
+      "type": "http",
+      "url": "https://efficiency--efficiency.ali-prod.xlbsoft.com/efficiency/mcp",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcGVuX2lkIjoib3VfOGQzM2VjMzk0MDZkY2U2MDUwM2Y2NDhiYThjYTFjMTQiLCJuYW1lIjoi5pyx6ZGr6LS1IiwidXNlcl9pZCI6IjY5NzFjZTliMDA5M2VlNjNkNmIzOTgzYyIsImF1dGhvcml0eV9pZHMiOlsiNjk2NzUyMTZjNmU0MWI0NWViOGUzZGViIl0sInRva2VuX3R5cGUiOiJhZ2VudF9wYXQiLCJpc3MiOiJlZmZpY2llbmN5LW1jcCIsImV4cCI6MTc4OTEwNTk3OCwibmJmIjoxNzg2NTEzOTE4LCJqdGkiOiI2YTdjMGEzYWMyNDI4MmQ4NTJlMTk1MmUifQ.wShRYa18_04D_7cB9AogIFZNKsGOPYmjfI5NLVn1eqA"
+      }
+    }
+  }
+}

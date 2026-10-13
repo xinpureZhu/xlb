@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>部署与基础设施 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>部署与基础设施拓扑</h1>
+    <p class="subtitle">GitOps（ArgoCD + Jsonnet + Pulumi）、集群/环境拓扑、灰度发布、服务网格与可观测。</p>
+    <p class="meta">最后更新：2026-07-31 · 数据来源：gitops 仓库静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html" class="active">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <section class="card">
+      <h2><span class="num">01</span>GitOps 工具链</h2>
+      <p>部署体系 = <strong>ArgoCD（引擎）+ Jsonnet（模板）+ Argo Rollouts（金丝雀）+ Istio/Gateway-API（网络）+ Pulumi（云 IaC）</strong>。非 Helm、非 Tanka，是自研 Jsonnet 框架，由 argocd-repo-server 渲染。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  DEV["开发提交<br/>*.app.yaml + artifacts.libsonnet"] --> REPO["gitops 仓库<br/>分支 dev/test/staging/prod"]
+  REPO --> ARGO["ArgoCD<br/>apps.jsonnet 每命名空间一个 Application"]
+  ARGO --> JS["Jsonnet 渲染<br/>Compose.libsonnet + App.libsonnet"]
+  JS --> K8S["K8s 对象"]
+  K8S --> W["Rollout / Deployment"]
+  K8S --> SV["Service + Service-canary"]
+  K8S --> HR["Gateway-API HTTPRoute"]
+  K8S --> HPA["HorizontalPodAutoscaler"]
+  K8S --> ETC["DestinationRule · PDB<br/>ServiceAccount · VMServiceScrape"]
+  W --> RO["Argo Rollouts<br/>Istio 金丝雀 + AnalysisTemplate"]
+  PUL["Pulumi 云 IaC<br/>RDS·Redis·Kafka·OSS·ES"] -.IAC__NS__INSTANCE__KEY.-> JS
+  ARGO -.自动 prune + selfHeal.-> K8S
+  RO --> PROD["生产流量"]
+        </pre>
+        <p class="arch-title">图 1 · GitOps 渲染与发布流水线</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>组件</th><th>路径</th><th>作用</th></tr></thead>
+          <tbody>
+            <tr><td>ArgoCD</td><td><code>apps/argocd/apps.jsonnet</code></td><td>每命名空间生成一个 Application；prod 集群跟 <code>prod</code> 分支、其余跟 <code>test</code> 分支；自动 prune + selfHeal。</td></tr>
+            <tr><td>Jsonnet 引擎</td><td><code>apps/templates/Compose.libsonnet</code></td><td>读取命名空间的 <code>*.app.yaml</code> + <code>artifacts.libsonnet</code> 镜像 tag，解析按环境取值、IAC 密钥引用、服务 DNS、金丝雀展开。</td></tr>
+            <tr><td>对象模板</td><td><code>apps/templates/App/*.libsonnet</code></td><td>为每服务生成 Rollout/Deployment、Service(+canary)、Istio DestinationRule、Gateway-API HTTPRoute、HPA、ServiceAccount、PDB、AuthorizationPolicy、VMServiceScrape。</td></tr>
+            <tr><td>Argo Rollouts</td><td><code>apps/argo-rollouts/</code></td><td>默认工作负载为 Rollout，Istio/Gateway-API 金丝雀流量切分 + AnalysisTemplate(istio-success-rate)。</td></tr>
+            <tr><td>Pulumi</td><td><code>apps/pulumi/Pulumi.*.yaml</code></td><td>云基础设施：OSS、RDS/PolarDB、Redis/Tair、MongoDB、Kafka、RocketMQ、RAM、ES；输出以 <code>IAC__{NS}__{INSTANCE}__{KEY}</code> 注入服务。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout"><code>apps/clusterName.libsonnet</code> 是当前 checkout 渲染目标集群的唯一真源（如 <code>ali-test</code>）。<code>apps/eval.sh</code> 本地渲染、<code>apps/init.sh</code> 引导新集群（强制 env == clusterName == kubeconfig 三方一致）。</div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">02</span>集群与环境拓扑</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph ALI["阿里云 (registry-vpc.cn-hangzhou)"]
+    AD["ali-dev"]
+    AT["ali-test<br/>ali-test-136"]
+    AS["ali-staging<br/>ali-staging-136"]
+    AP["ali-prod<br/>ali-prod-136"]
+  end
+  subgraph TC["腾讯云 (xlbsoft.tencentcloudcr.com)"]
+    TD["tencent-dev"]
+    TT["tencent-test"]
+    TS["tencent-staging"]
+    TP["tencent-prod"]
+    TN["仅基础集<br/>argocd·auth·istio<br/>cert-manager·llm·observability"]
+  end
+  AT --> NS["159 业务命名空间<br/>699 个 *.app.yaml"]
+  NS --> LANE["多租户货道<br/>主线 / wanchi / wanquan / wancan"]
+  AP --> GRAY["每环境含 -gray 灰度 lane"]
+  DOMAIN["域名规则<br/>{service}.{namespace}.{cloud}-{type}.xlbsoft.com"]
+  AT -.公网入口.-> DOMAIN
+  INTERNAL["内部 DNS<br/>{service}.{namespace}"]
+  NS -.服务发现.-> INTERNAL
+  TP --- TN
+        </pre>
+        <p class="arch-title">图 2 · 双云多环境集群拓扑</p>
+      </div>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">2</div><div class="l">云：阿里云(ali) / 腾讯云(tencent)</div></div>
+        <div class="stat"><div class="n">4</div><div class="l">环境：dev / test / staging / prod</div></div>
+        <div class="stat"><div class="n">+gray</div><div class="l">每环境含灰度 lane</div></div>
+        <div class="stat"><div class="n">159</div><div class="l">业务命名空间</div></div>
+      </div>
+      <ul>
+        <li><strong>阿里云集群</strong>：ali-dev、ali-test(+136)、ali-staging(+136)、ali-prod(+136)。<code>-136</code> 数字版本切换 ALB ingress 与阿里 Istio。</li>
+        <li><strong>腾讯云集群</strong>：tencent-dev/test/staging/prod（仅跑基础集：argocd、auth、cert-manager、istio、llm、observability）。</li>
+        <li><strong>域名规则</strong>：<code>{service}.{namespace}.{cloud}-{type}.xlbsoft.com</code>（如 <code>retail-thirdpart-gateway.retail-gateway.ali-test.xlbsoft.com</code>）。</li>
+        <li><strong>内部 DNS</strong>：<code>{service}.{namespace}</code>（登记于 <code>apps/services.libsonnet</code>）。</li>
+        <li><strong>镜像分支</strong>：dev→dev、test→test、staging→staging、prod→prod；dev/staging 继承 test 镜像。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">03</span>命名空间分组（部分）</h2>
+      <p>699 个 <code>*.app.yaml</code> 服务定义分布在 159 个业务命名空间，是部署权威清单。按域归组：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>域</th><th>命名空间（示例）</th></tr></thead>
+          <tbody>
+            <tr><td>零售核心</td><td>retail-new(~65)、retail、retail-pos、retail-bff、retail-platform、retail-gateway、retail-review + 各租户货道 wanchi/wanquan/wancan</td></tr>
+            <tr><td>商品</td><td>goods、goods-wanchi、goods-wanquan（各含 goods-b/c、pc-bff、多类同步消费者）</td></tr>
+            <tr><td>订单</td><td>oms-platform（oms-core/adapter/fulfillment/reverse/search/settlement + 消费者）</td></tr>
+            <tr><td>会员/CRM</td><td>xlb-member(24)、member、member-center-wanquan、crm-member、crm-shop、crm-store、crm-web</td></tr>
+            <tr><td>营销</td><td>marketing(~28)、marketing-wanchi、marketing-wanquan</td></tr>
+            <tr><td>ERP/供应链</td><td>erp、wms、tms、scm、supply-chain、som、logistics</td></tr>
+            <tr><td>主数据</td><td>mps(~40)、mdm、item</td></tr>
+            <tr><td>平台/身份</td><td>iauth、idaas、login、platform-uc、gateway、openapi、integration</td></tr>
+            <tr><td>数据/BI</td><td>bi、bi-extension、bi-qingniao-apm、bigscreen</td></tr>
+            <tr><td>财务</td><td>allowance、bms、contract、recon-platform、xpay</td></tr>
+            <tr><td>AI</td><td>agent-square、ai(agent-*)、retail-ai、sle-ai、light-boat</td></tr>
+            <tr><td>质量/效能</td><td>quality(15)、efficiency(17)、autotest、metersphere、chaos-mesh</td></tr>
+            <tr><td>通讯/IM</td><td>im、sms、pushly、wechat、customer-service、scrm(icc-task)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">04</span>工作负载配置模式</h2>
+      <p>每服务在 <code>*.app.yaml</code> 中按环境声明 <code>minReplicas/maxReplicas/hpaCpuAverageValue/resources/port/healthCheckEndpoint/enablePublicAccess*</code>。两个实例：</p>
+      <div class="grid cols-2">
+        <div class="stat">
+          <div class="l"><strong>goods-wanquan (pc-bff-wanquan)</strong> · port 3001 · <code>/health/readiness</code><br>
+          prod 10–80 副本、test/staging 2–4、gray 1；HPA CPU 0.3；limits 1c/4Gi、requests 0.2c/300Mi；prod 开 podAntiAffinity；附 5 个 CronJob。</div>
+        </div>
+        <div class="stat">
+          <div class="l"><strong>retail-thirdpart-gateway (Rust)</strong> · port 3000 · <code>/health</code><br>
+          test 2 副本、dev 1；HPA CPU 1；limits 1c/2Gi、requests 0.4c/1Gi；dev~prod+gray 全环境；公网 host 开启。</div>
+        </div>
+      </div>
+      <ul>
+        <li><strong>HPA</strong>：每服务生成，单一 CPU AverageValue 指标。</li>
+        <li><strong>Ingress</strong>：<code>enablePublicAccessWithDefaultHostName: true</code> 时生成 Gateway-API HTTPRoute，网关 <code>ingressgateway.istio-system</code>。</li>
+        <li><strong>金丝雀</strong>：Rollout + Istio/Gateway-API 流量切分 + baggage-header lane 路由 + WASM 限流。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">05</span>可观测与通知</h2>
+      <ul>
+        <li><strong>Tracing</strong>：OpenTelemetry collector（<code>opentelemetry-collector.observability:4317</code>），由 <code>Workload.libsonnet</code> 注入每个工作负载。</li>
+        <li><strong>Metrics/Logs</strong>：VictoriaMetrics/VictoriaLogs、Grafana、Prometheus exporter、阿里云 ARMS。</li>
+        <li><strong>巡检</strong>：<code>logs-monitor</code>（Python）查 Grafana→VictoriaLogs 的 Istio sidecar 访问日志，统计预设 API 路径覆盖率，推送<strong>飞书</strong>交互卡片（全覆盖绿色✅ / 缺失橙色⚠️）。当前监控 <code>retail-gateway</code> 的美团回调端点。</li>
+        <li><strong>通知</strong>：各命名空间飞书 webhook（info / alert 两类），另有 gitops web 看板。</li>
+      </ul>
+      <div class="callout warn"><strong>安全提示</strong> gitops 的 <code>*.app.yaml</code> env、<code>envs.libsonnet</code>、<code>1compose/*.yaml</code> 及 logs-monitor 的 <code>.env</code> 含真实数据库/Redis/Kafka/MQ 凭据与密钥。本文档仅描述结构，<strong>不复制任何密钥值</strong>；操作时勿将其写入文档或提交到非受控位置。</div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

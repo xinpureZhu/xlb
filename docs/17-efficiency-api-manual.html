@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>效能平台接口手册（骨架版） · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>效能平台接口手册（骨架版）</h1>
+    <p class="subtitle">efficiency 服务 712 条路由的可调用清单、鉴权层级、请求契约，以及「修改服务环境变量」的完整工作流。</p>
+    <p class="meta">最后更新：2026-08-12 · 数据来源：源码静态分析（Gin 路由树 + Go 结构体反推）+ 生产只读接口实测（pc-bff-wanquan 配置结构）</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html" class="active">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <section class="card" id="baseline">
+      <h2><span class="num">01</span>分析基准与文档定位<em>prod 分支 · 与远端同步 · 712 条路由 · 75% 有契约</em></h2>
+
+      <div class="callout ok">
+        <b>分析基准</b>：仓库 <code>efficiency/</code>，分支 <code>prod</code>，提交 <code>7098b8c3</code>，提交日期 <code>2026-08-11</code>，与远端 <code>0 领先 / 0 落后</code>。结论代表生产状态。
+      </div>
+
+      <div class="callout warn">
+        <b>这是骨架版，仍在完善。</b>本文主体从源码机械推导：路由、鉴权层级、请求结构体字段。其中 <b>patch 路径写法已通过一次生产只读实测补齐</b>（见第 05 节），业务语义、审批责任边界、失败回滚等仍需由 SOP 补充，见 <a href="#todo">第 09 节待补清单</a>。
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">712</div><div class="l">可调用路由</div></div>
+        <div class="stat"><div class="n">537</div><div class="l">已还原请求契约</div></div>
+        <div class="stat"><div class="n">2030</div><div class="l">已解析结构体</div></div>
+        <div class="stat"><div class="n">75</div><div class="l">无鉴权端点</div></div>
+      </div>
+
+      <p><b>服务定位</b>：效能平台（轻舟系统）后端，覆盖 CMDB、CI/CD 发布、工作项与分支管理、微服务配置、故障演练、可观测。Go 1.24 + Gin，<code>601,734</code> 行 / <code>1,655</code> 个文件（<code>pkg/</code> 占 77%）。</p>
+      <div class="loc">efficiency/router/ · efficiency/api/v1/ · efficiency/model/</div>
+
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#baseline">分析基准与文档定位</a></li>
+          <li><a href="#access">调用方式与鉴权分层</a></li>
+          <li><a href="#modules">路由总览：20 个模块</a></li>
+          <li><a href="#v1v2">v1 / v2 版本确认</a></li>
+          <li><a href="#envflow">修改环境变量：两条路径</a></li>
+          <li><a href="#probe">实测：配置结构与 patch 路径</a></li>
+          <li><a href="#contracts">核心契约速查</a></li>
+          <li><a href="#appservice">app-services 模块清单</a></li>
+          <li><a href="#risk">高风险端点清单</a></li>
+          <li><a href="#todo">提取局限与待补 SOP</a></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" id="access">
+      <h2><span class="num">02</span>调用方式与鉴权分层<em>5 个 Gin 分组 · 618 条需 Casbin 授权</em></h2>
+
+      <p><b>路径规则</b>：服务内 <code>RouterPrefix = /efficiency</code>（<code>config.yaml</code> 第 79 行），完整外部地址为：</p>
+      <pre><code>https://z.xlbsoft.com/api/efficiency  +  &lt;路由&gt;
+例：POST https://z.xlbsoft.com/api/efficiency/api/v1/app-services/list</code></pre>
+      <p>集群内直连地址为 <code>http://efficiency.efficiency/efficiency</code>（bi-qingniao 的 Feign 配置即用此值）。</p>
+
+      <p><b>五个路由分组的中间件链</b>（<code>initialize/router-system.go</code> 第 78–90 行）：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>分组</th><th>中间件链</th><th>路由数</th></tr></thead>
+          <tbody>
+            <tr><td><code>PrivateGroup</code> / <code>PrivateGroupLog</code></td><td>Register + TraceID + CheackAuthority + OperationRecord + <b>CasbinHandler</b></td><td>618</td></tr>
+            <tr><td><code>AuthenticatedGroup</code></td><td>Register + TraceID + CheackAuthority + OperationRecord（<b>无 Casbin</b>）</td><td>13</td></tr>
+            <tr><td><code>PublicGroup</code></td><td><b>无</b></td><td>75</td></tr>
+            <tr><td><code>PublicTracedGroup</code></td><td>Register + TraceID（<b>无鉴权</b>）</td><td>6</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><b>统一响应包装</b>：handler 统一走 <code>response.OkWithData</code> / <code>OkWithMessage</code> / <code>FailWithMessage</code>，响应体形如 <code>{"code":0,"data":…,"msg":"成功"}</code>。<b>HTTP 状态码恒为 200</b>，业务成败看 <code>code</code>。少数接口例外：<code>checkVersionConflict</code> 与 <code>checkConfigDiff</code> 在版本冲突时直接返回 <code>409</code>。</p>
+
+      <div class="callout">
+        <b>鉴权凭据</b>：浏览器会话通过 Cookie 传递（<code>production_qiankun_token</code> 等）。服务端另提供 <code>POST /efficiency/user/agent-token</code> 签发 Agent Token、<code>/efficiency/ide-auth/*</code> 与 <code>/efficiency/mcp-auth/*</code> 两套 OAuth 风格授权端点，供 IDE 插件与 MCP 客户端使用。<b>凭据值不写入本文档。</b>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph 入口
+    W[efficiency_platform_web]
+    IDE[IDE 插件]
+    MCP[MCP 客户端]
+    BI[bi-qingniao Feign]
+    CB[外部回调 · Argo/Codeup/飞书]
+  end
+  GW[网关 z.xlbsoft.com/api/efficiency]
+  W --> GW
+  IDE --> GW
+  MCP --> GW
+  CB --> GW
+  BI --> SVC
+  GW --> SVC[efficiency 服务 · RouterPrefix=/efficiency]
+  SVC --> P1[PrivateGroup · 618 条 · 鉴权+Casbin]
+  SVC --> P2[AuthenticatedGroup · 13 条 · 仅鉴权]
+  SVC --> P3[PublicGroup · 81 条 · 无鉴权]
+  P1 --> M[(MongoDB · microServiceConfig)]
+  P1 --> MY[(MySQL)]
+  P3 --> AG[efficiency-agent · 集群内]
+  P1 --> ARGO[ArgoCD]
+  P1 --> CU[Codeup]
+  P1 --> FS[飞书审批]
+        </pre>
+        <p class="arch-title">图 1 · 效能平台调用入口与鉴权分层</p>
+      </div>
+    </section>
+
+    <section class="card" id="modules">
+      <h2><span class="num">03</span>路由总览：20 个模块<em>cmdb 与 workitem 合计占 51%</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>模块</th><th>路由数</th><th>主要路径前缀</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>cmdb</code></td><td><b>236</b></td><td><code>/api/v1/{cmdb,citypes,acl,ci_relations,codeup,attributes,ci,preference,triggers,relation-types}</code></td><td>配置项模型、实例、关系、ACL、触发器</td></tr>
+            <tr><td><code>workitem</code></td><td><b>129</b></td><td><code>/api/v1/{workflow,branches,workitem,iteration-branches,hotfix-branches}</code></td><td>工作项、迭代分支、热修分支、质量门禁、Webhook</td></tr>
+            <tr><td><code>system</code></td><td>79</td><td><code>/{user,release,rollout,menu,authority,releaseWindow,mcp-auth,ide-auth,casbin,otel}</code></td><td>用户、角色、菜单、发布单、发布窗口、审计</td></tr>
+            <tr><td><code>appservice</code></td><td>57</td><td><code>/api/v1/app-services</code></td><td>应用服务全生命周期、Codeup 权限、Pod 运维</td></tr>
+            <tr><td><code>agent</code></td><td>42</td><td><code>/agent</code></td><td>集群内 Agent：K8s 资源查询、混沌注入、上报</td></tr>
+            <tr><td><code>microservice</code></td><td>38</td><td><code>/microservice</code></td><td><b>服务配置与环境变量</b>、审批、ArgoCD 同步、发布单服务</td></tr>
+            <tr><td><code>feishu</code></td><td>35</td><td><code>/{feishu,feishu-tasks,feishu-workitem,releaseplan,message}</code></td><td>飞书事件、任务、工作项同步、卡片推送</td></tr>
+            <tr><td><code>workflow</code></td><td>24</td><td><code>/api/v1/workflow</code></td><td>流水线编排与节点回调</td></tr>
+            <tr><td><code>chaos</code></td><td>21</td><td><code>/api/v1/chaos</code></td><td>故障演练</td></tr>
+            <tr><td><code>cloudmiddleware</code></td><td>12</td><td><code>/cloudmiddleware</code></td><td>云中间件实例查询</td></tr>
+            <tr><td><code>citemplate</code> / <code>slowquery</code></td><td>8 / 8</td><td><code>/api/v1/…</code></td><td>CI 模板 / 慢查询</td></tr>
+            <tr><td><code>inspection</code> / <code>promotionprogress</code> / <code>metricsmap</code></td><td>5 / 4 / 4</td><td><code>/inspection</code> · <code>/api/v1</code> · <code>/metrics</code></td><td>巡检、推广进度、指标地图</td></tr>
+            <tr><td><code>gray</code> / <code>middleware_instance</code></td><td>3 / 3</td><td><code>/gray</code> · <code>/middlewareInstance</code></td><td>灰度配置 / 中间件实例</td></tr>
+            <tr><td><code>observability</code> / <code>workbench</code> / <code>demand</code></td><td>2 / 1 / 1</td><td>—</td><td>可观测、工作台、需求监听</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <b>方法分布严重偏 POST</b>：712 条路由中绝大多数是 POST，包含 <code>list</code> / <code>detail</code> / <code>status</code> 这类纯查询。对内部平台影响有限，但意味着无法利用 HTTP 缓存、网关按方法限流与只读重放。
+      </div>
+    </section>
+
+    <section class="card" id="v1v2">
+      <h2><span class="num">04</span>v1 / v2 版本确认<em>结论：v1 已整段注释，生效的全部是 v2</em></h2>
+
+      <p><code>microservice</code> 模块的接口在源码中存在两套实现，此前无法判断哪套生效。已在 <code>router/microservice/microservice.go</code> 完成确认：</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项</th><th>结论</th><th>依据</th></tr></thead>
+          <tbody>
+            <tr><td>v1（<code>microServiceApi.*</code>）</td><td><b>整段被注释，不生效</b></td><td><code>router/microservice/microservice.go</code> 第 16–40 行，连同外层 <code>if global.CLUSTER_TYPE == "prod"</code> 分支一并注释</td></tr>
+            <tr><td>v2（<code>microServiceApiV2.*</code>）</td><td><b>全部生效</b></td><td>同文件第 42–92 行</td></tr>
+            <tr><td><code>createMicroServiceConfig</code></td><td><b>两个版本都被注释 → 该接口不存在</b></td><td>第 37 行（v1）、第 87 行（v2）</td></tr>
+            <tr><td><code>updateMicroServiceConfig</code></td><td>v2 生效，但挂在 <code>pubRouter</code>（<b>无鉴权</b>），源码注释标注「调试用」</td><td>第 86 行</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <b>连带修正</b>：早先按正则统计得到「740 条路由、<code>updateMicroServiceConfig</code> 重复注册」，是把注释行计入所致。加入 Go 注释剥离后，准确值为 <b>712 条</b>，不存在重复注册。本文所有数字均为剥离注释后的结果。
+      </div>
+    </section>
+
+    <section class="card" id="envflow">
+      <h2><span class="num">05</span>修改环境变量：两条路径<em>审批式为正式路径 · 调试式无鉴权且绕过审批</em></h2>
+
+      <p>「修改服务环境变量」不是单个接口调用。<code>microservice</code> 模块提供两条互不相同的路径：</p>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">01</span>审批式（正式路径）</h4>
+          <p>读现值 → 校验版本 → 生成 diff → <b>创建飞书审批</b> → 审批通过后生效 → 可回滚。全部挂在 <code>PrivateGroup</code>，需鉴权 + Casbin 授权，操作留痕。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">02</span>调试式（后门）</h4>
+          <p><code>updateMicroServiceConfig</code> 直接打 patch，<b>不经审批、无鉴权</b>。源码注释写明「调试用」。<b>不应作为常规手段</b>，且需评估是否应从 <code>pubRouter</code> 移除。</p>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  A[getMicroServiceList] --> B[getMicroServiceConfigById]
+  B --> C[getMicroServiceEnvKeys]
+  C --> D[getEnvValueByKey]
+  D --> E[checkVersionConflict]
+  E --> F[checkConfigDiff]
+  F --> G[createMsUpdateConfigApproval]
+  G --> H[飞书审批]
+  H --> I[getMicroServiceApprovalList]
+  I --> J[配置生效]
+  J --> K[createMsSyncToProdApproval]
+  F -.版本不匹配 409.-> E
+  I -.失败.-> L[retryMicroServiceApproval]
+  I -.撤销.-> M[cancelMicroServiceApproval]
+  J -.回滚.-> N[createMsRestoreApproval]
+  N --> O[restoreMsConfig]
+  B -.调试后门 · 无鉴权.-> X[updateMicroServiceConfig]
+        </pre>
+        <p class="arch-title">图 2 · 环境变量修改的审批式路径与调试后门</p>
+      </div>
+
+      <p><b>环境变量的四种类型</b>——来自 <code>GetEnvValueRequest.type</code> 的枚举约束，也是 <code>getMicroServiceEnvKeys</code> 返回体的四个顶层键。下表数量来自对 <code>pc-bff-wanquan</code>（serviceId=1171 · namespace=goods-wanquan）的一次只读实测：</p>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">666</div><div class="l">cloudEnvs 云资源候选</div></div>
+        <div class="stat"><div class="n">109</div><div class="l">services 服务地址候选</div></div>
+        <div class="stat"><div class="n">10</div><div class="l">envs 通用变量</div></div>
+        <div class="stat"><div class="n">6</div><div class="l">customEnv 自定义</div></div>
+      </div>
+      <div class="tags">
+        <span class="tag">cloudEnvs</span>
+        <span class="tag">services</span>
+        <span class="tag">envs</span>
+        <span class="tag">customEnv</span>
+      </div>
+      <div class="loc">model/microservice/microservice.go · GetEnvValueRequest · 实测 getMicroServiceEnvKeys</div>
+      <p><code>cloudEnvs</code>（Redis/Kafka/ES/Mongo 等连接串）与 <code>services</code>（服务间调用地址）是<b>候选池</b>：<code>getEnvValueByKey</code> 按 <code>{type, key}</code> 从池中取值，填入具体服务配置的 <code>envs</code>。这解释了为什么单个服务实际用到的变量（下方实测 60 个）远少于候选池总量。</p>
+
+      <div class="callout">
+        <b>配置数据来源</b>：<code>getMicroServiceEnvKeys</code> 的实现读取 <b>GitOps 仓库</b>（源码中保留了 <code>GitOpsRepoURL</code> / <code>GitOpsBranch</code> 的克隆逻辑），与 <code>repos/gitops/apps/&lt;ns&gt;/globalEnvs.libsonnet</code> 对应。服务配置本体存放在 <b>MongoDB</b> 的 <code>microServiceConfig</code> 集合（<code>MicroServiceConfig.CollectionName()</code>）。因此「改环境变量」实际是改 MongoDB 中的配置文档，再经 ArgoCD 同步到集群。
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant U as 操作人
+  participant E as efficiency
+  participant M as MongoDB
+  participant F as 飞书
+  participant A as ArgoCD
+  U->>E: getMicroServiceConfigById · id
+  E->>M: 读取 microServiceConfig
+  M-->>U: 当前配置 + versionId
+  U->>E: checkConfigDiff · rawJSON + versionId
+  E-->>U: JSON Patch 差异 或 409 版本冲突
+  U->>E: createMsUpdateConfigApproval · patchData
+  E->>F: 创建审批单
+  F-->>E: 审批结果回调
+  E->>M: 写入新配置
+  U->>E: checkCrdDiff · id
+  E->>A: 比对 CRD 差异
+  U->>E: syncServiceConfig
+  E->>A: 触发同步
+        </pre>
+        <p class="arch-title">图 3 · 审批式修改环境变量的调用时序</p>
+      </div>
+
+      <p><b>模块内 38 条路由按用途归类</b>：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>用途</th><th>接口</th><th>鉴权</th></tr></thead>
+          <tbody>
+            <tr><td>查询配置</td><td><code>getMicroServiceList</code> · <code>getMicroServiceConfigById</code> · <code>getMicroServiceNamespaceAndId</code> · <code>getServicesByPublicAccess</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td><b>查询环境变量</b></td><td><code>getMicroServiceEnvKeys</code> · <code>getEnvValueByKey</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td>校验</td><td><code>checkVersionConflict</code> · <code>checkConfigDiff</code> · <code>aiCheckServiceConfig</code>（SSE）</td><td>鉴权+Casbin</td></tr>
+            <tr><td><b>创建审批</b></td><td><code>createMsUpdateConfigApproval</code>（增量） · <code>createMsFullUpdateConfigApproval</code>（全量） · <code>createMsAddApproval</code> · <code>createMsDeleteApproval</code> · <code>createMsSyncToProdApproval</code> · <code>createMsRestoreApproval</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td>审批管理</td><td><code>getMicroServiceApprovalList</code> · <code>cancelMicroServiceApproval</code> · <code>retryMicroServiceApproval</code> · <code>getApprovalConfigForDiff</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td>回滚</td><td><code>restoreMsConfig</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td>ArgoCD 同步</td><td><code>checkCrdDiff</code> · <code>syncServiceConfig</code> · <code>getSyncRecords</code> · <code>argoOperation</code> · <code>argoServiceStatus</code></td><td><b>公开</b></td></tr>
+            <tr><td>发布单服务</td><td><code>createReleaseOrderService</code> · <code>getReleaseOrderService</code> · <code>mergeReleaseOrderServices</code> · <code>deleteReleaseOrderService</code> · <code>getProdAndFeatureConfig</code> · <code>getServiceConfigCompare</code> · <code>renderServiceJsonnetForEnv</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td>Webhook / 分支</td><td><code>addWebHookUrl</code> · <code>updateWebHookUrl</code> · <code>deleteWebHookUrl</code> · <code>batchDeleteBranches</code></td><td>鉴权+Casbin</td></tr>
+            <tr><td><b>调试后门</b></td><td><code>updateMicroServiceConfig</code></td><td><b>公开</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="probe">
+      <h2><span class="num">06</span>实测：配置结构与 patch 路径<em>读用 serviceConfig.envs.X · 写用 &quot;envs &gt; X&quot;</em></h2>
+
+      <div class="callout ok">
+        <b>实测样本</b>：对服务 <code>pc-bff-wanquan</code>（serviceId=<code>1171</code> · configId=<code>69eae0c8cfd52342879bf854</code> · namespace=<code>goods-wanquan</code>）调用 <code>getMicroServiceConfigById</code> / <code>getMicroServiceEnvKeys</code>（均为只读 <code>getXxx</code>），复用浏览器会话 Cookie，未做任何写操作。所有真实取值已脱敏，本节仅呈现键名与结构。
+      </div>
+
+      <p><b><code>getMicroServiceConfigById</code> 返回体顶层字段</b>（23 个）：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>实测值 / 类型</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td><code>id</code></td><td><code>69eae0c8cfd52342879bf854</code></td><td>配置 ID，等于 detail 返回的 <code>microServiceId</code></td></tr>
+            <tr><td><code>versionId</code></td><td><code>6a7ab9fb3f799e8800b2caa9</code></td><td><b>乐观锁</b>：校验与创建审批时回传，防并发覆盖</td></tr>
+            <tr><td><code>namespace</code> · <code>serviceName</code></td><td><code>goods-wanquan</code> · <code>pc-bff-wanquan</code></td><td>服务定位</td></tr>
+            <tr><td><code>branchName</code></td><td><code>apps-goods-wanquan--pc-bff-wanquan</code></td><td>对应 GitOps 分支</td></tr>
+            <tr><td><code>status</code> · <code>hasApproval</code></td><td><code>1</code> · <code>false</code></td><td>状态 / 是否有进行中审批</td></tr>
+            <tr><td><b><code>serviceConfig.envs</code></b></td><td>dict，<b>60 个 key</b></td><td><b>实际生效的环境变量所在处</b></td></tr>
+            <tr><td><code>serviceYaml.envs</code></td><td>dict，<b>0 个 key</b></td><td>v2 新结构占位，当前为空（见下方警示）</td></tr>
+            <tr><td><code>serviceConfig.deploy</code></td><td>dict，8 个环境布尔</td><td><code>dev/dev-gray/test/test-gray/staging/staging-gray/prod/prod-gray</code> 各是否部署</td></tr>
+            <tr><td><code>argoUrl</code> · <code>fileHash</code> · <code>webhookUrl</code></td><td>—</td><td>Argo 地址 / 文件哈希 / webhook</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><b>环境变量的路径格式</b>——这是此前源码推不出、现由实测确定的关键结论：</p>
+      <p><b>读</b>（<code>getMicroServiceConfigById</code> 返回体）里，环境变量是嵌套 JSON：</p>
+      <pre><code>serviceConfig.envs.&lt;变量名&gt;                    # 标量：所有环境同值
+serviceConfig.envs.&lt;变量名&gt;.&lt;环境键&gt;          # 对象：按环境分组</code></pre>
+      <p>返回体里 <code>&lt;环境键&gt;</code>是<b>逗号拼接的环境组合字符串</b>（如 <code>prod,prod-gray</code>），不是单个环境。实测 60 个 key 的环境键组合分布：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>环境键组合</th><th>key 数量</th></tr></thead>
+          <tbody>
+            <tr><td><code>staging,staging-gray</code> + <code>test,test-gray</code>（无 prod）</td><td>13</td></tr>
+            <tr><td><code>prod,prod-gray</code> + <code>staging,staging-gray</code> + <code>test,test-gray</code></td><td>12</td></tr>
+            <tr><td><code>default</code> + <code>staging,staging-gray</code></td><td>4</td></tr>
+            <tr><td><code>staging</code> + <code>test,test-gray</code> / <code>default,test,test-gray</code> 等</td><td>3</td></tr>
+            <tr><td>标量（无环境维度，所有环境同值）</td><td>约 28</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <b>写格式已由真实请求确认</b>（走增量 <code>createMsUpdateConfigApproval</code>）。<b>写与读的路径写法不同</b>：读是点分嵌套 <code>serviceConfig.envs.X.Y</code>，写是<b>扁平路径字符串，用 ` &gt; ` 分隔</b>（空格-大于号-空格），value 为 <code>{环境键: 新值}</code> 对象：
+        <pre><code>POST /efficiency/microservice/createMsUpdateConfigApproval
+{
+  "id": "&lt;configId&gt;",
+  "versionId": "&lt;来自 getMicroServiceConfigById 的乐观锁&gt;",
+  "patchData": {
+    "add": {},
+    "update": { "envs &gt; COMPANY_ID": { "staging-gray": "4301" } },
+    "delete": []
+  }
+}</code></pre>
+        要点：① 路径前缀是 <code>envs</code> 而非 <code>serviceConfig.envs</code>；② 分隔符是 <code> &gt; </code> 而非点号；③ 环境键这里用<b>单值</b> <code>staging-gray</code>（COMPANY_ID 本就按单环境存），改组合环境的变量时环境键写法仍建议先读返回体对齐；④ <code>versionId</code> 必带，用掉后会刷新，界面里的旧值随之失效。
+      </div>
+      <div class="callout warn">
+        <b>此写法为静态观察所得，未实际提交。</b>提交该请求会创建一条真实飞书审批单并消耗 <code>versionId</code>，按仓库只读约定不代为执行。全量修改另走 <code>createMsFullUpdateConfigApproval</code>（传 <code>rawJSON</code> 完整配置）。
+      </div>
+
+      <div class="callout danger">
+        <b>安全发现</b>：<code>serviceConfig.envs</code> 中 <code>*__PASSWORD</code> / <code>*__SECRET</code> / <code>*__KAFKA__PASSWORD</code> 等敏感项的值<b>以明文形式存储并由该接口直接返回</b>（本节已全程脱敏未记录任何值）。与其他仓库的明文凭据问题一致，建议纳入统一整改：敏感项改用 <code>secretKeyRef</code> 引用，避免出现在配置查询响应里。
+      </div>
+
+      <div class="callout">
+        <b><code>serviceYaml.envs</code> 为空而 <code>serviceConfig.envs</code> 有 60 项</b>——两个 envs 字段并存。<code>serviceConfig</code> 是当前实际生效的配置，<code>serviceYaml</code> 疑为 v2 迁移中的新结构占位。<b>改配置应作用于 <code>serviceConfig.envs</code></b>；若 SOP 指向 <code>serviceYaml</code>，需先确认迁移状态，否则 patch 打空。
+      </div>
+    </section>
+
+    <section class="card" id="contracts">
+      <h2><span class="num">07</span>核心契约速查<em>结合实测的字段级说明</em></h2>
+
+      <p><b><code>ReqCreateMsUpdateConfigApproval</code></b>——增量修改配置并创建审批，正式路径的核心入参：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>id</code></td><td><code>primitive.ObjectID</code></td><td>—</td><td>唯一 ID（服务配置 ID）</td></tr>
+            <tr><td><code>patchData</code></td><td><code>MicroServiceConfigPatch</code></td><td>—</td><td>YAML 配置增量</td></tr>
+            <tr><td><code>rawJSON</code></td><td><code>json.RawMessage</code></td><td>—</td><td>前端传入的原始 JSON</td></tr>
+            <tr><td><code>approvalName</code></td><td><code>string</code></td><td>—</td><td>审批名称</td></tr>
+            <tr><td><code>description</code></td><td><code>string</code></td><td>—</td><td>描述</td></tr>
+            <tr><td><code>versionId</code></td><td><code>string</code></td><td>—</td><td>版本 ID，用于乐观锁</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">model/microservice/microservice.go</div>
+
+      <p><b><code>MicroServiceConfigPatch</code></b>——patch 的三段结构：</p>
+      <pre><code>type MicroServiceConfigPatch struct {
+    Add    map[string]interface{} `json:"add"`    // 新增字段
+    Update map[string]interface{} `json:"update"` // 更新字段（路径：值）
+    Delete []string               `json:"delete"` // 删除字段路径
+}</code></pre>
+      <div class="loc">model/microservice/microservice_config.go</div>
+
+      <div class="callout ok">
+        <b>此前的最大缺口已由真实写请求确认</b>：<code>update</code> / <code>add</code> 的 key 是扁平路径字符串 <code>envs &gt; &lt;变量名&gt;</code>（` &gt; ` 分隔），value 为 <code>{环境键: 新值}</code>，走增量 <code>createMsUpdateConfigApproval</code>，详见 <a href="#probe">第 06 节</a>。
+      </div>
+
+      <p><b>其余关键结构体</b>：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>结构体</th><th>用于</th><th>字段</th></tr></thead>
+          <tbody>
+            <tr><td><code>GetEnvValueRequest</code></td><td><code>getEnvValueByKey</code></td><td><code>type</code>（<b>必填</b>，枚举 <code>cloudEnvs/services/envs/customEnv</code>）· <code>key</code>（<b>必填</b>）</td></tr>
+            <tr><td><code>IdReq</code></td><td>多达 8 个接口共用</td><td><code>id</code>（<code>primitive.ObjectID</code>）</td></tr>
+            <tr><td><code>ReqCheckServiceConfig</code></td><td><code>checkConfigDiff</code> · <code>checkVersionConflict</code></td><td><code>id</code> · <code>versionId</code> · <code>rawJSON</code></td></tr>
+            <tr><td><code>ReqCreateMsFullUpdateConfigApproval</code></td><td>全量修改审批</td><td><code>id</code> · <code>rawJSON</code> · <code>approvalName</code> · <code>description</code> · <code>versionId</code> · <code>clusterType</code></td></tr>
+            <tr><td><code>ReqCreateMsSyncToProdApproval</code></td><td>配置合并到 prod</td><td><code>id</code>（<b>必填</b>）· <code>approvalName</code> · <code>description</code> · <code>openId</code>（飞书审批用）· <code>clusterType</code></td></tr>
+            <tr><td><code>ReqRestoreMsConfig</code></td><td>回滚</td><td><code>id</code>（<b>必填</b>，源审批 ID）· <code>approvalName</code> · <code>description</code></td></tr>
+            <tr><td><code>ReqUpdateMicroService</code></td><td><b>调试后门</b></td><td><code>serviceName</code> · <code>namespace</code> · <code>patchData</code> · <code>updatedBy</code>（<b>必填</b>）· <code>microServiceConfigId</code> · <code>microServiceId</code> · <code>microServiceApprovalId</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <b>数字精度陷阱</b>：<code>createMsUpdateConfigApproval</code>、<code>createMsFullUpdateConfigApproval</code>、<code>checkConfigDiff</code> 三个接口<b>不用</b> <code>ShouldBindJSON</code>，而是手工 <code>json.NewDecoder(...).UseNumber()</code> 解码，目的是避免整数被转成 <code>float64</code>。构造请求时若涉及副本数、端口、内存等数值字段，<b>不要经过会丢精度的 JSON 处理链</b>。
+      </div>
+    </section>
+
+    <section class="card" id="appservice">
+      <h2><span class="num">08</span>app-services 模块清单<em>57 条 · 覆盖服务生命周期到 Pod 运维</em></h2>
+
+      <p>路径前缀统一为 <code>/efficiency/api/v1/app-services</code>，下表省略前缀。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>分类</th><th>接口</th></tr></thead>
+          <tbody>
+            <tr><td>查询</td><td><code>list</code> · <code>detail</code> · <code>status</code> · <code>permissions</code> · <code>provisions</code> · <code>check-app-code</code></td></tr>
+            <tr><td>生命周期</td><td><code>create</code> · <code>update</code> · <code>delete</code> · <code>delete/preview</code> · <code>delete/submit</code> · <code>archive</code> · <code>clone</code> · <code>clone/batch/{preview,submit,detail}</code></td></tr>
+            <tr><td>Codeup 权限</td><td><code>codeup/repo-permissions/{add,query,remove}</code> · <code>codeup/pipeline-permissions/{add,query,remove}</code></td></tr>
+            <tr><td>保护分支</td><td><code>codeup/protected-branches/{list,detail,create,update,delete}</code></td></tr>
+            <tr><td>流水线</td><td><code>trigger-pipeline</code> · <code>list-pipeline-runs</code> · <code>workflow-dag</code> · <code>workflow-node-action</code> · <code>codeup/pipeline-{history,job-log,runtime}</code> · <code>retry</code></td></tr>
+            <tr><td>运行时运维</td><td><code>pod-detail</code> · <code>pod-logs</code> · <code>pod-events</code> · <code>pod-terminal</code>（GET）· <code>delete-pod</code> · <code>restart-workload</code> · <code>rollback-service</code></td></tr>
+            <tr><td>构建配置</td><td><code>build-config</code> · <code>build-config/apply</code> · <code>build-config/draft</code></td></tr>
+            <tr><td>其他</td><td><code>environment-branches</code> · <code>codeup/base-branch-candidates</code> · <code>codeup/repository-{file-content,runtime}</code> · <code>sync-from-cmdb</code> · <code>cancel-approval</code></td></tr>
+            <tr><td><b>公开端点</b></td><td><code>provision/callback/execute</code> · <code>provision/completed</code> · <code>provision/node/{start,complete,status}</code> · <code>runtime-lanes</code>（GET）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <b>批量授权代码库权限的实操参考</b>：<code>codeup/repo-permissions/add</code> 入参为 <code>{serviceId, repositoryId, userIds[], roleType}</code>，响应体在 <code>data.results[].user_results[]</code> 中逐用户返回结果。<b>成功判定必须下钻到 <code>user_results[].success</code></b>——外层 <code>code:0 / msg:"成功"</code> 只表示请求被受理，用户级失败原因在 <code>user_results[].error</code> 字段。配套的 <code>query</code> 与 <code>remove</code> 可用于校验与撤销。
+      </div>
+    </section>
+
+    <section class="card" id="risk">
+      <h2><span class="num">09</span>高风险端点清单<em>81 个无鉴权端点中含签发凭据与触发发布</em></h2>
+
+      <p>无鉴权端点共 81 个（<code>PublicGroup</code> 75 + <code>PublicTracedGroup</code> 6）。其中相当一部分是设计使然的回调与 OAuth 端点，但下列<b>写操作</b>暴露在无鉴权分组上，建议逐条复核：</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>端点</th><th>作用</th><th>风险</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /user/agent-token</code><br><code>DELETE /user/agent-token/:id</code></td><td>签发 / 吊销 Agent Token</td><td><span class="badge danger">最高</span> 无鉴权即可获取平台凭据</td></tr>
+            <tr><td><code>POST /microservice/argoOperation</code></td><td>终止 ArgoCD 操作</td><td><span class="badge danger">高</span> 可干扰进行中的发布</td></tr>
+            <tr><td><code>POST /microservice/syncServiceConfig</code></td><td>触发 CRD 同步</td><td><span class="badge danger">高</span> 可推送配置到集群</td></tr>
+            <tr><td><code>POST /microservice/updateMicroServiceConfig</code></td><td>直接改服务配置（调试用）</td><td><span class="badge danger">高</span> 绕过审批</td></tr>
+            <tr><td><code>POST /environment/createEnvironment</code></td><td>创建集群环境</td><td><span class="badge warn">中高</span></td></tr>
+            <tr><td><code>POST /rollout/saveServerInfo</code><br><code>POST /rollout/updateByNameServiceStatus</code></td><td>写入发布状态</td><td><span class="badge warn">中高</span> 可污染发布单状态</td></tr>
+            <tr><td><code>POST /feishu/clearBusiness</code><br><code>POST /feishu/initBusinessFull</code><br><code>POST /feishu/rollbackBusinessEvolution</code></td><td>清空 / 全量初始化 / 回滚业务数据</td><td><span class="badge danger">高</span> 破坏性</td></tr>
+            <tr><td><code>POST /feishu-tasks/batch-delete</code></td><td>批量删除任务</td><td><span class="badge warn">中</span></td></tr>
+            <tr><td><code>POST /user/{getAllUser,getUserInfo}</code></td><td>拉取全量用户信息</td><td><span class="badge warn">中</span> 组织架构信息外泄</td></tr>
+            <tr><td><code>POST /user/email</code></td><td>修改用户邮箱</td><td><span class="badge warn">中</span> 可能影响通知与审批投递</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <b>建议</b>：真回调类端点（<code>provision/*</code>、<code>release/handleArgoWorkflowCallback</code>、<code>workitem/webhook/*</code>、<code>feishu/event/webhook</code>）应保留公开但<b>增加签名校验</b>，不能依赖「路径不公开」作为防护；管理类端点（<code>user/agent-token</code>、<code>environment/createEnvironment</code>、<code>feishu/clearBusiness</code>、<code>microservice/updateMicroServiceConfig</code>）应迁移到 <code>PrivateGroup</code>。<b>优先确认 <code>/user/agent-token</code> 是否从网关可达。</b>
+      </div>
+    </section>
+
+    <section class="card" id="todo">
+      <h2><span class="num">10</span>提取局限与待补 SOP<em>75% 契约自动还原 · 2 项实测已解决 · 5 项待 SOP</em></h2>
+
+      <p><b>本文的生成方法</b>：剥离 Go 注释后解析 <code>router/</code> 下的 <code>Group()</code> 与 <code>GET/POST/…</code> 调用还原路由树；在 <code>api/</code> 中按 <code>ShouldBindJSON(&amp;req)</code> 与 <code>var req T</code> 配对定位请求类型；再从全仓 2,030 个结构体中取字段的 <code>json</code> tag、<code>binding</code> 约束与行尾中文注释。</p>
+
+      <p><b>已知局限</b>（决定了哪些内容不可信）：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>局限</th><th>影响</th></tr></thead>
+          <tbody>
+            <tr><td>Swagger 只覆盖 172 / 712 条（24%），且 <code>microservice</code> 与 <code>appservice</code> 模块<b>零覆盖</b></td><td><code>docs/swagger.json</code> 不能作为契约来源，本文改用源码反推</td></tr>
+            <tr><td>25% 的路由未能自动定位请求结构体</td><td>使用 <code>c.Param</code> / <code>c.Query</code> 取参、或手工 <code>json.Decoder</code> 解码的接口需人工补</td></tr>
+            <tr><td>字段解析正则不识别 <code>map[...]...</code> 等含花括号的类型</td><td><code>MicroServiceConfigPatch</code> 的 <code>add</code> / <code>update</code> 字段是手工补录的</td></tr>
+            <tr><td>响应结构体未系统提取</td><td>本文只给出统一包装形态，未逐接口列 <code>data</code> 结构</td></tr>
+            <tr><td>Casbin 具体策略未解析</td><td>「鉴权+Casbin」只说明需授权，不代表当前账号有权限</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><b>待 SOP 补充的 5 项</b>（3 项已由实测解决，下表前 3 行）——按对可用性的影响排序：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>待补内容</th><th>状态 / 为什么源码推不出</th></tr></thead>
+          <tbody>
+            <tr><td>—</td><td><b><code>patchData</code> 路径写法</b></td><td><span class="badge ok">实测已解决</span> 读为点分嵌套 <code>serviceConfig.envs.X.Y</code>、写为扁平 <code>envs &gt; X</code>，二者不同，见第 06 节</td></tr>
+            <tr><td>—</td><td><b><code>getMicroServiceConfigById</code> 返回结构</b>，环境变量位置</td><td><span class="badge ok">实测已解决</span> 23 个顶层字段、<code>serviceConfig.envs</code> 60 项，见第 06 节</td></tr>
+            <tr><td>—</td><td><b>patchData 写格式与增量/全量</b></td><td><span class="badge ok">写样例已确认</span> <code>envs &gt; KEY</code> + <code>{环境键:值}</code>，走增量 <code>createMsUpdateConfigApproval</code>，见第 06 节</td></tr>
+            <tr><td>1</td><td><b>审批流程</b>：审批单如何创建、谁审、通过后由谁触发生效、<code>microServiceApprovalId</code> 从何而来</td><td>涉及飞书流程与人工职责，代码只体现字段</td></tr>
+            <tr><td>2</td><td><b><code>checkCrdDiff</code> / <code>syncServiceConfig</code> 的调用时机</b>与失败回滚方式</td><td>属运维编排顺序，非代码约束</td></tr>
+            <tr><td>3</td><td><b>组合环境的写法</b>：写样例用了单值 <code>staging-gray</code>；改 <code>prod,prod-gray</code> 这类组合环境时，环境键写单值还是组合串待验证</td><td>单值已确认，组合场景缺样例</td></tr>
+            <tr><td>4</td><td><b>四类环境变量的语义边界与可改范围</b>：<code>cloudEnvs</code>(666) / <code>services</code>(109) / <code>envs</code>(10) / <code>customEnv</code>(6) 各放什么、谁可改</td><td>数量已实测，语义边界仍需说明</td></tr>
+            <tr><td>5</td><td><b>责任边界</b>：哪些变量允许自助修改、哪些必须走 SRE / DBA</td><td>纯组织约定</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <b>下一步</b>：机制、读结构、写格式（含真实样例）均已实测就位，「给某服务改一个环境变量」的请求已可照抄。补齐第 1 项（审批流程：谁审、通过后由谁点发布）后即可升级为端到端可执行手册——每个操作附 <code>curl</code> 模板、前置校验、预期响应与失败处置。第 2–5 项补齐后加入「常见变更场景」章节。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

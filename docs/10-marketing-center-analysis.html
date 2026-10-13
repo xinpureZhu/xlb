@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>营销活动中心深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>marketing-activity-center 营销活动中心 · 代码深度分析</h1>
+    <p class="subtitle">69 个 Maven 模块、1602 个 Java 文件。编排引擎的精确执行语义、三套并行 TCC、两层缓存与 11 个 SOA 下游，并核对了 7 处「文档声明 vs 代码事实」的偏差。</p>
+    <p class="meta">最后更新：2026-08-07 · 基准：分支 <code>prod</code> <code>45cd6989</code> · 数据来源：<code>marketing-activity-center/**</code> 源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html" class="active">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">分层架构</a></li>
+        <li><a href="#s2">编排引擎与执行语义</a></li>
+        <li><a href="#s3">三套并行 TCC</a></li>
+        <li><a href="#s4">活动模板与生命周期</a></li>
+        <li><a href="#s5">数据与两层缓存</a></li>
+        <li><a href="#s6">SOA 集成与重试</a></li>
+        <li><a href="#s7">风险清单（分级）</a></li>
+        <li><a href="#s8">文档声明 vs 代码事实</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · Critical 与关键 High 已重校</strong> 分支 <code>prod</code> <code>45cd6989</code>（2026-08-06，落后 0）。
+      <p><strong>2 项 Critical 与 4 项关键 High 已逐条重校（见下方「重校结果」）：6 项全部仍存在，0 项修复。</strong>其中 H3 出现了一处<strong>文档性回退</strong>——新增的 Javadoc 描述了一套并不存在的行为。其余 High/Medium 条目仍需复核。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>6 项逐条实测：全部仍存在 · H3 新增误导性 Javadoc</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>旧结论</th><th>prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>C1</td>
+              <td>明文凭据被 Git 跟踪：<code>local.env</code> 未忽略；ICC 凭据硬编码在两份 <code>application-local.yml</code></td>
+              <td><strong>三个文件仍全部被 Git 跟踪</strong>：<code>local.env</code>、admin 与 player 各自的 <code>application-local.yml</code>。<code>.gitignore</code> 未新增任何对应规则，凭据内容未轮换</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C2</td>
+              <td>SSL 校验默认关闭且污染全进程（trust-all + hostname verifier 恒真）</td>
+              <td><strong>完全未变</strong>：<code>disableSslVerification()</code> 仍在 <code>:133</code> 被调用；<code>:194-195</code> 仍是 <code>HttpsURLConnection.setDefaultSSLSocketFactory(...)</code> + <code>setDefaultHostnameVerifier((h, s) -&gt; true)</code>——<strong>设置的是 JVM 全局默认值</strong>，污染范围不限于 SOA 客户端<div class="loc">infra/soa/SoaRestClientBuilder.java:133 · :194-195</div></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>H1</td>
+              <td>激活步骤的 rollback 实现是空壳（直接返回成功，不做补偿）</td>
+              <td><code>AssetActivateStep</code>、<code>TaskRankingActivateStep</code>、<code>AwardActivateStep</code> 三处 rollback <strong>各自仍只含 2 处 <code>Result.ok()</code></strong>，无任何反向写操作 → 活动激活中途失败仍会留下半成品状态</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>H2</td>
+              <td>infra-tcc 告警链路全为 No-Op → 悬吊事务无人知晓</td>
+              <td><code>NoOpTccAlarmScheduler</code> <strong>仍是该接口的唯一实现</strong>，未出现任何真实告警实现类</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>H3</td>
+              <td>YAML 模板里的 <code>failurePolicy</code> 是死配置：注册表无条件返回 <code>ROLLBACK</code></td>
+              <td><code>PlayerCommandConfigRegistry.getFailurePolicy()</code> <strong>仍是 <code>:139-142</code> 的无条件 <code>return FailurePolicy.ROLLBACK;</code></strong>，YAML 值从未被读取。<br><strong>⚠️ 新增的文档性回退</strong>：<code>PlayCommandEnhance.java:277-278</code> 新写了一段 Javadoc，声称该值取自 <code>templates[n].operations.playerOperations[operation].failurePolicy</code>；但 <code>:283-286</code> 仍只是把调用转交给上述注册表，且<strong>全仓无任何子类覆写该方法</strong>（已 grep 确认）。即注释描述的是一套<strong>不存在的行为</strong>，比原先没有注释更容易误导</td>
+              <td><span class="badge danger">仍存在<br>（且新增误导）</span></td>
+            </tr>
+            <tr>
+              <td>H5</td>
+              <td>活动加载只读缓存、无 DB 回源 → 缓存缺失即活动"消失"</td>
+              <td><code>ActivityPlayPortImpl.loadActivityById()</code> <strong>仍是 <code>:43-45</code> 的单行 <code>return activityCacheRepo.get(activityId, true);</code></strong>，未新增任何 DB 回源或降级分支</td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>结论</strong> 与 §09 单体仓不同，本仓在这一个月里<strong>对已识别缺陷没有任何实质改动</strong>——6 项重校条目全数保留。这与本仓活跃度并不矛盾：提交主要投向新玩法与模板扩展，而一致性与凭据两条主线未被触碰。
+        <p>H3 的演变最值得一提：<strong>代码没变，但注释开始描述一套并不存在的能力</strong>。这类"注释先行、实现缺席"的偏差会让后续维护者误以为 YAML 里的 <code>failurePolicy</code> 生效，从而写出依赖它的模板配置。修复应二选一：要么让注册表真正读取模板值，要么删除该 Javadoc 并把 YAML 字段一并移除。</p>
+      </div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>编排引擎是真正的核心 · 2 项 Critical · 9 项 High</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">69</div><div class="l">Maven 模块</div></div>
+        <div class="stat"><div class="n">1,602</div><div class="l">Java 文件（含 254 测试）</div></div>
+        <div class="stat"><div class="n">2</div><div class="l">可部署应用 admin/player</div></div>
+        <div class="stat"><div class="n">6</div><div class="l">YAML 活动模板</div></div>
+        <div class="stat"><div class="n">3</div><div class="l">并行 TCC 机制</div></div>
+        <div class="stat"><div class="n">11</div><div class="l">SOA 下游子系统</div></div>
+        <div class="stat"><div class="n">1</div><div class="l">infra-tcc 框架真实接入点</div></div>
+        <div class="stat"><div class="n">19</div><div class="l">PolarDB-X 分片表</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>Critical（2 项）</strong>
+        <ul>
+          <li><strong>明文凭据被 Git 跟踪</strong>：<code>local.env</code> 未被 <code>.gitignore</code> 忽略，含 MySQL / 两套 Redis / 阿里云长期 AK-SK / RocketMQ / ICC 凭据；更严重的是 <strong>ICC 凭据直接硬编码在 <code>application-local.yml</code></strong>（不走环境变量），admin 与 player 两份都被跟踪。</li>
+          <li><strong>SSL 校验默认关闭且污染全进程</strong>：<code>HttpClientProperties.ssl</code> 默认 <code>false</code> → <code>disableSslVerification()</code> <strong>全局</strong>替换 <code>HttpsURLConnection</code> 的默认 SSLSocketFactory 为 trust-all 并让 hostname verifier 恒真。影响不限于 SOA，会污染进程内所有 HTTPS 调用（含 OSS SDK）。7 个 SOA 模块 baseUrl 均为 https → 全链路 MITM 可行。</li>
+        </ul>
+      </div>
+      <div class="callout warn">
+        <strong>最值得注意的架构事实</strong> 文档常说「infra-tcc 框架承载一致性」，但代码显示：<strong>真正承载 C 端抽奖与 B 端激活一致性的是 <code>StepOrchestrator</code> 的「隐式 TCC」</strong>；infra-tcc 框架虽完整（协调器/监听器/告警/悬吊检测），业务接入点<strong>只有 1 处</strong>，且其告警链路全为 No-Op、事务记录纯内存。
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>分层架构 <em>core → base → ext → app · Port 实现依赖倒置</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph CORE["activity-core（最抽象）"]
+    P["core-port<br/>Port 接口定义<br/>common/design/manage/play/foundation"]
+    F["core-foundation<br/>Pipeline·StepOrchestrator<br/>Registry·TemplateRegister"]
+    B["core-business<br/>manage / play SPI + Steps"]
+  end
+  BASE["activity-base<br/>基础场景完整实现<br/>生命周期 Step + 范围校验"]
+  EXT["activity-ext<br/>自定义扩展<br/>榜单上报 / 企微 / 页面浏览 / 积分扣减"]
+  APP["activity-app<br/>admin / player AppService<br/>DTO + YAML 模板配置"]
+  DAL["activity-dal<br/>PO/Mapper/PortImpl<br/>只依赖 Port 接口"]
+  SOA["activity-soa-client<br/>11 个防腐层 Client"]
+  INFRA["activity-infra<br/>base/metrics/tcc/mvc/soa/box"]
+  DEP["deploy<br/>admin :55142 · player :55143"]
+  P --> F --> B
+  B --> BASE --> EXT --> APP --> DEP
+  DAL -.实现 Port.-> P
+  APP --> DAL & SOA
+  INFRA --> F & SOA & DAL
+  classDef hl fill:#eff6ff,stroke:#2563eb,stroke-width:2px
+  class F hl
+        </pre>
+        <p class="arch-title">图 1 · 分层与依赖方向（蓝色 = 真正的核心：编排引擎）</p>
+      </div>
+      <div class="callout warn">
+        <strong>工程配置隐患</strong>
+        <ul>
+          <li>JaCoCo 排除面极广：<code>**/dal/**</code> 与 <code>**/soa/**</code> 被整体排除，而 <strong>SOA 适配层（错误码转换、幂等键、重试）全部落在 <code>**/soa/**</code> 下 → 覆盖率永久为 0 且不可见</strong>。</li>
+          <li>一处 exclusion 的 groupId 写成 <code>org.assert</code>（应为 <code>org.assertj</code>），该 exclusion 实际无效。</li>
+          <li>Sonar 只有 4 个 property，无 plugin、无 host/token；<code>sonar-project.properties</code> 被 gitignore。</li>
+          <li>Jackson 锁定 2.17.2（注释「该版本不能升级，高版本存在 bug」），靠 <code>jackson-bom</code> 置于 <code>dependencyManagement</code> 首位 + 显式 exclude <code>jackson-core</code> 强制生效。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>编排引擎与执行语义 <em>YAML 数组顺序 = 执行顺序 · confirm 逆序且吞异常</em></h2>
+      <p><code>StepOrchestrator</code> 是全系统一致性的实际承载者。以下为逐阶段的精确语义（源码 <code>foundation/component/StepOrchestrator.java</code>）。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  S0["阶段 0 · 手动 TCC 短路 :71-79<br/>manualTcc + CANCEL → 直接回滚<br/>manualTcc + CONFIRM → 直接确认"]
+  S1["阶段 1 · 选步 :80-98<br/>全量 SPI → STEP_CACHE 按 templateCode:operation<br/>按 YAML componentRefs 下标排序<br/>再 filterBySupport（不进缓存）"]
+  S2["阶段 2 · execute 正向 :145-167<br/>逐步执行<br/>失败 → handleStepFailure 后立即返回"]
+  S3["阶段 3 · confirm 逆序 :169-173,408-441<br/>for i = size-1 → 0<br/>单点失败全部吞掉，仅 log.error"]
+  S4["阶段 4 · rollback 逆序 :261-272,373-406<br/>仅当 failurePolicy == ROLLBACK<br/>ctx.controlOperate == FAIL 时跳过（幂等守卫）"]
+  S0 --> S1 --> S2
+  S2 -->|全部成功| S3
+  S2 -->|任一失败| S4
+  CTRL["每步后读 ctx.controlOperate :224-252<br/>SKIP 不入栈继续 · BREAK 不入栈且不 confirm<br/>FINISH 入栈并跳出（会 confirm） · CONTINUE 继续"]
+  S2 -.-> CTRL
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class S3 bad
+        </pre>
+        <p class="arch-title">图 2 · StepOrchestrator 的隐式 TCC 执行语义（红色 = confirm 失败被静默吞掉）</p>
+      </div>
+
+      <div class="grid cols-3">
+        <div class="mech m4">
+          <h4><span class="num">1</span>FailurePolicy 只实现了一种</h4>
+          <p>枚举有 <code>ROLLBACK</code>/<code>FAIL_FAST</code>/<code>SKIP</code> 三值，但代码<strong>只有 <code>== ROLLBACK</code> 一处判定</strong> → <code>FAIL_FAST</code> 与 <code>SKIP</code> 行为完全相同（都不回滚），<code>SKIP</code> 语义未实现。</p>
+          <div class="loc">StepOrchestrator.java:268 · FailurePolicy.java:11-26</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>C 端 YAML 的 failurePolicy 是死配置</h4>
+          <p><code>PlayerCommandConfigRegistry.getFailurePolicy()</code> <strong>无条件返回 ROLLBACK</strong>。6 个模板中 40+ 处 <code>FAIL_FAST</code> 全部被忽略，YAML 值只用于启动日志打印。</p>
+          <div class="loc">PlayerCommandConfigRegistry.java:139-142</div>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">3</span>B 端没有 Confirm 阶段</h4>
+          <p>实现 <code>rollback()</code> 的 Step 有 <strong>21 个</strong>；实现 <code>confirm()</code> 的只有 <strong>10 个且全在 C 端</strong>。B 端「隐式 TCC」实质是 <strong>Try + Rollback</strong>，无 Confirm。</p>
+          <div class="loc">manage/step/activate/ · play/spi/step/</div>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <strong>回滚失败完全不可观测</strong> 21 个 <code>rollback()</code> 实现<strong>无一例外</strong>在 catch 后 <code>return Result.ok()</code> → <code>rollBackFailedStepList</code> 永远为空。即使非空，日志行还有 copy-paste bug（打印的是<strong>成功</strong>列表）。rollback 失败无 metric、无告警、无补偿落库。
+        <strong>结论：ACTIVATE 的半激活状态（部分子系统已激活、部分回滚失败）在生产上没有任何自动发现手段。</strong>
+        <div class="loc">StepOrchestrator.java:382-405 · ActivityActivateStep.java:53-66 等 21 处</div>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>三套并行 TCC <em>框架完整但只接 1 处 · 告警链全 No-Op</em></h2>
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>infra-tcc 显式框架</h4>
+          <p>经典 TCC：<code>TccCoordinator</code>（命令式）+ <code>TccTemplate</code>（声明式），参与者实现 <code>TccParticipant</code> 三段契约。设计完整（含悬吊检测、超时告警）。</p>
+          <p><strong>业务接入面：仅 1 处</strong>——B 端增次审批 <code>IncrementLimitPipeline</code>。</p>
+          <div class="loc">activity-infra/activity-infra-tcc/</div>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>StepOrchestrator 隐式 TCC</h4>
+          <p>每个 <code>ComponentStepSpI</code> 自带 execute/confirm/rollback；编排器正序执行、逆序 confirm、逆序 rollback。</p>
+          <p><strong>使用面：主战场</strong>——C 端抽奖/任务/打榜、B 端激活/中止/保存/续期。</p>
+          <div class="loc">core-foundation/component/StepOrchestrator.java</div>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>下游任务 v2 原生 TCC 透传</h4>
+          <p>任务系统提供 <code>/api/v2/event/report|rollback/{try,confirm,cancel}</code> 六端点，由 <code>NewTccTaskTriggerStrategy</code> 按方向路由。状态持久化在下游，本系统只做编排。</p>
+          <div class="loc">play/spi/step/NewTccTaskTriggerStrategy.java</div>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <strong>infra-tcc 的补偿能力实际不可用</strong>
+        <ul>
+          <li><strong>事务记录纯内存</strong>：<code>TccTransaction.records</code> 是普通 <code>ArrayList</code>，Coordinator 是方法内局部对象，<code>close()</code> 还主动清空成功列表。无 DB 表、无 Redis、无 WAL → Try 成功后进程崩溃，悬吊资源<strong>完全无痕迹</strong>。</li>
+          <li><strong>悬吊检测只在 close() 那一刻检查一次</strong>，其回调的唯一实现 <code>TccAlarmListener</code> <strong>在业务中从未注册</strong>（接入点只注册了 <code>TccMetricsListener</code>）。</li>
+          <li><strong><code>TccAlarmScheduler</code> 唯一实现是 <code>NoOpTccAlarmScheduler</code></strong>（返回空 lambda）→ 30s / 5min 超时告警恒不生效。</li>
+        </ul>
+        <div class="loc">TccTransaction.java:23 · TccTemplate.java:78 · TccCoordinator.java:306-312 · IncrementLimitPipeline.java:38</div>
+      </div>
+
+      <div class="callout warn">
+        <strong>最痛的失败组合</strong> 任务 v2 <strong>Confirm 失败 → 主动「悬挂」而不 Cancel</strong> → Confirm 由 <code>StepOrchestrator.confirm()</code> 调用 → <strong><code>Result.fail</code> 被吞掉</strong> → 上游拿到成功、用户看到成功、下游任务进度停在预扣状态，且<strong>无补偿任务、无告警、无落库</strong>。
+        <div class="loc">NewTccTaskTriggerStrategy.java:191-196,308-313 · StepOrchestrator.java:426-430</div>
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>活动模板与生命周期 <em>6 个模板 · 表单配置零消费</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>模板</th><th>id</th><th>type</th><th>scenarios</th><th>奖励类型</th><th>主步骤</th></tr></thead>
+          <tbody>
+            <tr><td>刮刮乐 <code>scratch_card</code></td><td>1</td><td>GGL</td><td>DEFAULT</td><td>LOTTERY_CHANCE</td><td>BASE / PLAY_GAME / PRIZE / PAGE / ADVANCED</td></tr>
+            <tr><td>苏超打榜 <code>su_chao_ranking</code></td><td>2</td><td>DBHD</td><td>DEFAULT, PERIODIC</td><td>ASSET（热力值）</td><td>+ RANKING（6 步）</td></tr>
+            <tr><td>会员日蓄水 <code>cj_member_day_book</code></td><td>3</td><td>CJ</td><td>DEFAULT</td><td>—</td><td>INDICATOR 主导，无 TASK</td></tr>
+            <tr><td>新人抽奖 <code>cj_new_member</code></td><td>4</td><td>CJ</td><td>DEFAULT</td><td>LOTTERY_CHANCE</td><td>AWARD / LOTTERY / TASK</td></tr>
+            <tr><td>定时开奖 <code>timed_redeem</code></td><td>5</td><td>CJ</td><td>DEFAULT</td><td>REDEEM_CODE</td><td><strong>去抽奖化</strong>：含 REWARD，全链路无 LOTTERY</td></tr>
+            <tr><td>问卷调研 <code>questionnaire_survey</code></td><td>6</td><td>WJ</td><td>DEFAULT</td><td>—</td><td>INDICATOR + SURVEY</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>生命周期操作 SAVE / ACTIVATE / TERMINATE / RENEW / DELETE 各自在模板 YAML 中声明 <code>componentRefs</code>，<strong>数组顺序即执行顺序</strong>。仅 <code>ACTIVATE</code> 用 <code>ROLLBACK</code>，其余均 <code>FAIL_FAST</code>（B 端策略硬编码在 Pipeline 中，非 YAML 驱动）。苏超打榜的 <code>SAVE_PRIZE</code> 使用<strong>带 role 的 ref</strong>（<code>AWARD:BUILDER</code>、<code>AWARD:SOA_TRANSFER</code>）。</p>
+      <div class="callout warn"><strong>零消费的配置</strong> 每个模板还有 13 条 <code>manageForms:</code>——<strong>全代码库无任何 Java 读取它</strong>（只出现在注释中）。同理 <code>library.yaml</code> 的 <code>formTemplates/forms/formSections</code> 虽被载入 <code>TemplateRegister</code>，但对应配置类在 foundation 之外零消费。</div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>数据与两层缓存 <em>C 端无 DB 回源 · 缓存即唯一数据源</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  C["C 端请求"] --> L1["Caffeine 本地缓存<br/>TTL 10s · 各 Pod 独立"]
+  L1 -->|miss| L2["Redis<br/>M:ACT:ACT_S:{id}<br/>ActivitySummary JSON"]
+  L2 -->|miss| X["返回：活动不存在"]
+  L2 -.无 DB fallback.-x DB[("PolarDB-X<br/>19 张分片表")]
+  B["B 端 ActivatePipeline<br/>+ 5 个热修改 Pipeline"] -->|refreshFullCache<br/>事务提交后·无重试| L2
+  SET["M:ACT:ACTS（HASH）<br/>有效活动集合"] --- L2
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class X,L2 bad
+        </pre>
+        <p class="arch-title">图 3 · 两层缓存与「无 DB 回源」的单点风险</p>
+      </div>
+      <div class="callout danger">
+        <strong>缓存是 C 端唯一数据源</strong> <code>ActivityPlayPortImpl.loadActivityById</code> 只读缓存，<strong>没有任何 DB fallback</strong>。Redis 丢 key（驱逐 / 主从切换 / TTL 精算为 0）→ C 端全部接口返回「活动不存在」，且本地 Caffeine 还会把 <code>Optional.empty()</code> 缓存 10 秒<strong>放大故障</strong>。恢复只能靠 B 端手动触发 <code>CacheRefreshPipeline</code>。
+        <div class="loc">ActivityPlayPortImpl.java:43-45 · ActivityCacheRepoImpl.java:186-190</div>
+      </div>
+      <h3>5.1 分片键选择导致的跨节点查询</h3>
+      <ul>
+        <li>奖池关系表分片键为 <code>prize_group_id</code>，而父表 <code>t_act_prize_group</code> 分片键为 <code>activity_id</code> → 「按 activityId 查奖池关系」必然<strong>跨分片 + 二次查询</strong>。</li>
+        <li><code>t_act_info</code> 列表查询走非分片键索引 → 8 分片 scatter-gather + 归并排序。</li>
+        <li><code>t_act_survey_response</code> 分片键 <code>member_id</code>(64 片) 与活动子表 <code>activity_id</code>(8 片) 不同 → 「按活动统计问卷」= <strong>全 64 分片扫描</strong>。</li>
+        <li>3 个全局唯一索引各带 8 分区 → 写放大。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>SOA 集成与重试 <em>「无自动重试」的说法不成立</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>启用重试的方法</th><th>maxRetries</th><th>interval</th><th>可重试判定</th></tr></thead>
+          <tbody>
+            <tr><td><code>lottery.draw</code></td><td>2</td><td>100ms</td><td>仅 <code>ResourceAccessException</code></td></tr>
+            <tr><td><code>lottery.drawConfirm</code> / <code>drawCancel</code></td><td>3</td><td>100ms</td><td>同上</td></tr>
+            <tr><td><code>award.awardPrizes</code></td><td colspan="3">启用（默认策略 maxRetries=1 / 100ms）</td></tr>
+            <tr><td><code>indicator.preConsume/preUnConsume/complete/cancel</code></td><td colspan="3">启用</td></tr>
+            <tr><td><code>member.pointChange</code> · <code>memberScreen.prePush</code></td><td colspan="3">启用</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>确实无重试的子系统</strong>：task（含全部 v2 TCC 六端点）、ranking、asset、oss、store、user、icc，以及<strong>所有 B 端 manage 端点</strong>。全系统无 spring-retry、无 resilience4j、<strong>无熔断器、无连接池、无 bulkhead</strong>。</p>
+      <div class="callout warn">
+        <strong>幂等键不对称</strong>
+        <ul>
+          <li>正向任务：<code>requestNo = traceId + activityId</code>，<strong>字符串直接相接无分隔符</strong> → 跨活动可碰撞（<code>abc12</code>+<code>3</code> 与 <code>abc1</code>+<code>23</code> 同为 <code>abc123</code>）。</li>
+          <li>逆向任务：<code>"Rollback_" + traceId</code>，<strong>完全不含 activityId/taskId</strong> → 一次请求内对多个活动做逆向回退，第二次起被下游判重 → <strong>回退丢失、进度不一致</strong>。</li>
+          <li><code>IncrementLimitPipeline.buildTxId</code> 用毫秒时间戳 → 同毫秒并发同活动同类型会撞。</li>
+        </ul>
+        <div class="loc">NewTccTaskTriggerStrategy.java:236,352 · IncrementLimitPipeline.java:73</div>
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>风险清单（分级） <em>Critical 2 · High 9 · Medium 3+</em></h2>
+      <h3>High</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th><th>位置</th></tr></thead>
+          <tbody>
+            <tr><td>H1</td><td><strong>rollback 失败无处理、无观测</strong>：21 个实现全部 catch 后返回 ok → 失败列表永远为空；日志还打错列表；无 metric/告警/补偿落库</td><td><code>StepOrchestrator.java:382-405</code></td></tr>
+            <tr><td>H2</td><td><strong>infra-tcc 事务记录纯内存</strong> → 进程重启丢失补偿；告警链路全 No-Op 或未注册</td><td><code>TccTransaction.java:23</code>、<code>TccCoordinator.java:306-312</code></td></tr>
+            <tr><td>H3</td><td><strong>YAML <code>playerOperations.*.failurePolicy</code> 是死配置</strong>：40+ 处 <code>FAIL_FAST</code> 被忽略，查询类操作失败时会逆序调用已执行 Step 的 rollback。当前无害仅因查询 Step 的 rollback 多为 no-op，一旦加副作用即成生产事故</td><td><code>PlayerCommandConfigRegistry.java:139-142</code></td></tr>
+            <tr><td>H4</td><td><strong><code>templateCode == null</code> → <code>computeIfAbsent(null,…)</code> NPE</strong>：任何 DB 中 <code>template_id</code> 不在 6 个 YAML 模板内的活动都会命中；resolver 是 <code>static volatile</code>，存在启动窗口</td><td><code>ActInfoBrief.java:82-85</code> → <code>StepOrchestrator.java:96</code></td></tr>
+            <tr><td>H5</td><td><strong>缓存是 C 端唯一数据源，无 DB 回源</strong>（见 §05）</td><td><code>ActivityPlayPortImpl.java:43-45</code></td></tr>
+            <tr><td>H6</td><td><strong>TCC 指标 tag key 冲突</strong>：同一 metric name 被两处以不同 tag key 集合注册（<code>ph/pt/sn</code> vs <code>phase/participant</code>），Prometheus 拒绝后异常被吞成 warn → <strong>静默丢点</strong>；Grafana 面板只查前者</td><td><code>TccMetricsListener.java:90</code> vs <code>TccMonitor.java:41-84</code></td></tr>
+            <tr><td>H7</td><td><strong>幂等键碰撞</strong>（见 §06）</td><td><code>NewTccTaskTriggerStrategy.java:236,352</code></td></tr>
+            <tr><td>H8</td><td><strong>缓存与 DB 不一致窗口</strong>：刷缓存在事务提交后且无重试（窗口长达 TTL 12h+）；Caffeine 10s 各 Pod 独立造成集群视图分裂；<code>DeleteDraftPipeline</code> 完全不动缓存；终止时的缓存操作是无锁 read-modify-write；热修改「先 SOA、后本地事务、再 OSS、最后刷缓存」四段无原子性</td><td><code>ActivatePipeline.java:93</code>、<code>HotPrizeSavePipeline.java:147-199</code></td></tr>
+            <tr><td>H9</td><td><strong>下游无重试导致最终不一致</strong>（见 §06 最痛组合）</td><td>task/ranking/asset/oss/store/user/icc</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Medium</h3>
+      <ul>
+        <li><strong>M1 <code>STEP_CACHE</code> 启动期缓存投毒</strong>：<code>computeIfAbsent</code> 只在首次求值。若首个请求发生在部分 <code>ComponentStepSpI</code> Bean 完成自注册之前，该 <code>templateCode:operation</code> 组合会<strong>永久</strong>缺少这些 Step 直到重启。无 <code>@DependsOn</code>、无就绪门闩。<div class="loc">StepOrchestrator.java:80-85</div></li>
+        <li><strong>M2 YAML 配置错误的运行时暴露极弱</strong>：<code>validateAgainstMetaTypes</code> 的 Javadoc 声称会校验 componentRefs <em>和</em> operation key，实现<strong>只校验前者且仅 warn</strong>；<strong>operation key 零校验</strong>——把 <code>ACTIVATE</code> 写成 <code>ACTIVATED</code> 会导致 <code>getComponentRefs</code> 返回 null，进而走「无配置则执行<strong>全量</strong> Step」分支，<strong>比少执行更危险</strong>。<div class="loc">TemplateRegister.java:290-337,409-435</div></li>
+        <li><strong>M3 分片键选择导致跨节点查询</strong>（见 §05.1）。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>文档声明 vs 代码事实 <em>7 处偏差已核对</em></h2>
+      <p>本仓文档（README / soa_map.md / _doc）整体质量较高，但以下声明与代码不符，使用时请以代码为准：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>文档说法</th><th>代码事实</th></tr></thead>
+          <tbody>
+            <tr><td>缓存 key 为 <code>M:ACT:ACT_INFO:{id}</code></td><td>❌ 实际是 <code>M:ACT:ACT_S:{id}</code>（<code>ActivityCacheRepoImpl.java:31</code>）</td></tr>
+            <tr><td>下游 SOA 无自动重试</td><td>❌ 4 个模块 / 9 个方法启用自研 <code>RetryTemplate</code>；其余 7 个模块确实无重试</td></tr>
+            <tr><td>ACTIVATE 顺序由 <code>ComponentKey.defaultOrder</code> 决定</td><td>❌ 由 YAML <code>componentRefs</code> <strong>数组下标</strong>决定；<code>defaultOrder</code> 仅在无配置时生效</td></tr>
+            <tr><td>活动状态机 INIT / PUBLISH / OFF_SHELF</td><td>⚠️ 实际 <strong>4 态</strong>，另含 <code>DELETE</code></td></tr>
+            <tr><td><code>TemplateRegister</code> 会校验 operation key 与 componentRefs 且失败阻断启动</td><td>❌ 只校验 componentRefs 且仅 <code>log.warn</code>；<strong>operation key 零校验</strong></td></tr>
+            <tr><td>infra-tcc 提供完整 TCC 能力（含告警/补偿）</td><td>⚠️ 框架完整但<strong>接入点仅 1 处</strong>；告警链路全部 No-Op 或未注册；事务记录纯内存</td></tr>
+            <tr><td>19 张表</td><td>✅ DDL 确为 19 张；但<strong>代码映射 21 张</strong>（<code>t_act_ext_field</code> 独立 DDL 且无分片声明，<code>t_act_participation_record</code> 无 DDL）</td></tr>
+            <tr><td><code>failurePolicy</code> 由 YAML 驱动</td><td>❌ B 端硬编码在 Pipeline；C 端恒 <code>ROLLBACK</code>，YAML 值只用于启动日志</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>优先修复顺序</h3>
+      <ol>
+        <li>轮换 <code>local.env</code> 与 <code>application-local.yml</code> 中全部凭据（MySQL / 2 套 Redis / 阿里云 AK / RocketMQ / ICC），<code>git filter-repo</code> 清史，ICC 改环境变量占位。</li>
+        <li><code>HttpClientProperties.ssl</code> 默认改 <code>true</code>；如确需跳过，改为 per-client <code>SSLContext</code> 而非全局默认。</li>
+        <li>让 rollback 失败可观测：实现真实的失败收集 + metric + 告警 + 补偿落库；修正日志 copy-paste bug。</li>
+        <li>infra-tcc 事务记录落库（或直接下线该框架，统一到 StepOrchestrator）；注册 <code>TccAlarmListener</code>，替换 No-Op Scheduler。</li>
+        <li>让 <code>FailurePolicy</code> 真正生效（实现 <code>FAIL_FAST</code>/<code>SKIP</code> 分支），或删除 YAML 中的死配置以免误导。</li>
+        <li>C 端缓存补 DB 回源；负缓存（<code>Optional.empty()</code>）不要进本地缓存。</li>
+        <li>幂等键加分隔符并纳入 activityId/taskId，正逆向对称。</li>
+        <li>统一 TCC metric 的 tag key；把 <code>**/soa/**</code> 移出 JaCoCo 排除清单。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

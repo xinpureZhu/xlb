@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mobilerun 移动端 LLM Agent 分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>mobilerun 移动端 LLM Agent 分析</h1>
+    <p class="subtitle">用 LLM 直接操控 Android/iOS 的开源框架：MobileAgent 编排（llama-index Workflows）、FastAgent 与 Manager+Executor 双模式、13 个原子工具、ADB + Portal APK 接入；含官方 91.4% 榜单与第三方 43% 实测的对照，及 13 处文档自相矛盾清单。</p>
+    <p class="meta">最后更新：2026-09-21 · 数据来源：上游源码与文档静态分析 + 公开评测交叉验证</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html" class="active">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>：上游第三方仓库 <code>droidrun/mobilerun</code>（<code>main</code> · <code>4f168cb</code> · 2026-09-16 · 本平台无此仓工作副本，结论来自远端快照而非签出状态）。
+      该仓<b>没有 prod 分支</b>，默认分支即 <code>main</code>，版本号 <code>0.6.19</code>（&lt;1.0，无 LTS）；同名 PyPI 包 <code>mobilerun 0.6.19</code>，旧名 <code>droidrun</code> 已转为兼容 shim。
+      设备端 <b>Portal APK 版本 v0.7.25（2026-08-18）</b>，驱动层由独立发行包 <code>mobilerun-core-local 0.6.0</code> 提供。
+      本文所有数字均标注来源；官方榜单数字与第三方实测数字分别标注，不做合并。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">定位与版本状态</a></li>
+        <li><a href="#s2">总体架构与控制流</a></li>
+        <li><a href="#s3">两种模式与控制循环</a></li>
+        <li><a href="#s4">工具层与能力协商</a></li>
+        <li><a href="#s5">设备接入：ADB + Portal</a></li>
+        <li><a href="#s6">配置、可观测性与成本</a></li>
+        <li><a href="#s7">工程成熟度与文档漂移</a></li>
+        <li><a href="#s8">评估：能力、局限与风险</a></li>
+        <li><a href="#s9">与 XLB 的结合点</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>定位与版本状态 <em>开源 Agent 框架 · 闭源设备驱动 · 0.6.x 早期版本</em></h2>
+      <p>mobilerun（原 droidrun）是一个<b>用 LLM 直接操作手机</b>的框架：把设备 UI（无障碍树 + 截图）喂给大模型，由模型产出 <code>click/type/swipe/open_app</code> 等原子动作，循环执行直到任务完成。它不是测试框架（没有断言、没有用例 DSL），而是一个「手机操作 Agent 运行时」；可用的入口是 CLI、Python SDK 与 Docker。</p>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">9.4k</div><div class="l">GitHub stars（forks 1,006 · open issues 33）</div></div>
+        <div class="stat"><div class="n">186</div><div class="l">Python 文件（<code>mobilerun/</code> 下 143 个）</div></div>
+        <div class="stat"><div class="n">13</div><div class="l">注册的原子工具（另有条件注册与自定义、MCP 工具）</div></div>
+        <div class="stat"><div class="n">51</div><div class="l">测试文件（<code>tests/</code>）</div></div>
+        <div class="stat"><div class="n">0.6.19</div><div class="l">当前版本（PyPI · 兼容包 <code>droidrun</code> 累计 103 版）</div></div>
+        <div class="stat"><div class="n">15</div><div class="l">默认 <code>max_steps</code>（可配；超限判失败）</div></div>
+        <div class="stat"><div class="n">1000s</div><div class="l">工作流默认 timeout（<code>MobileAgent(timeout=1000)</code>）</div></div>
+        <div class="stat"><div class="n">MIT<span style="font-size:1.4rem"> / </span>AGPL</div><div class="l">许可证<b>分裂</b>：框架 MIT · 设备端 Portal AGPL-3.0-or-later</div></div>
+      </div>
+      <div class="tags">
+        <span class="tag">Python 3.11–3.13</span><span class="tag">llama-index 0.14.23</span><span class="tag">llama-index-workflows</span><span class="tag">Pydantic v2</span><span class="tag">ADB + Portal APK</span><span class="tag">jinja2 prompts</span><span class="tag">MCP</span><span class="tag">PostHog telemetry</span><span class="tag">Phoenix / Langfuse</span><span class="tag">uv + hatchling</span><span class="tag">Beta</span>
+      </div>
+      <div class="loc">pyproject.toml（version 0.6.19 · <code>Development Status :: 4 - Beta</code> · requires-python &gt;=3.11,&lt;3.14 · console script <code>mobilerun=mobilerun.cli.main:cli</code>）· mobilerun/agent/droid/droid_agent.py · mobilerun/agent/utils/signatures.py · api.github.com/repos/droidrun/mobilerun</div>
+      <div class="callout warn">
+        <b>许可证分裂（最易被忽视的落地风险）</b>：框架仓与驱动包 <code>mobilerun-core-local</code> 是 <b>MIT</b>，但设备端 Portal App（<code>com.mobilerun.portal</code>，装在手机上的那个 APK）是 <b>AGPL-3.0-or-later</b>。仅本地自用不触发分发义务；一旦随设备/镜像二次分发或做闭源集成，需另行评估 AGPL 义务。
+      </div>
+      <div class="callout">
+        <b>更名史</b>：项目原名 droidrun（PyPI <code>droidrun</code> 有 103 个历史版本），<b>2026-04-16</b> 经 PR #317 「Refactor/rename droidrun to mobilerun」完成改名，同日 PyPI <code>mobilerun 0.6.0rc1</code> 首次上传，Portal 仓也一并改名。现 PyPI <code>droidrun 0.6.19</code> 的 summary 已是「Compatibility shim — droidrun has been renamed to mobilerun」，仓内 <code>compat/droidrun/</code> 用 PEP 451 <code>meta_path</code> finder 把 <code>droidrun.X.Y</code> 映射为<b>同一模块对象</b>（保证类身份一致），CLI 旧名会打印更名提示后转发，<code>publish.yml</code> 还强制 root 与 compat 版本严格一致。厂商自述「mobilerun 是产品名，Droidrun 是公司名」——所以 2025 年的 droidrun 资料与本文描述的是同一套代码。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>总体架构与控制流 <em>Workflow 编排 + 共享状态 + 能力协商的工具注册表</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    subgraph IF["交互层"]
+        CLI["CLI · mobilerun run / device / macro"]
+        SDK["Python · MobileAgent(goal, config).run()"]
+        DK["Docker · ghcr.io/droidrun/mobilerun"]
+    end
+    subgraph ORCH["编排层 · llama-index Workflows"]
+        MA["MobileAgent · Workflow 事件路由<br/>step_number · max_steps · finalize 预算"]
+        SS["MobileAgentState 共享状态<br/>plan/subgoal/memory/action_history/error_flag"]
+    end
+    subgraph AG["代理层"]
+        FA["FastAgent<br/>XML function_calls 循环"]
+        MG["ManagerAgent / StatelessManagerAgent<br/>规划与复盘"]
+        EX["ExecutorAgent<br/>单步动作，隐藏 complete"]
+        SO["StructuredOutputAgent<br/>终局结构化抽取"]
+    end
+    subgraph TL["工具层"]
+        TR["ToolRegistry · 13 工具 + 自定义 + MCP<br/>disable_unsupported 能力协商"]
+        AC["ActionContext<br/>driver/ui/state_provider/shared_state"]
+        SP["StateProvider → UIState<br/>无障碍树索引化 + 截图"]
+    end
+    subgraph DR["驱动层 · 独立发行包 mobilerun-core-local"]
+        AD["AndroidDriver · ADB + Portal"]
+        IOD["IOSDriver · HTTP Portal"]
+        CD["CloudDriver · api.mobilerun.ai"]
+    end
+    DEV["Android/iOS 设备"]
+    CLI --> MA
+    SDK --> MA
+    DK --> CLI
+    MA <--> SS
+    MA --> FA
+    MA --> MG
+    MG --> EX
+    MA --> SO
+    FA --> TR
+    EX --> TR
+    TR --> AC
+    AC --> SP
+    AC --> AD
+    AC --> IOD
+    AC --> CD
+    AD --> DEV
+    IOD --> DEV
+    CD --> DEV
+        </pre>
+        <p class="arch-title">图 1 · mobilerun 分层架构：编排 / 代理 / 工具 / 驱动四层，驱动层在独立包中</p>
+      </div>
+      <div class="loc">mobilerun/agent/droid/droid_agent.py（MobileAgent · start_handler 装配）· mobilerun/agent/droid/state.py（MobileAgentState）· mobilerun/agent/tool_registry.py · mobilerun/agent/action_context.py · mobilerun/tools/ui/provider.py · mobilerun/tools/driver/__init__.py（仅再导出，驱动实现在 <code>mobilerun-core-local</code>）</div>
+      <p>四个设计决定值得注意：<b>①</b> 编排用 llama-index <code>Workflow</code>，所有环节以 Pydantic 事件（<code>ManagerPlanEvent</code>、<code>ExecutorResultEvent</code>、<code>ToolExecutionEvent</code>、<code>ResultEvent</code>…）串联，因此外部可以 <code>stream_events()</code> 实时接事件做 UI、用量统计与日志。<b>②</b> 跨代理协作<b>不走消息传递</b>，而是共用一个 <code>MobileAgentState</code>（plan、current_subgoal、agent_memory、action_history、error_flag_plan…），这也是它能把「规划-执行-复盘」串成闭环的基础。<b>③</b> 工具注册表是<b>唯一真相源</b>，工具自带 <code>deps</code> 能力标签，装配时按驱动与状态提供者声明的能力集过滤（<code>disable_unsupported</code>）——同一份 prompt 在 Android 与 iOS 上看到不同的工具表。<b>④</b> 提示词是 Jinja2 模板（<code>config/prompts/{fast_agent,manager,executor}/*.jinja2</code>），可通过 <code>MobileAgent(prompts={...})</code> 只覆盖字符串，不改代码。</p>
+      <div class="callout warn">
+        <b>架构边界</b>：<code>mobilerun/</code> 只是 Agent 框架，<b>不含任何驱动实现</b>；<code>DeviceDriver</code>/<code>AndroidDriver</code>/<code>IOSDriver</code>/<code>CloudDriver</code> 全部来自 PyPI 包 <code>mobilerun-core-local</code>（其 GitHub 仓库 <code>droidrun/mobilerun-core-local</code> 与 <code>droidrun/mobilerun-core</code> 均返回 404，即<b>仓库不公开</b>，只有 wheel 可读）。审计与可控性只能止步于 wheel 内的纯 Python 源码，设备协议细节不受本仓控制。
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>两种模式与控制循环 <em>direct = XML 工具循环 · reasoning = 规划 + 单步执行闭环</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>reasoning=False · FastAgent</h4>
+          <p>ReAct 循环：<code>Thought → Tool Call → Observation</code>。模型必须以 <code>&lt;function_calls&gt;&lt;invoke name=…&gt;&lt;parameter name=…&gt;</code> 的 XML 协议发起工具调用，框架解析后把结果包成 <code>&lt;function_results&gt;</code> 回灌为一条 user 消息。没有规划层，适合「截图、发消息、开关设置」这类单步或短链任务。</p>
+          <p>健壮性：连续 <b>3 次</b> XML 不可解析即终止（<code>_MALFORMED_TOOL_CALL_LIMIT</code>），中途注入纠正提示；同一响应里的相邻重复调用块会被丢弃。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>reasoning=True · Manager + Executor</h4>
+          <p>Manager 出 <code>&lt;plan&gt;</code> 与 <code>current_subgoal</code>，Executor 只做<b>一步</b>动作并回报 <code>### Thought / ### Action / ### Description</code>，随后 Manager 在拿到新 UI 状态后<b>重新规划</b>（而非一次规划到底）。Manager 有 stateful（带 message_history）与 stateless（每轮重建 prompt、只取最近 5 条动作历史）两实现。</p>
+          <p>纠错：执行错误连续达 <code>err_to_manager_thresh</code>（默认 2）即置 <code>error_flag_plan</code>，把错误升级进 Manager 的规划上下文；Manager 响应契约校验失败最多重试 3 次。</p>
+        </div>
+      </div>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+    START["任务 instruction"] --> MODE{"reasoning?"}
+    MODE -- false --> FA["FastAgent<br/>XML 工具循环"]
+    MODE -- true --> MG["Manager<br/>产出 plan 与子目标"]
+    MG --> EX["Executor<br/>执行一个原子动作"]
+    EX --> OBS["刷新 UIState 与截图<br/>写回 action_history"]
+    OBS --> CHECK{"complete 或<br/>request_accomplished?"}
+    CHECK -- 否，且未超步数 --> MG
+    CHECK -- 是 --> FIN["finalize<br/>结构化抽取 · 遥测 · 轨迹"]
+    FA --> FIN
+    FIN --> RES["ResultEvent<br/>success · reason · steps · structured_output"]
+        </pre>
+        <p class="arch-title">图 2 · 控制循环与终止路径：两条模式共用 finalize 与 ResultEvent</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>终止/兜底条件</th><th>默认值</th><th>行为</th></tr></thead>
+          <tbody>
+            <tr><td>任务完成信号</td><td>—</td><td>工具 <code>complete(success, message)</code>；reasoning 模式下 Manager 用 <code>&lt;request_accomplished success="true|false"&gt;</code> / <code>&lt;answer success=…&gt;</code></td></tr>
+            <tr><td>步数上限</td><td><code>agent.max_steps = 15</code></td><td>抛 <code>FinalizeEvent(success=False, "Reached maximum steps …")</code></td></tr>
+            <tr><td>整体超时</td><td><code>MobileAgent(timeout=1000)</code> 秒</td><td>上层中断；文档建议长任务显式增大</td></tr>
+            <tr><td>解析失败</td><td>连续 3 次</td><td>FastAgent 直接失败退出</td></tr>
+            <tr><td>收尾预算</td><td><code>_FINALIZE_BUDGET_SECONDS = 60.0</code></td><td>按 15/10/30/3 秒切给观察、遥测、轨迹、MCP 收尾，避免收尾把结果拖死</td></tr>
+            <tr><td>中途插话</td><td>—</td><td><code>send_user_message()</code> 入队，在下一步以 <code>&lt;external_user_message&gt;</code> 注入；未消费即弃并发 <code>ExternalUserMessageDroppedEvent</code>；待处理消息会阻塞完成</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">mobilerun/agent/fast_agent/fast_agent.py:55-80,200-240,430-480 · mobilerun/agent/fast_agent/xml_parser.py:13-20,62-120 · mobilerun/agent/manager/manager_agent.py:1-300 · mobilerun/agent/executor/executor_agent.py:1-260 · mobilerun/config_manager/config_manager.py（AgentConfig.max_steps）</div>
+      <div class="callout">
+        官方 benchmark 方法论页自述其「91.4%」来自同一套 <b>Manager–Executor 动态反馈环</b>（plan → 单动作 → observe → 重新规划）与六项工程改进（文本专用 agent、设备日期注入、0.5s 屏幕稳定等待、差分状态、记忆分散注入、动作原语扩展）。这与源码实现一致——即官方成绩与本文描述的是同一架构，而非另一套未公开系统。
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>工具层与能力协商 <em>13 个原子工具 · 坐标类默认屏蔽 · deps 按驱动能力裁剪</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>工具</th><th>参数</th><th>依赖能力 <code>deps</code></th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>click</code></td><td><code>index</code></td><td>tap · element_index</td><td>按无障碍树元素序号点击（首选路径，最稳）</td></tr>
+            <tr><td><code>long_press</code></td><td><code>index</code></td><td>swipe · element_index</td><td>实现为原地 swipe 1s</td></tr>
+            <tr><td><code>click_at</code></td><td><code>x, y</code></td><td>tap · convert_point</td><td>坐标点击；<b>默认屏蔽</b>，vision 且 provider 声明坐标一致时自动解锁</td></tr>
+            <tr><td><code>click_area</code></td><td><code>x1, y1, x2, y2</code></td><td>tap · convert_point</td><td>区域中心点击；<b>默认屏蔽</b></td></tr>
+            <tr><td><code>long_press_at</code></td><td><code>x, y</code></td><td>swipe · convert_point</td><td>坐标长按；<b>默认屏蔽</b></td></tr>
+            <tr><td><code>type</code></td><td><code>text, index?, clear?</code></td><td>tap · input_text · element_index</td><td>可先点击聚焦再输入，支持清空</td></tr>
+            <tr><td><code>type_text</code></td><td><code>text, clear?</code></td><td>input_text · direct_text_input</td><td>不依赖元素的直输（vision-only 路径）</td></tr>
+            <tr><td><code>system_button</code></td><td><code>button</code></td><td>press_button</td><td>可选项按 <code>supported_buttons</code> 动态生成（Android 有 back/home/enter，iOS 仅 home）</td></tr>
+            <tr><td><code>swipe</code></td><td><code>coordinate, coordinate2, duration?</code></td><td>swipe · convert_point</td><td>滑动/滚动</td></tr>
+            <tr><td><code>open_app</code></td><td>Android <code>text</code> / iOS <code>bundle_id</code></td><td>start_app · get_apps（Android）</td><td>含专用 <code>AppStarter</code> 子工作流与单独 LLM 槽位 <code>app_opener</code></td></tr>
+            <tr><td><code>wait</code></td><td><code>duration?</code></td><td>—</td><td>等待</td></tr>
+            <tr><td><code>complete</code></td><td><code>success, message</code></td><td>—</td><td>收尾；对 Executor 隐藏，仅规划/直执层可见</td></tr>
+            <tr><td><code>type_secret</code></td><td><code>secret_id, index</code></td><td>tap · input_text · element_index</td><td><b>条件注册</b>：仅当凭据管理器里有条目时出现；模型只见 secret_id，不见明文</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">mobilerun/agent/utils/signatures.py（build_tool_registry 的 13 项定义）· mobilerun/agent/utils/actions.py（实现）· mobilerun/agent/tool_registry.py（deps 过滤与 execute 归一化）· mobilerun/config_manager/config_manager.py（DEFAULT_DISABLED_TOOLS）</div>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+    CAP["driver.supported ∪ state_provider.supported<br/>例如 tap / input_text / element_index / convert_point"] --> FIL["registry.disable_unsupported<br/>deps 不是能力子集即移除"]
+    CFG["config.tools.disabled_tools<br/>默认屏蔽 click_at / click_area / long_press_at"] --> FIL
+    VIS["vision 且 provider 坐标一致"] --> UNLOCK["自动解锁坐标类工具"]
+    UNLOCK --> FIL
+    FIL --> XML["get_tool_descriptions_xml<br/>→ FastAgent 系统提示"]
+    FIL --> TXT["get_signatures<br/>→ Executor 提示"]
+    CUS["custom_tools dict 注册<br/>+ MCP 工具发现（可加前缀）"] --> FIL
+        </pre>
+        <p class="arch-title">图 3 · 能力协商：同一注册表按设备与模型能力裁剪出不同的工具表</p>
+      </div>
+      <p>值得借鉴的工程细节：<code>ActionResult</code> 只有 <code>success</code> 与 <code>summary</code> 两个字段，<b>summary 就是 agent 能看到的一切</b>——即「给模型的观测」被显式收敛成一个字符串，避免把内部对象泄漏进 prompt；坐标类动作会经过「截图空间 → 模型空间 → 设备空间」的转换校验（<code>_convert_action_point</code>），并在 vision 截图送入模型前按状态声明的坐标空间缩放并叠加坐标网格。<b>注意</b>：本版本没有 <code>screenshot</code>/<code>ui</code> 这类「agent 工具」，读屏与截图属于观察通道（<code>StateProvider.get_state()</code>），只有 <code>mobilerun device screenshot|ui</code> 可手工直调。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>设备接入：ADB + Portal <em>Android 装 APK 走无障碍 · iOS 走 HTTP Portal · 云端直连</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+    M["MobileAgent 装配驱动"] --> P{"platform / backend"}
+    P -- "android · local" --> A1["adb list/devices"] --> A2["ensure_portal_ready<br/>下载并安装 Portal APK"] --> A3["enable_portal_accessibility<br/>开启无障碍服务"] --> A4["AndroidDriver<br/>ADB content-provider 或 TCP 转发到设备 8080"] --> DEV1["Android 设备"]
+    P -- "android · visual-remote" --> V1["VisualRemoteDriver<br/>截图 + 坐标动作"]
+    P -- "ios" --> I1["discover/validate portal url"] --> I2["IOSDriver HTTP + token<br/>如 iproxy 6643 或自定义端口"] --> DEV2["iPhone"]
+    P -- "cloud" --> C1["CloudDriver<br/>api.mobilerun.ai/v1"] --> DEV3["托管云真机"]
+        </pre>
+        <p class="arch-title">图 4 · 四条接入路径：本地 ADB+Portal / 纯视觉远端 / iOS HTTP / 云端托管</p>
+      </div>
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>Android Portal</h4>
+          <p>设备端安装 <code>com.mobilerun.portal</code>，注册无障碍服务 <code>…service.MobilerunAccessibilityService</code>。<code>mobilerun setup</code> 完成「装 APK + 开无障碍」两步；<code>mobilerun ping</code> 校验通道（TCP 或 content provider 两种）。</p>
+          <p>纯 HTTP 模式下驱动要求非空 bearer token（<code>AndroidDriver</code> 的 HTTP 变体），示例端点 <code>http://127.0.0.1:8080</code>；<code>use_tcp=True</code> 时由 PortalClient 做 <code>localhost:N → device:8080</code> 端口转发。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>iOS：两套并存（新 portal-http / 旧 ios-portal）</h4>
+          <p>框架里 iOS 有<b>两个驱动类</b>：<code>IOSPortalHttpDriver</code>（新，与 Android Portal 同一套 HTTP 契约）与 <code>IOSPortalDriver</code>（旧 <code>ios-portal</code>，<code>GET /device/date</code> 探测，已归档但驱动仍在）。<code>create_ios_driver()</code> 会先探测再选：<code>/ping</code> 返回 <code>pong</code> 且 <code>/version</code> 结果以 <code>iosportal(</code> 开头 → 新链路；否则退回旧链路。</p>
+          <p><b>能力差异很大</b>：新链路 <code>supported</code> = 基类全集 ∪ <code>{get_date, install_app}</code>（含 <code>get_apps</code>/<code>list_packages</code>/<code>stop_app</code>/<code>press_key_code</code>），按键支持 <code>{home, back, enter, delete, app_switch}</code>；旧链路只有 8 个动词、按键仅 <code>{home}</code>，<code>install_app</code>/<code>uninstall_app</code>/<code>stop_app</code>/<code>press_key_code</code> 明确不支持。<b>官方 SDK 文档描述的是旧链路</b>，故其「iOS 只支持 home / 不能枚举 App」的说法对新链路已过时（见 §7）。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>云端设备</h4>
+          <p><code>CloudDriver(device_id, api_key)</code>，默认 <code>https://api.mobilerun.ai/v1</code>；key 取 <code>MOBILERUN_CLOUD_API_KEY</code> 或凭据文件；传 UUID 形状的设备号会自动路由到云。Portal 侧还有一条<b>反向连接</b>开关（<code>configure_reverse_connection</code>），示例地址解出为 <code>wss://api.mobilerun.ai/v1/providers/personal/join</code>——即自有手机也能被云端反向接管。</p>
+          <p>云定价公开：自带机 <b>$5/月/设备</b>、独立 Android 机 <b>$80/月</b>、iPhone <b>$200/月（需 on request）</b>、按量 <b>$0.03/设备分钟</b>、agent step $0.01（1 credit = 100 steps）；<b>无免费额度</b>，小字声明 SOC 2 仍在路线图。</p>
+        </div>
+      </div>
+      <p><b>iOS 实现链路（本次逐层落到 wheel 源码）</b>：与 Android「装一个 Portal APK」不同，iOS 侧是<b>宿主侧桥 + 设备端 XCTest agent</b>：设备上跑的是 WebDriverAgent（XCTest 进程），由 macOS 上的 <code>mobilerun-ios</code> 拉起并以<b>与 Android Portal 相同的 HTTP 契约</b>对外暴露，框架只认这个 HTTP 面。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+    subgraph DEV["iPhone · Developer Mode"]
+        WDA["WebDriverAgent XCTest 进程<br/>需 Xcode 构建并签名 · 提供 XCUIElementQuery 能力"]
+        APPS["被操作 App"]
+    end
+    subgraph HOST["macOS 宿主 · mobilerun-ios（闭源 Go 二进制 v0.5.0-rc.3）"]
+        LOCAL["--local udid · 监听 127.0.0.1:8080+n<br/>GET /version 返回 iosportal 前缀"]
+        CLOUD["cloud 桥 · 单个 websocket 反连 api.mobilerun.ai"]
+    end
+    subgraph FW["框架侧"]
+        DET["create_ios_driver 探测<br/>ping + version 命中走新链路 否则 legacy"]
+        NEWD["IOSPortalHttpDriver<br/>httpx · bearer token · 端口 8080-8089 扫描"]
+        OLDD["IOSPortalDriver legacy<br/>端口 6643-6652 扫描"]
+        SPA["AndroidStateProvider + IndexedFormatter<br/>结构化 a11y 节点 · 坐标全程 points"]
+        SPB["IOSStateProvider<br/>正则解析 XCTest debugDescription 文本树"]
+    end
+    AG["MobileAgent / Executor / FastAgent"]
+    WDA --> LOCAL
+    LOCAL --> DET
+    CLOUD --> DET
+    DET --> NEWD
+    DET --> OLDD
+    NEWD --> SPA
+    OLDD --> SPB
+    SPA --> AG
+    SPB --> AG
+    AG --> NEWD
+    AG --> OLDD
+        </pre>
+        <p class="arch-title">图 5 · iOS 实现链路：WDA 在设备、桥在宿主、契约与 Android 对齐（新链路）或退回旧文本树（legacy）</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>新链路 <code>IOSPortalHttpDriver</code></th><th>旧链路 <code>IOSPortalDriver</code>（<code>ios-portal</code>，已归档）</th></tr></thead>
+          <tbody>
+            <tr><td>探测方式</td><td><code>GET /ping</code> 返回 <code>pong</code> 且 <code>GET /version</code> 结果前缀 <code>iosportal(</code></td><td><code>GET /device/date</code> 返回含 <code>date</code> 的 JSON</td></tr>
+            <tr><td>发现端口</td><td><code>127.0.0.1:8080–8089</code>（<code>mobilerun-ios --local</code> 按设备递增）</td><td><code>127.0.0.1:6643–6652</code>（旧 Portal App + <code>iproxy</code> 转发）</td></tr>
+            <tr><td>状态读取</td><td><code>GET /state_full</code> → <b>结构化节点 JSON</b>（Android 形状），交给 <code>AndroidStateProvider</code></td><td><code>GET /state?timeout=4</code> → XCTest <code>debugDescription</code> <b>纯文本</b>，由正则拆成节点</td></tr>
+            <tr><td>坐标系</td><td>设备 bounds 与点按输入都是 <b>iOS 逻辑点</b>，端到端不经缩放换算</td><td>截图是物理像素、点按是 points，需 <code>use_normalized</code> 或坐标契约，否则「按图点错位」</td></tr>
+            <tr><td>按键</td><td><code>{home:3, back:4, enter:66, delete:67, app_switch:187}</code>（<code>pkg/iosportal</code> 的 <code>injectKey</code> 实现；<code>back</code> 实为边缘返回手势）</td><td>仅 <code>{home}</code>（POST <code>/inputs/key</code> <code>{key:1}</code>）</td></tr>
+            <tr><td>App 管理</td><td><code>/packages</code> 可枚举、<code>/app</code> 启动、<code>/app/stop</code> 停止、<code>/install</code>（服务端自行拉 URL）</td><td>只能按已知 bundle id <code>/inputs/launch</code> 启动，不枚举、不停止、不安装</td></tr>
+            <tr><td>不支持的动词</td><td><code>uninstall_app</code>（server 无该动词）</td><td><code>install_app</code> · <code>uninstall_app</code> · <code>stop_app</code> · <code>press_key_code</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">mobilerun-core-local wheel：<code>driver/ios/local.py:1-281</code>（IOSPortalHttpDriver · 端口阶梯 · 按键码表 · 探测与回退）· <code>driver/ios/http.py:39-52,241-469</code>（legacy 驱动 · 端口 6643 · 文本树解析 · 各端点）· <code>driver/portal_http.py:34-120,236-255</code>（共用契约 /version /state_full /tap /swipe /keyboard/input /keyboard/key /app /app/stop /packages /screenshot）· mobilerun/agent/droid/droid_agent.py:614-720（is_ios 装配 · portal-http 走 AndroidStateProvider）· mobilerun/tools/ui/ios_provider.py:1-80（IOSStateProvider 自述限制）</div>
+      <div class="callout warn">
+        <b>iOS 的三个硬门槛</b>：① <code>mobilerun-ios</code> 是<b>闭源二进制</b>（README 明说源码在私有仓库，仅在本仓发 release + <code>SHA256SUMS</code>），且仍是 <b>0.5.0-rc.* 预发布</b>；② 需要 <b>macOS + Xcode + 可签名 Apple ID</b>，每次 WDA 重签都要走一遍；③ 旧链路的状态来源是「把 XCTest 调试文本用正则拆成树」（源码自述「No filter/formatter pipeline」「normalized coordinates untested on iOS」），属于明确的脆弱点——<b>能用新链路就别用 legacy</b>。
+      </div>
+      <p>对内部选型的一句话结论：iOS 侧 mobilerun 的形态是「<b>宿主侧桥 + XCTest agent + 与 Android 同构的 HTTP 契约</b>」，Android 侧的成熟度（Portal 0.7.25、权限与端口都定型）明显高于 iOS（RC 二进制、依赖 Mac 与签名、双链路并存）。若只做 Android，iOS 这些复杂度可以先不计入成本。</p>
+      <div class="callout warn">
+        <b>可靠性自愈</b>：状态读取 <code>fetch_state_with_retry</code> 默认 7 次尝试、退避 <code>[1,2,3,5,8,10]</code> 秒，第 5 次失败后调用 <code>_recover_portal()</code>（重启无障碍服务，必要时重启 Portal socket server 并刷新 token）——说明「无障碍服务被系统杀掉/掉线」是这套方案的常态化故障，即为 Android 自动化的固有成本。
+      </div>
+      <div class="callout danger">
+        <b>Portal 的权限面远大于「UI 自动化工具」（企业合规必查）</b>：清单含 <code>SYSTEM_ALERT_WINDOW</code>（悬浮窗）、<code>MANAGE_EXTERNAL_STORAGE</code>（全盘存储）、<code>RECEIVE_SMS</code>（读短信）、<code>READ_CONTACTS</code>、<code>REQUEST_INSTALL_PACKAGES</code>（可装包/自更新）、<code>usesCleartextTraffic="true"</code>，并实现<b>无障碍服务</b>、<b>通知监听</b>、<b>自定义输入法</b>（<code>MobilerunKeyboardIME</code>）、<b>屏幕投屏</b>（mediaProjection）、开机/短信触发器与导出型 <code>MobilerunContentProvider</code>。换言之：装了它，等于把设备交给一个系统级 Agent。
+      </div>
+      <div class="callout danger">
+        <b>供应链与控制点</b>：Portal APK 只从 GitHub Releases 分发（无应用商店），最近版本 v0.7.25 资产约 <b>53.6 MB</b>（附 sha256），构建签名使用仓库 CI secrets，<b>非可复现构建</b>。框架 <code>mobilerun setup</code> 在运行时自动下载安装（release 查询先 <code>api.github.com</code>、失败回退 <code>ungh.cc</code>）。落地上两条硬要求：① 隔离环境必须自带 APK（<code>setup --path</code>）并校验 sha256；② 固定 Portal 版本（上游 release notes 明确「pins Android Portal compatibility to 0.7.25」，版本漂移即断配）。
+      </div>
+      <div class="loc">mobilerun/cli/main.py（setup/ping/devices/connect）· mobilerun/cli/device_commands.py（直连操作面）· mobilerun-core-local wheel：driver/android/portal.py（PORTAL_PACKAGE_NAME、DOWNLOAD_BASE、GITHUB_API_HOSTS）、driver/android/http.py（bearer token、8080 示例）· mobilerun/tools/ui/provider.py（fetch_state_with_retry）· mobilerun-portal（AndroidManifest.xml 权限清单 · LICENSE=AGPL-3.0-or-later · README 通信与反向连接）· mobilerun-ios-releases（v0.5.0-rc.3）</div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>配置、可观测性与成本 <em>5 个 LLM 槽位 · 遥测默认开 · 轨迹三档 · 成本可配但不可控</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>LLM 配置与 Provider</h4>
+          <p>5 个可插拔槽位：<code>manager</code>、<code>executor</code>、<code>fast_agent</code>、<code>app_opener</code>、<code>structured_output</code>；默认全部 <code>GoogleGenAI</code>，温度分别 0.2/0.1/0.2/0.0/0.0。<code>_get_required_profiles</code> 按模式只要求其中若干项：reasoning 需 manager+executor+app_opener，direct 需 fast_agent+app_opener，带 <code>output_model</code> 再加 structured_output。</p>
+          <p>运行时 provider：OpenAIResponses / OpenAILike / GoogleGenAI / Ollama / Anthropic / DeepSeek / OpenRouter / MiniMax / XAI，另有 4 类 OAuth 运行时；Anthropic 需额外 extras。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>凭据与配置落盘</h4>
+          <p>设备凭据由 <code>credential_manager</code> 管理，agent 只见 <code>secret_id</code>，写入走 <code>type_secret</code>。但 <b>LLM provider 的 API key 是明文</b>存在 <code>credentials/auth-profiles.json</code> 的 <code>apiKeys.&lt;provider&gt;</code>；<code>api_key_source="auto"</code> 时该文件优先于 shell 环境变量。</p>
+          <p>配置目录沿用旧名 <code>droidrun</code>（macOS <code>~/Library/Application Support/droidrun/config.yaml</code>），文件权限 <code>0o600</code>，<code>_version: 7</code>，配 <code>config_manager/migrations/v002…v007</code> 自动升级；<code>credentials.enabled</code> 只管设备密钥，不管 provider 认证。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>可观测性</h4>
+          <p><b>tracing</b>：Phoenix（默认，<code>localhost:6006</code>）或 Langfuse，能看到每次 LLM 调用、Manager/Executor 工作流与工具结果。<b>trajectory</b>：<code>none</code>（默认）/ <code>step</code> / <code>action</code> 三档，落盘到工作目录 <code>trajectories/</code>，含每步截图、无障碍树、动作与推理；官方用途明确包含「构建训练数据集」。<b>macro</b>：录制后的轨迹可用 <code>mobilerun macro replay</code> 回放，带 <code>--state-threshold 0.85</code> 状态匹配与 <code>--on-mismatch stop|agent</code>。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>遥测与成本</h4>
+          <p><b>遥测默认开启</b>：PostHog（<code>HOST=https://eu.i.posthog.com</code>，<code>disable_geoip=False</code>），匿名 ID 持久化在 <code>~/.droidrun/user_id</code>；上报字段里 <b><code>MobileAgentInitEvent.goal</code> 是用户原始自然语言任务文本</b>，另有 visited package/activity、成功与步数。三种关闭方式任一显式 <code>false</code> 即生效：<code>TelemetryConfig(enabled=False)</code> / YAML / <code>MOBILERUN_TELEMETRY_ENABLED=false</code>（旧名 <code>DROIDRUN_TELEMETRY_ENABLED</code> 仍兼容）。三条链路的边界清晰：<b>遥测出网、tracing 出网到自建 Phoenix 或 Langfuse、轨迹只留本机</b>。</p>
+          <p>成本：vision 会显著抬高 token（截图入 prompt）；官方给出的省钱配方是 <code>--provider GoogleGenAI --model gemini-3.5-flash-lite --no-vision</code>。第三方实测最省任务集下 <b>$0.075 / 3,225 tokens / 任务</b>（见 §8），失败重试与长链任务会成倍放大。</p>
+        </div>
+      </div>
+      <div class="loc">mobilerun/config_manager/config_manager.py（LLMProfile 默认 5 槽位、AgentConfig、disabled_tools）· mobilerun/agent/utils/llm_loader.py（_get_required_profiles）· mobilerun/agent/utils/llm_picker.py（SUPPORTED_PROVIDERS）· mobilerun/config_manager/auth_profile_store.py · mobilerun/telemetry/tracker.py · mobilerun/agent/utils/trajectory.py · mobilerun/macro/{recorder,replay,matcher}.py</div>
+      <div class="callout ok">
+        对内部落地最关键的三个开关：<code>MOBILERUN_TELEMETRY_ENABLED=false</code>（断遥测）、<code>-p Ollama --api_base …</code> 或 OpenAILike（把模型换成本地/内网，屏幕内容不出内网）、<code>--no-vision</code>（只走无障碍树，省 token 且不传截图）。三者同时成立时，这套框架可以做到「除设备与模型外不出网」。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>工程成熟度与文档漂移 <em>代码侧扎实 · 文档侧 13 处自相矛盾 · 0.x 早期</em></h2>
+      <p><b>代码侧</b>：工程完成度明显高于同类研究项目——工具注册表带能力协商、prompt 与响应契约有专门的校验器（Manager 标签用小栈解析器拒绝嵌套/自闭合/畸形属性）、LLM 调用有超时与「4xx 永久错误」判定、收尾阶段有 60 秒分段预算防止卡死、配置有 7 版迁移、旧名 shim 做到「类身份一致」。仓库自带 51 个测试文件与 <code>agent-test-flows/README.md</code>（给 AI agent 的回归测试简报，要求真机执行并截图取证、物理设备只做只读任务）。</p>
+      <div class="callout danger">
+        <b>但 CI 不跑测试</b>：<code>.github/workflows/</code> 只有 5 个 workflow——<code>black.yml</code>（唯一 lint）、<code>bounty.yml</code>（issue 标签同步到 Project V2）、<code>claude.yml</code>（<code>@claude</code> 触发）、<code>docker.yml</code>（tag → ghcr.io 多架构镜像）、<code>publish.yml</code>（tag → TestPyPI → PyPI 双包发布 + 版本一致性校验），<b>没有任何 pytest 作业</b>；<code>CONTRIBUTING.md</code> 要求本地跑 <code>bandit</code>/<code>safety</code>，同样未接入 CI。即：51 个测试文件属于「本地自愿执行」，回归防护依赖人工，且发布节奏极快（0.6.10 → 0.6.19 十个 patch 在 2026-07-06 ~ 09-10 内发完，约每 3–7 天一个版本）。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>文档漂移点</th><th>影响</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>仓内 <code>SKILL.md</code> 指引 agent 去读 <code>docs/v5/</code>，该目录<b>不存在</b>（实际为 concepts/features/guides/sdk）</td><td>让自家 AI skill 直接失效；<code>pyproject.toml</code> 的 pydoc 目录另写 <code>v4/sdk</code></td></tr>
+            <tr><td>2</td><td><code>SKILL.md</code> 称 direct 模式是 <code>CodeActAgent</code> 生成并执行 Python 代码；<code>docs/concepts/architecture.mdx</code> 称是 <code>FastAgent</code> 做 XML 工具调用</td><td>源码证实为 <code>FastAgent</code>（<code>agent/fast_agent/</code>，无 <code>agent/codeact/</code>），SKILL.md 是旧描述</td></tr>
+            <tr><td>3</td><td>工具清单不一致（<code>SKILL.md</code> 列 <code>get_state/take_screenshot</code>；架构页列坐标类动作）</td><td>两者都不是运行期注册表的准确反映</td></tr>
+            <tr><td>4</td><td>iOS 接入存在两套流程（<code>device-setup.mdx</code> 的 <code>mobilerun-ios --local</code> + 8080 自动发现 vs <code>sdk/ios-tools.mdx</code> 的 Xcode UI-test Portal + <code>iproxy 6643</code>）</td><td>接入阶段易踩坑，且未标注弃用</td></tr>
+            <tr><td>5</td><td>iOS 能力描述冲突（<code>install_app/stop_app</code> 一处 ✅ 一处不支持）</td><td>能力以 <code>supported</code> 集合为准，文档不可信</td></tr>
+            <tr><td>6</td><td>trajectory 目录结构在两处文档命名不同（<code>step_000_screenshot.png</code> vs <code>macro.json + step_0.png</code>）</td><td>自动化消费轨迹文件前需实测</td></tr>
+            <tr><td>7</td><td>prompt 模板变量名两套（简表 <code>{{ state }}/{{ history }}</code> vs 权威清单 <code>device_state/action_history</code>）</td><td>按简表写自定义模板会渲染为空</td></tr>
+            <tr><td>8</td><td><code>credentials.enabled</code> 默认值冲突（Python 侧 True / YAML 示例 false）</td><td>行为取决于配置来源</td></tr>
+            <tr><td>9</td><td>事件流 API 命名不一致（<code>handler.stream_events()</code> vs <code>agent.run_event_stream()</code>）</td><td>SDK 用法需以代码为准</td></tr>
+            <tr><td>10</td><td><code>mobilerun doctor</code> 在 guides 列出但 CLI 参考无章节（代码里确有 <code>cli/doctor.py</code>）</td><td>文档缺口，非功能缺失</td></tr>
+            <tr><td>11</td><td>app cards 的 server/composite 模式只在一处文档出现，且未定义与 local 的合并优先级</td><td>企业内做「卡片中心」时会缺契约</td></tr>
+            <tr><td>12</td><td>Dockerfile 安装 <code>.[google,anthropic,openai,deepseek,ollama,openrouter]</code>，其中 <b>4 个 extra 未在 pyproject 定义</b></td><td>镜像构建可能直接失败（未实测镜像，属推断）</td></tr>
+            <tr><td>13</td><td>pydoc 页面仍引用 <code>mobilerun.tools.adb.*</code> 等已删除模块</td><td>SDK 文档自动生成链路有历史残留</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        结论：这是一个<b>快速迭代、文档滞后于代码</b>的 0.x 项目。内部落地必须以源码/wheel 为准，并锁定版本（PyPI 每 1–2 周有版本，releases 频繁；避免跟随 <code>main</code>）。
+      </div>
+      <div class="loc">SKILL.md · docs/concepts/architecture.mdx · docs/sdk/ios-tools.mdx · docs/guides/device-setup.mdx · docs/sdk/configuration.mdx · Dockerfile · pyproject.toml（pydoc-markdown 段）· .github/workflows/{black,bounty,claude,docker,publish}.yml · mobilerun/cli/doctor.py</div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>评估：能力、局限与风险 <em>榜单 91.4% vs 第三方 43% · 概率性操作不适合无值守生产</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>官方口径（自报，未经独立验证）</h4>
+          <p>AndroidWorld <b>116 个任务、91.4%（106/116）</b>，由官方 blog 与官网 benchmark 页发布（2025-10 首次公布 91.4%，此前 63.0% → 78.4%），方法自述为 Manager–Executor 动态反馈环 + 八动作原语 + 六项工程改进。</p>
+          <p><b>但口径要打折</b>：① AndroidWorld 官方 leaderboard 首页即声明「Community-submitted results. <b>No independent verification is performed.</b>」；② 该榜上 DroidRun 的 91.4 记录 <b>Number of trials = 1</b>，且被后来的条目（如 FluizAI 100.0、Artemis 99.1，均 1 trial）超过；③ 同榜 <b>人类基线 = 80.0（3 trials）</b>，即分数已超过人类平均；④ 榜单记录的配置是「Screenshot + A11y tree」，与官网宣传的「direct accessibility API」不一致；⑤ 评测代码仓 <code>mobilerun-android-world</code> 已近一年未更新。</p>
+          <p>相关学术工作 WWW '26 论文（<code>arXiv:2601.19306</code>，「Curiosity Driven Knowledge Retrieval for Mobile Agents」）在其配置下报告 <b>88.8%</b>（GPT-5 + AppCards），称优于此前最好 84.5%；但作者含该公司员工与联合创始人，<b>属同一方结果，不是独立复现</b>。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>第三方实测</h4>
+          <p>AIMultiple（2026-06-09，更新版）在 Android 模拟器上用 <b>65 个真实任务</b>横评四个 agent：<b>DroidRun 43%</b> 成功率（最高），Mobile-Agent 29%，AutoDroid 14%，AppAgent 7%。</p>
+          <p>同集最省任务上 DroidRun <b>$0.075 / 约 3,225 tokens / 任务</b>、耗时 <b>78s</b>；AutoDroid 57s、$0.017 最快最省；AppAgent 最贵（$0.90）最低效。</p>
+        </div>
+      </div>
+      <div class="callout danger">
+        <b>把两个数字放在一起看</b>：榜单 91.4%（自报、1 trial、无独立验证）与真实任务 43% 的巨大落差，本质是<b>基准可解性</b>与<b>真实 App 复杂度</b>的落差——AndroidWorld 以系统 App 与固定任务为主，而真实业务 App 有 WebView、自绘 UI、弹窗、风控与登录态。评估任何移动 Agent 时，必须以「你自己 App 上的实测成功率」为唯一准入依据；厂商榜单只能用来筛掉明显不合格的方案。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>结论</th><th>证据 / 原因</th></tr></thead>
+          <tbody>
+            <tr><td>适用任务</td><td>探索性、短链、可人工兜底的任务</td><td>默认 15 步；超限即判失败；无重入/事务语义</td></tr>
+            <tr><td>不适用任务</td><td>支付、资金、批量写操作、无值守长流程</td><td>概率性决策 + 无幂等保证 + 误点不可回滚</td></tr>
+            <tr><td>元素定位</td><td>基于<b>当轮</b>无障碍树的 index，UI 一变即失效</td><td>无稳定选择器/无障碍 id 约定；<code>deps</code> 里只有 <code>element_index</code></td></tr>
+            <tr><td>a11y 盲区</td><td>WebView、游戏、自绘/跨端 UI 读不到树</td><td>官方文档承认需退回 vision / vision-only（仅坐标动作）</td></tr>
+            <tr><td>成本与延迟</td><td>按次计费、方差大</td><td>vision 抬高 token；重试与多步放大；实测 $0.075 属乐观任务集</td></tr>
+            <tr><td>隐私</td><td>截图与无障碍树会外发给模型供应商</td><td>Framework 模式默认走云 LLM；可用本地 Ollama/OpenAI-Like 规避</td></tr>
+            <tr><td>遥测</td><td>默认开启（PostHog）</td><td>需显式关闭；企业内应先关再评估</td></tr>
+            <tr><td>供应链</td><td>驱动层仓库不公开；APK 运行时从 GitHub 下载</td><td><code>mobilerun-core-local</code> 仓库 404，仅 wheel 可读（MIT，Alpha 分类）</td></tr>
+            <tr><td>安全面</td><td>无障碍服务权限 = 可读全屏 + 可模拟操作</td><td>屏幕文本可构成 prompt injection 输入源；provider key 明文落盘</td></tr>
+            <tr><td>合规</td><td>自动化操作第三方 App 可能违反其条款</td><td>与本平台 worktool 的既有结论一致（腾讯运营规范约束）</td></tr>
+            <tr><td>版本稳定性</td><td>0.6.x，无 LTS，文档漂移 13 处</td><td>升级需回归；建议锁 PyPI 版本 + 锁 Portal APK 版本</td></tr>
+            <tr><td>维护集中度</td><td>巴士因子 ≈ 1（单厂商主导）</td><td>近 90 天 125 次提交仅 5 名作者，其中 <code>RasulOs</code> 占 89 次（约 71%）；外部贡献多为琐碎修复</td></tr>
+            <tr><td>许可证</td><td>框架 MIT / <b>设备端 Portal AGPL-3.0-or-later</b></td><td>随设备或镜像二次分发、闭源集成须单独评估 AGPL 义务</td></tr>
+            <tr><td>基准可信度</td><td>91.4% 为自报、1 trial、无独立复现</td><td>见上方 A 栏；评估必须以自有 App 实测为准</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><b>与同类方案的范式关系（不是替代关系）</b>（机制级展开见 <a href="24-mobile-automation-comparison.html">《移动端 UI 自动化实现方案对比》</a>）：mobilerun 属于「<b>概率型语义 Agent</b>」，解决的是「没有 API、流程常变、需要语义判断」的场景；它不能替代 CI 里的确定性回归脚本——后者用 Appium/Maestro/uiautomator2 反而更便宜更稳。研究型的同类 Agent 项目多数已停更。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方案</th><th>方法</th><th>确定性</th><th>语言 / 许可</th><th>成熟度</th></tr></thead>
+          <tbody>
+            <tr><td><b>mobilerun</b></td><td>LLM + 无障碍树（+ vision fallback），Manager–Executor</td><td>概率型</td><td>Python / MIT（Portal AGPL）</td><td>9.4k★ · 活跃 · 0.6.19 · Android 较成熟 / iOS RC</td></tr>
+            <tr><td>Appium</td><td>W3C WebDriver 跨平台驱动，脚本化</td><td>确定性</td><td>TypeScript / Apache-2.0</td><td>22.0k★ · 工业标准</td></tr>
+            <tr><td>Maestro</td><td>YAML 声明式 flow，内建 flakiness 容忍</td><td>确定性</td><td>Kotlin / Apache-2.0</td><td>15.7k★ · 活跃</td></tr>
+            <tr><td>uiautomator2</td><td>UI Automator 的 Python 客户端，控件选择器</td><td>确定性</td><td>Python / MIT</td><td>8.4k★ · Android-only</td></tr>
+            <tr><td>Google AndroidWorld</td><td>116 任务评测环境（模拟器）</td><td>基准而非工具</td><td>Python / 社区自报榜</td><td>评测事实标准</td></tr>
+            <tr><td>Mobile-Agent（X-PLUG）</td><td>多 Agent + GUI-Owl，纯截图路线</td><td>概率型</td><td>Python / MIT</td><td>9.2k★ · 2026-07 仍在动</td></tr>
+            <tr><td>AppAgent（腾讯）</td><td>多模态探索 + 应用文档学习</td><td>概率型</td><td>Python / MIT</td><td>6.9k★ · <b>2025-03 停更</b></td></tr>
+            <tr><td>AutoDroid</td><td>LLM + 应用特定模型 DroidTWM</td><td>概率型</td><td>Python / MIT</td><td>0.5k★ · <b>2024-03 停更</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">README.md（comparison 与 benchmark 徽章）· mobilerun.ai/benchmark/method · AndroidWorld 官方 leaderboard（Google Sheet，首行声明无独立验证）· arXiv:2601.19306 · aimultiple.com/mobile-ai-agent（2026-06-09）· mobilerun/telemetry/{tracker,events}.py · docs/guides/device-setup.mdx（a11y 限制自述）· docs/features/telemetry.mdx · mobilerun.ai/pricing</div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>与 XLB 的结合点 <em>本仓无活跃移动 UI 自动化 · 与 worktool 是两条不同路线</em></h2>
+      <p><b>现状（本仓实测）</b>：全仓检索 <code>appium|uiautomator|maestro|detox</code>（排除 node_modules）只命中 <b>2 个文件</b>——<code>xlb_app/package.json</code>（Detox 19.12.6）与 <code>xlb_app/e2e/config.json</code>，而 <code>xlb_app/</code> 已是 14 个月未动的历史 RN 壳。当前主端 <code>host-app-xlb</code>（RN 0.80.1，243 个 TS/TSX，另带原生 Android 模块 <code>android/{app,Chat,api,bizstoremanager,mvplibrary,bluetoothlibrary,…}</code>）没有任何 UI 自动化工程；<code>src</code> 下 <code>testID|accessibilityLabel|accessibilityRole</code> 合计仅 <b>66 处</b>，且 <code>member-weapp</code> 等小程序页面运行在 WebView 内。这决定了：<b>短期内只能走 vision 路线，无障碍树覆盖不足</b>。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>对照项</th><th>worktool（本仓 <code>docs/22</code>，企微机器人）</th><th>mobilerun</th></tr></thead>
+          <tbody>
+            <tr><td>驱动方式</td><td>Android AccessibilityService 模拟真人操作企微 UI</td><td>Android Portal APK 无障碍服务 / iOS HTTP Portal</td></tr>
+            <tr><td>决策来源</td><td><b>确定性</b>：39 个远程指令分支、单 Handler 串行队列</td><td><b>概率性</b>：LLM 每步决策，路径不固定</td></tr>
+            <tr><td>后端</td><td>企微专用，指令由自有后端 WS 下发</td><td>通用框架，CLI/SDK 驱动，任意 App</td></tr>
+            <tr><td>产物</td><td>群运营自动化能力</td><td>trajectory 轨迹、结构化输出、可回放 macro</td></tr>
+            <tr><td>主要风险</td><td>反自动化/封号、客户端 AES 伪加密、开源版冻结</td><td>成本、成功率先验未知、隐私与供应链、0.x 稳定性</td></tr>
+            <tr><td>可组合点</td><td colspan="2">mobilerun 的「无障碍树 + 坐标动作」与 worktool 的「指令分支 + 串行队列」正好互补：<b>把 worktool 式确定性步骤编排，套在 mobilerun 的驱动与观测层上</b>，可以做出既稳定又无需自研驱动脚本的客户端自动化</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+    GOAL["内部目标"] --> Q1{"任务确定吗?"}
+    Q1 -- "确定、可枚举步骤" --> W["worktool 式确定性编排<br/>或 macro replay 回放"]
+    Q1 -- "探索性/自然语言" --> Q2{"读屏够用吗?"}
+    Q2 -- "原生页面 · 有 a11y" --> M1["mobilerun direct 模式<br/>no-vision 省 token"]
+    Q2 -- "WebView/自绘/小程序" --> M2["mobilerun vision 模式<br/>坐标动作 · 成本更高"]
+    W --> GATE["准入闸门<br/>只读操作 · 人工兜底 · 沙箱账号"]
+    M1 --> GATE
+    M2 --> GATE
+    GATE --> PILOT["单机 POC<br/>固定 3 个任务 × 10 次运行"]
+        </pre>
+        <p class="arch-title">图 6 · 落地选型：先按「任务确定性 / 读屏可用性」分流，再统一进准入闸门</p>
+      </div>
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>可行：QA 探索性冒烟</h4>
+          <p>真机池上跑「打开工作台 → 进入某模块 → 断言关键文案」这类只读任务，用结构化输出把屏幕内容取回来做断言。<b>前置</b>：关遥测、禁云、禁支付类操作、专用测试账号。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>待评估：门店设备巡检</h4>
+          <p>用 <code>mobilerun device ui/screenshot</code> 直连驱动（跳过 LLM）先验证通道与稳定性成本；确认可行后再上 agent 做状态读取与异常上报，避免一开始就为 LLM 的不确定性买单。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>前置工程：补 a11y 标注</h4>
+          <p>无论用不用 mobilerun，<code>testID</code>/<code>accessibilityLabel</code> 覆盖都偏低（66 处/243 文件）。补齐后 UI 自动化才可能从 vision 退回「按元素」的稳定路径，成本与成功率都会明显改善。</p>
+        </div>
+      </div>
+      <div class="callout ok">
+        <b>POC 验收门槛建议</b>：① 单机 + 内网模型（Ollama/OpenAI-Like）+ <code>MOBILERUN_TELEMETRY_ENABLED=false</code>；② 3 个固定只读任务各跑 10 次，成功率 ≥ 90% 且无一次误入支付/写操作；③ 单任务成本与耗时（token、秒）落在可接受区间；④ 全程保留 trajectory 以便失败复盘。<b>任一不达标即不进入生产设备接入</b>。
+      </div>
+      <div class="callout warn">
+        与本平台的既有约束无冲突：mobilerun 不读写 GitOps、不触碰云资源；但「无障碍服务 + 屏幕外发模型」属于敏感能力，接入真机前需按本平台安全与合规流程审批，且<b>严禁</b>用于支付、资金、真实客户数据场景的无值守操作。
+      </div>
+      <div class="loc">本仓检索：<code>grep -rE 'appium|uiautomator|maestro|detox'</code>（排除 node_modules）→ 仅 xlb_app/package.json、xlb_app/e2e/config.json · host-app-xlb/package.json（react-native 0.80.1）· host-app-xlb/src（243 个 TS/TSX，66 处 a11y/testID）· docs/22-worktool-analysis.html</div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

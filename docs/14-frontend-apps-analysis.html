@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>前端与端应用深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>前端与端应用 · 代码深度分析</h1>
+    <p class="subtitle">RN 微前端宿主 + 4 个远程 bundle + 遗留单体 + Taro 小程序。Module Federation 的真实机制与缺陷、远程 bundle 无验签的致命设计、迁移完成度实测。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>main</code>/<code>master</code>（RN 侧非 prod） · 数据来源：各仓源码 + 实跑 shared 扫描比对</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html" class="active">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">Module Federation 机制</a></li>
+        <li><a href="#s2">shared 依赖不对称</a></li>
+        <li><a href="#s3">Bundle 解析与灰度</a></li>
+        <li><a href="#s4">各 remote 业务能力</a></li>
+        <li><a href="#s5">迁移完成度与原生能力缺口</a></li>
+        <li><a href="#s6">member-weapp 小程序</a></li>
+        <li><a href="#s7">OTA 与发布</a></li>
+        <li><a href="#s8">风险清单（分级）</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · 部分已重校</strong> 现均在 <code>prod</code>：host-app-xlb <code>4c95324f1</code>（2026-07-31）、remote-app-base <code>9cd1004</code>、erp <code>1956aad00</code>、im <code>4907ffa</code>、mem <code>f6caedc</code>、member-weapp <code>e6bd34c8a</code>（均落后 0）；xlb_app 仍在 <code>master</code>（无 prod 分支）。
+      <p>本篇正文写于更新之前（当时 host-app-xlb 落后 <strong>7371</strong> 个提交、remote-app-erp 落后 4726）。已对<strong>可量化的关键结论重新测量</strong>，见下方「重校结果」；其余细节（MF 内部机制、WebView 注入、iOS 启动逻辑、小程序适配层）<strong>仍需复核</strong>。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>2 项 High 已修复 · 4 项 Critical 仍在</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>旧结论</th><th>最新 prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>H7</strong> 灰度按 userId 硬编码在客户端源码，且 <code>getBundleRoutesPromise</code> 是死代码（fetch 后丢弃结果）</td>
+              <td><code>bundleLoader.ts</code> 中 <code>getBundleRoutesPromise</code>、<code>bundle-routes</code>、<code>prod-gray</code>、硬编码 userId <strong>全部已清理</strong></td>
+              <td><span class="badge ok">已修复</span></td>
+            </tr>
+            <tr>
+              <td><strong>H6</strong> 生产代码中硬编码测试环境 baseURL 无条件覆盖（<code>erphttp.ts</code>）</td>
+              <td>该行及周边所有 baseURL 覆盖<strong>已全部注释掉</strong>，不再生效</td>
+              <td><span class="badge ok">已修复</span></td>
+            </tr>
+            <tr>
+              <td>remote-app-erp 约 70 个屏幕</td>
+              <td>路由注册条目已增至 <strong>219</strong>（约 3 倍）；remote-app-mem 从 17 增至 <strong>56</strong></td>
+              <td><span class="badge warn">已变化</span></td>
+            </tr>
+            <tr>
+              <td><strong>H1</strong> <code>react-native-screens</code> host 4.11.1 vs remote 3.25.0 的 major 级差异，未设 <code>strictVersion</code></td>
+              <td><strong>差异依旧</strong>：host <code>4.11.1</code>（另打了 patch）vs erp/mem 均 <code>3.25.0</code>；两侧仍<strong>无 <code>strictVersion</code>/<code>requiredVersion</code></strong></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr><td><strong>C1</strong> 小程序上传私钥入库</td><td>3 个 <code>.key</code> 文件仍被 git 跟踪</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>C2</strong> 私有 npm registry token 入库</td><td><code>.npmrc</code> 仍被跟踪且仍含 <code>_authToken</code></td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>C3</strong> 热更平台明文口令写在脚本里</td><td><code>xlb_app/scripts/publish.js</code> 中 <code>pushy login</code> 明文口令仍在</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>C4</strong> 远程 bundle 无完整性校验（含 OTA appKey 入库）</td><td><code>update.json</code> 仍被跟踪；未见签名/哈希校验机制</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>M2</strong> <code>debugger</code> 语句、空壳 <code>remote-app-meme</code></td><td><code>bundleLoader.ts</code> 仍有 1 处 <code>debugger</code>；空壳目录仍在</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td>xlb_app 遗留规模约 4150 tsx</td><td>实测 <strong>4132</strong> tsx，基本未变（该仓仍停留在 2025-07 的 master）</td><td><span class="badge ok">仍成立</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout ok"><strong>正向进展</strong> 灰度死代码与硬编码测试域名两项 High 已清理，说明这条链路仍在维护。<strong>但 4 项 Critical（凭据入库 ×3 + 远程 bundle 无验签）与 shared 版本不一致这个最易引发线上崩溃的问题，均未处理</strong>——应优先推进。</div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>4 项 Critical · 远程 bundle 无验签 = CDN 即最高权限</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">~4150</div><div class="l">遗留单体 tsx 文件</div></div>
+        <div class="stat"><div class="n">~108</div><div class="l">新架构已迁入口</div></div>
+        <div class="stat"><div class="n">15</div><div class="l">声明的 remote（10 个仓不存在）</div></div>
+        <div class="stat"><div class="n">11</div><div class="l">JS 引用但原生不存在的模块</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>Critical（4 项）</strong>
+        <ol>
+          <li><strong>小程序上传私钥提交进 Git</strong>：微信 ×2 + 支付宝 ×1 的 <code>.key</code> 文件均被跟踪，<code>.gitignore</code> 未包含 <code>key/</code>。任何有仓库读权限的人可直接以生产 appid 上传/发布小程序代码版本——等同于<strong>生产环境代码执行权</strong>。</li>
+          <li><strong>私有 npm registry token 提交进 Git</strong>：可读写公司私有包 → <strong>供应链投毒</strong>（往共享组件包发一个恶意版本，会被所有 App 与 BFF 构建拉取）。</li>
+          <li><strong>热更新平台账号明文口令写在脚本里</strong>（含明文密码、可反查的 MD5、以及一枚有效期内的 JWT）→ 控制该账号即可向两个 App 下发任意 JS bundle，<strong>全量用户 RCE</strong>。</li>
+          <li><strong>远程 bundle 无任何完整性校验</strong>：iOS 从 OSS 下载 host 主 bundle 直接落盘执行——无签名验签、无 hash 比对、无证书 pinning；JS 侧拉取全部 remote 容器同样未配验签；版本清单自身也是无签名的明文 JSON。<strong>任何能写该 OSS bucket 或劫持 HTTPS 的人 = 全量客户端任意代码执行。</strong>加重项：bucket 名字面意思是「临时仅用于测试」，生产链路却依赖它，且 host 与所有 remote 共用同一 bucket。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>Module Federation 机制 <em>双向联邦 · expose 了半个运行时</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  IOS["iOS AppDelegate<br/>fetch version.json → 下载 host bundle<br/>while true 死循环 + 主线程 semaphore.wait"]
+  IOS --> HOST["HostAppXlb（MF v2 host）<br/>exposes: ./store（zustand）<br/>./webView（1189 行上帝组件）"]
+  HOST --> SM["ScriptManager.addResolver<br/>bundleLoader.ts"]
+  SM --> R1["RemoteAppBase :8888"]
+  SM --> R2["RemoteAppErp :8083"]
+  SM --> R3["RemoteAppIm :8084"]
+  SM --> R4["RemoteAppMem :8092"]
+  SM -.10 个声明但仓库不存在.-> R5["Bi/Bms/Bpm/Crm/Ems<br/>Fsms/Hrs/Retail/Scm/Sds/Sms"]
+  R2 -->|"import HostAppXlb/webView"| HOST
+  R1 -->|"双向联邦"| HOST
+  FB["remote-fallback-plugin<br/>+ FallbackComponent<br/>把 error.stack 红字渲染给用户"]
+  SM -.加载失败.-> FB
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class R5,FB,IOS bad
+        </pre>
+        <p class="arch-title">图 1 · 微前端加载链路（红色 = 缺陷点）</p>
+      </div>
+      <div class="callout warn">
+        <strong>双向联邦的耦合风险</strong> host 只 expose 两个模块，但其中 <code>WebViewPage</code> 是一个 <strong>1189 行的上帝组件</strong>，内嵌 30+ 个 JSBridge 能力（扫码、上传、定位、打印、PDF、IM 弹窗、地图、方向锁定），import 面覆盖十余个原生模块。expose 它等价于把 host 的<strong>半个运行时</strong>变成对外 API 契约。而两者是<strong>独立发版</strong>的，且双方都设 <code>dts: false</code>——host 侧任何重构都会静默打断已发布的 remote bundle。
+      </div>
+      <p><strong>错误处理三层但每层只是打印</strong>：MF runtime plugin 仅 <code>console.warn</code>；<code>FallbackComponent</code> 把 <code>error.message</code> + <code>error.stack</code> <strong>红字渲染给终端用户</strong>；remote 内部的 NotFound 甚至把<strong>全部可用组件名列表</strong>打印出来。全链路<strong>无重试、无超时、无降级到上一缓存版本、无上报</strong>（Sentry 已引入但未接此链路）。</p>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>shared 依赖不对称 <em>实测 host 52 项 vs remote 34 项</em></h2>
+      <p><code>shared</code> 由一段<strong>递归扫描 <code>node_modules</code> 找 <code>*.podspec</code></strong> 的代码计算——动机正确（含原生代码的包在 App 二进制里只有一份实例，必须 <code>singleton</code>），但该代码在 host 与各 remote 间是<strong>复制粘贴</strong>且配置体不同。实跑比对结果：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>host</th><th>remote（erp/base/im）</th></tr></thead>
+          <tbody>
+            <tr><td>shared 项数（实测）</td><td><strong>52</strong></td><td><strong>34</strong></td></tr>
+            <tr><td>手工补充列表</td><td>react / navigation / zustand / <strong>foca</strong> / modal / pager-view / tab-view</td><td>react / react-native / navigation / <strong><code>@bable/runtime</code>（拼写错误）</strong> / zustand</td></tr>
+            <tr><td>shared 项配置</td><td><code>{eager, singleton, version}</code></td><td><code>{eager, singleton, import: false}</code>——<strong>连 version 都不填</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>已存在真实的 major 级版本差异</strong>
+        <ul>
+          <li><code>react-native-screens</code>：host <strong>4.11.1</strong> vs erp/mem <strong>3.25.0</strong>。3.x→4.x 导出面变化很大（<code>enableScreens</code>、header config props、Fabric 组件名）。运行时生效的是 host 的 4.11.1，而 remote 的 JS 是按 3.x API 编译的 → <code>undefined is not a function</code> / native view manager 找不到 → <strong>白屏或 crash，且只在特定 remote 的特定页面触发</strong>。</li>
+          <li><code>react-native-pager-view</code>：mem 6.2.3 vs host 6.8.1；<code>safe-area-context</code>：5.4.1 vs ^5.5.0。</li>
+          <li>两侧均<strong>未设 <code>strictVersion</code></strong>，remote 侧连 <code>version</code> 都不填 → MF 无法版本协商，<strong>连 warning 都不会给</strong>。</li>
+          <li>属于<strong>跨仓库远程触发的回归</strong>：host 单独发版就能改变 remote 的运行时依赖，无法在任一仓库的 CI 中发现。</li>
+        </ul>
+      </div>
+      <p><strong><code>foca</code> 不共享的后果</strong>：host 的鉴权状态是 foca model 并以 props 注入 remote，但 remote 自己也 import 了 foca 并在其 http 层读取——由于 foca 不在 remote 的 shared 里，<strong>remote bundle 自带一份 foca runtime + 一份独立的 auth model</strong>，两套 store 互不同步。代码靠 <code>global.authModel || defineModel(...)</code> 这种全局变量兜底桥接，属 hack 而非机制保障。后果是 token 刷新只更新 host 那份，remote 仍持旧 token → <strong>间歇性 401</strong>。</p>
+      <p>此外 <code>remoteApps.ts</code> 的 <code>importFn</code> 用 <code>Promise.all([...大量 import...])</code> <strong>手工模拟 shared 预热</strong>（base 预加载 21 个包）——正是因为 shared 集合不对称，只能靠 host 显式 import 把原生模块拉进 host 图再供 remote 消费。新增 remote 依赖时必须同步改 host 代码。</p>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>Bundle 解析与灰度 <em>灰度机制实为死代码</em></h2>
+      <p><strong>解析顺序</strong>：① DEBUG 且 localhost 可达 → Metro；② 拉 OSS <code>version.json</code> 取分支版本（最多 300 次重试 × 1s）；③ 本地缓存命中即用；④ 下载并缓存。JS 侧类似，但 <strong>platform 写死 <code>ios</code></strong>（Android 走同一路径会取到 iOS 产物），且代码里还留着 <code>debugger;</code> 语句。</p>
+      <div class="callout danger">
+        <strong>灰度机制是死代码</strong> <code>getBundleRoutesPromise</code> 会 fetch OSS 的 <code>bundle-routes/v1.2.3.json</code>，但<strong>把结果赋值后完全丢弃</strong>，转而 return 一个<strong>硬编码字面量</strong>——里面把两个员工 userId 与 prod/prod-gray 的 bundle URL 写死在<strong>客户端源码</strong>里。而该 Promise 在整个仓库中<strong>再也没有被 await 或引用过</strong>。
+        <p>结果：灰度既不可运营配置，当前也<strong>完全不生效</strong>（每次启动仍白发一个无用的 OSS 请求），实际路由 100% 走 <code>version.json</code> 分支。</p>
+        <p><strong>对照</strong>：<code>member-weapp</code> 的灰度实现成熟得多——规则从 OSS 动态拉取，支持手机号后缀匹配与门店白名单，末条无规则项作为默认。RN 侧完全没有对齐这套能力。</p>
+      </div>
+      <p><strong>版本清单格式</strong>：<code>{"&lt;repo&gt;": {"&lt;branch&gt;": "&lt;datetime&gt;-&lt;branch&gt;-&lt;sha&gt;"}}</code>，仅保留 <code>dev|main|prod|staging|test</code> 前缀分支。但<strong>客户端只读 <code>.main</code></strong>——prod/staging 分支在 manifest 里写了却从不被读取，<strong>环境隔离形同虚设</strong>。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>各 remote 业务能力 <em>erp 约 70 屏 · mem 配置显著跑偏</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>remote</th><th>注册项</th><th>业务</th></tr></thead>
+          <tbody>
+            <tr><td><code>remote-app-erp</code></td><td>70</td><td>门店补货/配送、调入单、物资统计、门店申请单（含 SCM 双套）、采购收退货、库存查询/调整/盘点、档案（门店/商品/合同/供应商）、效期检查打印、销售与经营分析（H5 壳）、营业外收入、用户管理、批发单，<strong>另有 8 个「千人千面」首页卡片</strong></td></tr>
+            <tr><td><code>remote-app-base</code></td><td>15（另 6 项被注释）</td><td>WebView、关于版本、账号、组件中心、主题、设置、修改密码、H5 页。<strong>被注释的组件仍在 import 列表 → 仍进 bundle</strong></td></tr>
+            <tr><td><code>remote-app-im</code></td><td>6</td><td>会话列表/详情、MQTT 长连接（以「渲染一个不可见 Screen」的方式管理生命周期）</td></tr>
+            <tr><td><code>remote-app-mem</code></td><td>17</td><td>门店储值、门店/零售调价、零售价销售、积分变更与管理。源码注释自陈来自遗留单体，且写着 <code>// duplicate above?</code>——<strong>两组 9 屏疑为同一功能的两份实现且同时注册</strong></td></tr>
+            <tr><td><code>remote-app-meme</code></td><td>0</td><td><strong>空壳</strong>：无 src、无 package.json、无 rspack 配置，也不在 host 的 remotes 列表里</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <strong>mem 的 rspack 配置显著跑偏</strong> 没有名称推导（写死）、没有 minimizer、没有反向 <code>HostAppXlb</code> remote、没有 experiments、<code>extraChunks.type</code> 是 <code>'remote'</code> 而非 <code>'local'</code>，且<strong>产物路径与其他 remote 不一致</strong>（<code>build/app-mem/[platform]</code> vs <code>build/generated/&lt;platform&gt;</code>）——<strong>会直接打断客户端的 URL 拼接规则</strong>。
+      </div>
+      <p><strong>状态管理双轨（实测文件数）</strong>：host foca 65 / zustand 48；erp <strong>foca 0</strong> / zustand 73；base 5/16；mem 2/18。分工是「foca 留在 host 承载鉴权（历史包袱），zustand 承载一切新状态」——zustand 无需 Provider，这对 MF 至关重要（跨 bundle React Context 会因 React 实例/Provider 树不同而失效）。</p>
+      <p><strong>导航拼装有两套并存的模式</strong>：静态 key 列表 + <code>React.lazy</code>，与 <code>applicationFields</code> + <code>getRemoteComponent</code>。两者的 key 存在<strong>名称漂移</strong>（如 <code>StoreReplenishmentAuditDetail</code> vs <code>StoreReplenishAuditDetail</code>），漂移不会在编译期报错，只在运行时变成「未找到对应路由」。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>迁移完成度与原生能力缺口 <em>host 目前无法替代门店场景</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph OLD["xlb_app 遗留单体 · 约 4150 tsx"]
+    E["bussiness-erp 1218"]
+    K["business-kms 1027<br/>拓店招商"]
+    C["packages/common 679"]
+    B["business-base 542"]
+    N["business-non-wms 234"]
+    S["business-scm 172"]
+    O["tms/bms/im/hrs/fsms/sms/mem/ems 260"]
+  end
+  subgraph NEW["新架构 · 约 108 入口"]
+    RE["remote-app-erp 70"]
+    RB["remote-app-base 15"]
+    RM["remote-app-mem 17"]
+    RI["remote-app-im 6"]
+  end
+  E -->|部分迁移| RE
+  K -.对应仓库不存在.-> X["RemoteAppSds / RemoteAppCrm"]
+  OLD -.RN 0.68 + React 17.-> GAP["技术栈代差<br/>无法增量升级"]
+  NEW -.RN 0.80 + React 19.-> GAP
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class X,GAP bad
+        </pre>
+        <p class="arch-title">图 2 · 迁移完成度：约 108 / 4150，且最大的 kms 域无对应仓库</p>
+      </div>
+      <div class="callout danger">
+        <strong>11 个原生模块被 JS 引用但原生实现不存在</strong> host 的原生侧极其单薄（Android 只有 MainActivity/MainApplication，<code>getPackages()</code> 里除 autolink 什么都没加；iOS 仅 4 组自研模块）。但 host 的 JS <strong>仍在引用</strong>打印、扫码、蓝牙、友盟、推送、EMAS、一键登录、高德 SDK 等 NativeModules——其中<strong>只有屏幕旋转一个有对应原生实现（且仅 iOS）</strong>，其余调用即 <code>TypeError</code>。
+        <p><strong>因此 host 目前不可用的能力</strong>：4 种品牌打印机、PDA 硬件扫码、蓝牙扫码称重、高德原生地图页面全套（20+ Activity：拓店勘察/商圈标注/地推打卡）、友盟统计、厂商推送通道、截屏检测、后台定位上报、EMAS、一键登录、蓝牙打印、<strong>OTA 热更</strong>。</p>
+        <p>结论：<strong>host-app-xlb 目前无法替代门店场景的 xlb_app。</strong></p>
+      </div>
+      <p><strong>重复实现</strong>：http 层至少 <strong>4 份 fork</strong>（host 与 remote 各一份且已发散：import 路径、Sentry 开关、热更逻辑均不同）；mem 的两组调价屏疑为同一功能两份实现。</p>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>member-weapp 小程序 <em>多端适配靠编译期字符串替换</em></h2>
+      <ul>
+        <li><strong>多端适配三处协同</strong>：① <code>defineConstants</code> 把全局对象名换掉（<code>wx</code> → <code>my</code>）——这是<strong>编译期字符串替换</strong>，让业务代码里裸写的 <code>wx.xxx</code> 在支付宝下变成 <code>my.xxx</code>；<strong>很脆</strong>，因为两套 API 并非同名同签名，替换后只是编译通过。② 支付宝时注入适配插件。③ 插件把 <code>navigationStyle: 'custom'</code> 翻译成支付宝的透明标题配置，并强制所有页面禁用回弹。另有 <strong>3 个 patch 打在 Taro 上</strong>，说明官方适配层不够用。</li>
+        <li><strong>路由</strong>：568 行 <code>ROUTE_MAP</code> + <strong>11 个分包</strong>；统一中转页设计（分享/扫码/活动都先落 entry 再分发）；主包体积治理（<code>optimizeMainPackage</code> + <code>.main</code> 后缀排除）。</li>
+        <li><strong>状态</strong>：纯 zustand v5，17 个 store + tabBar 独立 store，统一 <code>createSelectors</code> 包装以获得细粒度订阅。但 <code>store/index.ts</code> 又尝试 slice 模式且只挂了一个 slice——两种组织方式并存。</li>
+        <li><strong>API 层</strong>：3 个拦截器（业务码 / HTTP 状态码 / Header 注入）。Token 刷新用 <code>isTokenRefreshing</code> 标志 + 失败队列做<strong>并发合并</strong>（比 auth-server 的无防护做得好）。断网做一次重试并按 Map 去重。</li>
+        <li><strong>存储明文</strong>：token/userInfo/openid/unionid/companyid 全部 <code>setStorageSync</code> 明文。</li>
+        <li><strong>自定义 tabBar</strong>：图标全走 CDN 而非本地资源（省包体但首屏依赖网络）；中间「会员码」是无图标凸起位；用防抖处理「每个页面都有一个 tabBar 实例」的去重问题。另存在 <code>customize-tab-bar</code> 双份实现。</li>
+      </ul>
+      <div class="callout warn"><strong>安全配置放松</strong> <code>project.private.config.json</code>（已入库）设 <code>urlCheck: false</code> 关闭域名白名单校验，与生产行为不一致，容易把未报备域名的调用带上线。<code>.env.production</code> 内含腾讯地图 key 等（前端 key 泄露风险相对可控，但未做 referer/签名限制时会被盗刷配额）。</div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>OTA 与发布 <em>pushy 通道已停用但凭据仍在仓库</em></h2>
+      <div class="grid cols-2">
+        <div class="mech m4">
+          <h4><span class="num">1</span>第一代（遗留单体 · pushy）</h4>
+          <p><code>update.json</code> 含 iOS/Android 的 appId+appKey（<strong>已入库</strong>）。发布脚本链路：登录 → 选 App → bundle → publish（正则从 stdout 抠 versionId）→ 绑定（当前被注释）。CI 为单 stage 手动触发。</p>
+          <p><strong>脚本里明文写着平台账号口令</strong>，另一处还有可反查的 MD5 与一枚有效期内的 JWT。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>第二代（自研 CDN 分发）</h4>
+          <p><code>react-native-update</code> 依赖与含 appKey 的 <code>update.json</code> <strong>仍在</strong>，但 JS 侧已被彻底掏空（import 整行注释、组件 <code>render()</code> 直接返回空）→ <strong>pushy 通道事实上已停用，凭据却仍在仓库里</strong>。</p>
+          <p>实际生效的是 <code>create-version.js</code> → <code>version.json</code> → OSS → 客户端拉取。<strong>仓库内无 CI 定义</strong>，脚本依赖的环境变量契约无处校验，缺失时会生成 <code>undefined-undefined-undefined</code> 版本串。</p>
+        </div>
+      </div>
+      <p><strong>小程序发布</strong>：交互式 4 步（选平台 → 选环境 → 选版本升级类型 → 确认），bump 版本号并 <code>git commit</code>，然后 build。但存在两个缺陷：① <strong>取消判断写错</strong>——prompt 的「取消」返回字符串 <code>'no'</code>（truthy），<strong>选取消也会继续构建并提交版本号</strong>；② <strong>只 build 不 upload</strong>，而版本号已 bump 并 commit → upload 失败或遗忘则本地版本与线上<strong>永久错位</strong>，而支付宝不允许同版本重复上传。</p>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>风险清单（分级） <em>Critical 4 · High 10 · Medium 10</em></h2>
+      <h3>High</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th></tr></thead>
+          <tbody>
+            <tr><td>H1</td><td><strong>shared 版本不一致致运行时崩溃</strong>（已存在 <code>react-native-screens</code> 3.x/4.x 的 major 差异，且无 <code>strictVersion</code>、remote 侧连 version 都不填）</td></tr>
+            <tr><td>H2</td><td><strong>shared 集合非对称致 foca 双实例</strong>，鉴权状态可能分裂 → 间歇性 401</td></tr>
+            <tr><td>H3</td><td><strong>明文存储 token 与完整用户信息</strong>：RN 用 AsyncStorage 明文存 accessToken 与 <strong>refresh_token</strong>，未用 Keychain/Keystore；小程序同样明文。auth model 的 initialState 里还硬编码了一个手机号</td></tr>
+            <tr><td>H4</td><td><strong>WebView 安全</strong>：<code>source.uri</code> 来自路由参数且<strong>无 <code>originWhitelist</code>、无 <code>onShouldStartLoadWithRequest</code></strong>；<code>mixedContentMode="always"</code>；token 与完整 userInfo 经<strong>字符串模板拼进注入 JS</strong> 并写入目标域 <code>localStorage</code>（且重复注入两次）→ 只要能让 url 指向外部域名即泄露凭据，userInfo 含用户可控字段构成引号逃逸面</td></tr>
+            <tr><td>H5</td><td><strong>iOS 启动路径主线程死循环 + 强解包</strong>：<code>while true</code> 下载无退出条件无超时，版本拉取最坏 5 分钟主线程冻结，3 处强解包 → CDN 抖动/断网 = <strong>App 完全无法启动（hang 而非降级）</strong>，无本地 fallback bundle</td></tr>
+            <tr><td>H6</td><td><strong>生产代码里硬编码测试环境 baseURL</strong>：在正常环境判断<strong>之后</strong>无条件覆盖，而该通道是 host 主 ERP 通道（含 token 刷新链路）→ 生产包把 ERP 流量打到测试域名。同类硬编码兜底散落 6 处</td></tr>
+            <tr><td>H7</td><td>灰度按 userId 硬编码在客户端源码，且该机制<strong>实为死代码</strong>（见 §03）→ 无法灰度发布，每次更新都是全量，回滚也无灰度</td></tr>
+            <tr><td>H8</td><td>远程加载失败<strong>无重试/无超时/无降级/无上报</strong>，且把 error.stack 与内部组件名清单<strong>直出给终端用户</strong>；10 个声明但不存在的 remote 必然走 fallback</td></tr>
+            <tr><td>H9</td><td><strong>Android 推送/地图密钥与 appSecret 硬编码在 Manifest</strong>（含 OPPO push secret、阿里云 appsecret、小米 push key）；iOS 侧重复硬编码高德 key 与微信 appid。<strong>appSecret 属服务端凭据，出现在客户端包内即等于公开</strong>——可被用来伪造推送下发给全量用户</td></tr>
+            <tr><td>H10</td><td>遗留单体与 remote <strong>大面积重复实现</strong>（见 §05），两代技术栈无法互升，同一业务规则需改两处必然漂移</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Medium（选摘）</h3>
+      <ul>
+        <li><strong>M1 构建不可重现</strong>：shared 集合由<strong>物理 node_modules 布局</strong>决定（实测已产生 pnpm 内部目录的伪条目）；<code>version</code> 对传递依赖为 <code>undefined</code>；<code>@bable/runtime</code> 拼写错误致 babel helper 在每个 bundle 重复；<code>pnpm@latest</code> 不锁版本；platform 写死 ios；mem 产物路径不一致。</li>
+        <li><strong>M2 死代码与调试残留</strong>：空壳 remote 目录；生产代码里的 <code>debugger;</code>；<code>const useCDN = ... || true</code> 恒真且定义后从未使用；<code>drawerContent={() => &lt;Text&gt;qwe&lt;/Text&gt; || &lt;RealContent/&gt;}</code> <strong>短路致抽屉整体失效</strong>；183 行状态栏路由数组（约 60 行是注释）；70 行被注释的 monolith import；<code>repomix-output.xml</code> 全量源码快照提交在仓库里。</li>
+        <li><strong>M3</strong> 遗留单体的 <code>.env.prod</code> 含 CodePush key、蒲公英 key、<strong>明文 HTTP 的 Sentry DSN + 内网 IP</strong>。</li>
+        <li><strong>M6</strong> MQTT clientId 含<strong>明文手机号</strong> → PII 扩散到 broker 日志与监控面板；离线消息明文落盘。</li>
+        <li><strong>M7</strong> <code>&lt;Stack.Screen children={...}&gt;</code> 内联闭包导致 remote 组件<strong>在父级任意重渲染时整体重挂载</strong>（丢表单状态、重复发请求）；更有在 render 期间调用 <code>getRemoteComponent</code> 致 lazy 缓存彻底失效。</li>
+        <li><strong>M8</strong> <code>import React from 'React'</code>（大写）靠 package alias 兜底 → 大小写敏感文件系统上会炸，且该 alias 意味着 react 可能有两个解析入口，<strong>与 singleton 语义冲突</strong>。</li>
+        <li><strong>M9</strong> 预发布/RC 依赖进生产（push beta.1、bluetooth-classic rc.13、modal rc.1），且这些包的原生桥接在 host 侧并不存在。</li>
+        <li><strong>M10</strong> <strong>release 构建复用 debug keystore</strong>，bundleIdentifier 还是脚手架默认值 → 一旦误发布将无法升级覆盖正式包。</li>
+      </ul>
+      <h3>修复建议（前 5 项）</h3>
+      <ol>
+        <li><strong>立刻轮换</strong>小程序上传密钥、npm authToken、pushy 账号；<code>git filter-repo</code> 清史；<code>.gitignore</code> 补 <code>key/</code>、<code>.npmrc</code>、<code>.env*</code>。</li>
+        <li><strong>给远程 bundle 加签名验签</strong>：产出时计算 SHA-256 并签名写入 <code>version.json</code>，客户端强制验签后才执行；启用证书 pinning；bundle 移出「临时测试」bucket，host 与 remote 分桶、按环境分桶并收紧写权限。</li>
+        <li><strong>统一 shared 配置</strong>：把 podspec 扫描抽成共享包供所有仓引用；全部显式声明 <code>requiredVersion</code> + <code>strictVersion</code>；CI 加「host/remote shared 集合 diff」门禁；修 <code>@bable/runtime</code>；对齐三个版本不一致的原生包。</li>
+        <li><strong>删掉硬编码测试 baseURL</strong>，并加 CI 规则禁止字面量 URL 覆盖。</li>
+        <li><strong>WebView 收口</strong>：加域名白名单与导航拦截；关闭 mixedContent；token 改为在校验域名后经 <code>postMessage</code> 握手注入，而非模板字符串拼接。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

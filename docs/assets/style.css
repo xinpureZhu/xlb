@@ -1,0 +1,318 @@
+/* ==========================================================================
+   XLB 零售平台 · 文档中心统一样式 (Design System)
+   所有 HTML 总结类文档共用本样式表。规范见 docs/文档格式规范.md（由根 AGENTS.md 引用）。
+   ========================================================================== */
+
+:root {
+  --c-bg:        #0f172a;   /* 页面背景 (深) */
+  --c-surface:   #ffffff;   /* 卡片/内容背景 */
+  --c-surface-2: #f8fafc;   /* 次级背景 */
+  --c-border:    #e2e8f0;   /* 边框 */
+  --c-text:      #1e293b;   /* 正文 */
+  --c-text-soft: #64748b;   /* 次要文字 */
+  --c-primary:   #2563eb;   /* 主色 */
+  --c-primary-d: #1d4ed8;
+  --c-accent:    #0891b2;   /* 强调色 */
+  --c-ok:        #16a34a;   /* 成功/自研 */
+  --c-warn:      #d97706;   /* 警告/遗留 */
+  --c-danger:    #dc2626;   /* 风险 */
+  --c-code-bg:   #f1f5f9;
+  --radius:      12px;
+  --radius-sm:   8px;
+  --shadow:      0 1px 3px rgba(15,23,42,.08), 0 8px 24px rgba(15,23,42,.06);
+  --maxw:        1180px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  color: var(--c-text);
+  background: #eef2f7;
+  line-height: 1.7;
+  font-size: 15px;
+}
+
+/* ---------- 顶部深色区（高度随内容自适应，避免页头内容多时溢出） ---------- */
+.doc-top {
+  background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+  padding-bottom: 20px;
+}
+
+/* ---------- 顶部页头 ---------- */
+.doc-header {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 36px 24px 20px;
+  color: #e2e8f0;
+}
+.doc-header .eyebrow {
+  font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
+  color: #7dd3fc; margin: 0 0 8px;
+}
+.doc-header h1 {
+  margin: 0; font-size: 30px; color: #fff; line-height: 1.25;
+  max-width: 22em; overflow-wrap: break-word;
+}
+.doc-header p.subtitle {
+  margin: 10px 0 0; color: #94a3b8; max-width: 68ch; font-size: 14.5px;
+}
+.doc-header .meta {
+  margin-top: 12px; font-size: 12.5px; color: #8397ad;
+  overflow-wrap: anywhere;
+}
+.doc-header .meta code { background: rgba(255,255,255,.08); color: #cbd5e1; }
+
+/* ---------- 导航条 ---------- */
+.doc-nav {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.doc-nav a {
+  font-size: 13px; text-decoration: none;
+  color: #cbd5e1; background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.10);
+  padding: 6px 13px; border-radius: 999px; transition: .15s;
+}
+.doc-nav a:hover { background: var(--c-primary); color: #fff; border-color: var(--c-primary); }
+.doc-nav a.active { background: #fff; color: var(--c-primary-d); border-color: #fff; font-weight: 600; }
+
+/* ---------- 主体容器 ---------- */
+main.doc-body {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+}
+
+/* ---------- 卡片 / 分区 ---------- */
+section.card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 26px 30px;
+  margin: 0 0 22px;
+}
+section.card > h2:first-child { margin-top: 0; }
+
+h2 {
+  font-size: 21px; margin: 34px 0 14px;
+  padding-bottom: 8px; border-bottom: 2px solid var(--c-border);
+  scroll-margin-top: 20px;
+}
+h2 .num { color: var(--c-primary); font-variant-numeric: tabular-nums; margin-right: 8px; }
+/* h2 副标题：把该节结论浓缩一句放标题里，扫标题即获得信息 */
+h2 em {
+  font-style: normal; color: var(--c-text-soft);
+  font-size: 13.5px; font-weight: 400; margin-left: 10px;
+}
+h3 { font-size: 16.5px; margin: 22px 0 10px; color: #0f172a; }
+h4 { font-size: 14.5px; margin: 16px 0 6px; color: #334155; }
+p  { margin: 8px 0; }
+a  { color: var(--c-primary-d); }
+
+/* 代码位置标注：独立一行标注 file:line / 模块路径 */
+.loc {
+  font-family: var(--mono); font-size: 11.5px; color: var(--c-text-soft);
+  margin-top: 8px; word-break: break-all;
+}
+
+ul, ol { margin: 8px 0; padding-left: 22px; }
+li { margin: 4px 0; }
+
+code {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--c-code-bg); color: #0f172a;
+  padding: 1.5px 6px; border-radius: 5px;
+}
+pre {
+  background: #0f172a; color: #e2e8f0; border-radius: var(--radius-sm);
+  padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+  line-height: 1.6;
+}
+pre code { background: none; color: inherit; padding: 0; }
+
+/* ---------- 表格 ---------- */
+.table-wrap { overflow-x: auto; margin: 14px 0; border-radius: var(--radius-sm); border: 1px solid var(--c-border); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: #fff; }
+thead th {
+  background: var(--c-surface-2); text-align: left; font-weight: 600;
+  padding: 10px 12px; border-bottom: 2px solid var(--c-border); white-space: nowrap;
+  position: sticky; top: 0;
+}
+tbody td { padding: 9px 12px; border-bottom: 1px solid var(--c-border); vertical-align: top; }
+tbody tr:nth-child(even) td { background: #fafbfc; }
+tbody tr:hover td { background: var(--c-surface-2); }
+tbody tr:last-child td { border-bottom: none; }
+
+/* ---------- 目录（长文档导航） ---------- */
+.toc {
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm); padding: 16px 22px; margin: 0 0 22px;
+}
+.toc > b { color: var(--c-primary-d); font-size: 13.5px; }
+.toc ol { columns: 2; column-gap: 36px; margin: 8px 0 0; padding-left: 20px; }
+.toc a { color: var(--c-text); text-decoration: none; font-size: 13.5px; }
+.toc a:hover { color: var(--c-primary-d); text-decoration: underline; }
+
+/* ---------- 徽章 ---------- */
+.badge {
+  display: inline-block; font-size: 11.5px; font-weight: 600;
+  padding: 2px 9px; border-radius: 999px; line-height: 1.6; white-space: nowrap;
+}
+.badge.java   { background: #fde68a; color: #92400e; }
+.badge.rust   { background: #fed7aa; color: #9a3412; }
+.badge.node   { background: #bbf7d0; color: #166534; }
+.badge.rn     { background: #bfdbfe; color: #1e40af; }
+.badge.mp     { background: #e9d5ff; color: #6b21a8; }
+.badge.infra  { background: #cbd5e1; color: #334155; }
+.badge.ok     { background: #dcfce7; color: #166534; }
+.badge.warn   { background: #fef3c7; color: #92400e; }
+.badge.danger { background: #fee2e2; color: #991b1b; }
+.badge.new    { background: #dbeafe; color: #1e40af; }
+.badge.legacy { background: #f1f5f9; color: #64748b; }
+
+/* ---------- 提示框 ---------- */
+.callout {
+  border-left: 4px solid var(--c-primary);
+  background: #eff6ff; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 12px 16px; margin: 14px 0; font-size: 14px;
+}
+.callout.warn   { border-color: var(--c-warn);   background: #fffbeb; }
+.callout.danger { border-color: var(--c-danger); background: #fef2f2; }
+.callout.ok     { border-color: var(--c-ok);     background: #f0fdf4; }
+.callout strong { display: inline-block; margin-right: 4px; }
+
+/* ---------- 网格 / 统计卡 ---------- */
+/* auto-fit 自适应：min() 保证窄屏可收缩到 100%，不会撑出横向滚动 */
+.grid { display: grid; gap: 16px; margin: 16px 0; }
+.grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.grid.cols-4 { grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); }
+
+/* 并列方案/机制卡：带圆形编号徽章，用于「N 套并行机制」这类对照 */
+.mech { border-radius: var(--radius-sm); padding: 18px 20px; margin: 0; }
+.mech h4 { margin-top: 0; font-size: 15px; }
+.mech p { font-size: 13px; }
+.mech .num {
+  display: inline-flex; width: 26px; height: 26px; border-radius: 50%;
+  align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; margin-right: 8px;
+}
+.mech.m1 { background: #eff6ff; border: 1px solid #93c5fd; }
+.mech.m1 .num { background: var(--c-primary); color: #fff; }
+.mech.m2 { background: #faf5ff; border: 1px solid #d8b4fe; }
+.mech.m2 .num { background: #7e22ce; color: #fff; }
+.mech.m3 { background: #f0fdf4; border: 1px solid #86efac; }
+.mech.m3 .num { background: var(--c-ok); color: #fff; }
+.mech.m4 { background: #fffbeb; border: 1px solid #fcd34d; }
+.mech.m4 .num { background: var(--c-warn); color: #fff; }
+
+.stat {
+  background: var(--c-surface-2); border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm); padding: 16px 18px;
+}
+.stat .n { font-size: 26px; font-weight: 700; color: var(--c-primary-d); font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 12.5px; color: var(--c-text-soft); margin-top: 2px; }
+
+/* ---------- 架构图（规范强制每篇文档至少一张，见 docs/文档格式规范.md §7） ---------- */
+
+/* Mermaid 容器 */
+.diagram {
+  background: var(--c-surface-2); border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm); padding: 18px 16px 10px; margin: 16px 0;
+  overflow-x: auto;
+}
+.diagram pre.mermaid {
+  background: none; color: var(--c-text); padding: 0; margin: 0;
+  text-align: center; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+}
+.diagram pre.mermaid svg { max-width: 100%; height: auto; }
+
+/* 纯 CSS 泳道图 */
+.arch {
+  background: var(--c-surface-2); border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm); padding: 18px 16px 14px; margin: 16px 0;
+  overflow-x: auto;
+}
+/* 图注：置于图下方（出版惯例），编号「图 N · 标题」 */
+.arch-title {
+  text-align: center; font-size: 12.5px;
+  color: var(--c-text-soft); margin: 12px 0 0; letter-spacing: .04em;
+}
+.arch .lane { display: flex; align-items: stretch; gap: 10px; min-width: 560px; }
+.arch .lane-label {
+  flex: 0 0 96px; display: flex; align-items: center; justify-content: center;
+  text-align: center; font-size: 12px; font-weight: 600; color: #475569;
+  background: #e2e8f0; border-radius: 6px; padding: 8px 4px; line-height: 1.4;
+}
+.arch .lane-body { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.arch .down {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--c-text-soft); font-size: 12px; padding: 4px 0; min-width: 560px;
+}
+.arch .down::before { content: "▼"; color: #94a3b8; font-size: 10px; }
+
+.node {
+  background: #fff; border: 1.5px solid #cbd5e1; border-radius: 8px;
+  padding: 6px 12px; font-size: 12.5px; line-height: 1.45; text-align: center;
+  box-shadow: 0 1px 2px rgba(15,23,42,.06); color: var(--c-text);
+}
+.node small { display: block; color: var(--c-text-soft); font-size: 11px; font-weight: 400; }
+.node.hl     { border-color: var(--c-primary); background: #eff6ff; font-weight: 600; }
+.node.java   { border-color: #f59e0b; background: #fffbeb; }
+.node.rust   { border-color: #ea580c; background: #fff7ed; }
+.node.nodejs { border-color: #16a34a; background: #f0fdf4; }
+.node.rn     { border-color: #2563eb; background: #eff6ff; }
+.node.mp     { border-color: #9333ea; background: #faf5ff; }
+.node.store  { border-color: #0891b2; background: #ecfeff; }
+.node.mq     { border-color: #db2777; background: #fdf2f8; }
+.node.gray   { border-color: #94a3b8; background: #f1f5f9; color: #64748b; }
+.node.danger { border-color: var(--c-danger); background: #fef2f2; }
+
+/* 横向流程图：节点 + 箭头 */
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0; }
+.flow .fa { color: #94a3b8; font-weight: 700; font-size: 14px; padding: 0 2px; text-align: center; }
+.flow .fa small { display: block; font-size: 10px; font-weight: 400; }
+
+/* 图例 */
+.arch-legend { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 12px; font-size: 11.5px; color: var(--c-text-soft); }
+.arch-legend .node { padding: 1px 8px; font-size: 11px; box-shadow: none; }
+
+.tile {
+  display: block; text-decoration: none; color: inherit;
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm); padding: 18px 20px; transition: .15s;
+}
+.tile:hover { border-color: var(--c-primary); box-shadow: var(--shadow); transform: translateY(-2px); }
+.tile h3 { margin: 0 0 6px; color: var(--c-primary-d); }
+.tile p { margin: 0; font-size: 13px; color: var(--c-text-soft); }
+
+/* ---------- 标签组 ---------- */
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.tag {
+  font-family: var(--mono); font-size: 11.5px; background: var(--c-code-bg);
+  color: #334155; padding: 2px 8px; border-radius: 5px; border: 1px solid var(--c-border);
+}
+
+/* ---------- 页脚 ---------- */
+.doc-footer {
+  max-width: var(--maxw); margin: 0 auto; padding: 24px;
+  color: var(--c-text-soft); font-size: 12.5px; text-align: center;
+  border-top: 1px solid var(--c-border);
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 860px) {
+  .doc-header h1 { font-size: 24px; }
+  section.card { padding: 20px 18px; }
+  .toc ol { columns: 1; }
+}

@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rust 服务群深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>Rust 服务群 · 代码深度分析</h1>
+    <p class="subtitle">7 个仓、约 6.2 万行 Rust。优惠促销计算引擎、会员动态码、路由决策中心、第三方网关的真实实现，以及 5 项 Critical 与 21 项 High 风险。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>test</code>×5 / <code>dev</code>×2（均非 prod） · 数据来源：7 个 Rust 仓源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html" class="active">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">服务全景</a></li>
+        <li><a href="#s2">优惠促销计算引擎</a></li>
+        <li><a href="#s3">会员动态码（安全性）</a></li>
+        <li><a href="#s4">路由决策中心</a></li>
+        <li><a href="#s5">第三方网关</a></li>
+        <li><a href="#s6">库存同步管道</a></li>
+        <li><a href="#s7">风险清单（分级）</a></li>
+        <li><a href="#s8">修复排序</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · Critical 已全部重校</strong> 现状：<code>prod</code> — goods_cart <code>8715ea6</code>、goods_consumer <code>dac1aa6</code>、icc-task <code>a5dc997</code>、retail-route-center <code>558a25c</code>（均落后 0）；<code>dev</code> — rust-for-order <code>925b57c</code>（其 prod 更旧，dev 为权威）；<code>test</code> — rs-gray-ms <code>919740f</code>（<strong>无 prod 分支</strong>）；<code>retail-thirdpart-gateway</code> 当前签出在 feature 分支 <code>9e4290f</code>（落后 prod 8），下方结论已用 <code>git show origin/prod:</code> <strong>直接读取 prod 内容核验</strong>。
+      <p><strong>5 项 Critical 已逐条重校（见下方「重校结果」），全部仍存在。</strong>21 项 High 中的部分亦已抽查。新仓 <code>retail-review-center</code> 已独立成篇（见 <a href="16-review-center-analysis.html">16 篇</a>），不再属于本篇范围。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>5 项 Critical 无一修复</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>旧结论</th><th>prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>C1</td>
+              <td>管理端 <code>authjwt</code> 是未验签 JSON，无 JWT 库，环境变量未设时默认放行</td>
+              <td><strong>仍是纯 JSON 解析</strong>：<code>admin_user_identity_from_authjwt</code> 直接 <code>serde_json::from_str::&lt;AuthJwtClaims&gt;(value)</code>，只取 <code>name</code>/<code>union_id</code>/<code>open_id</code>，<strong>无任何签名验证</strong>；两个仓的 <code>Cargo.toml</code> <strong>均无 <code>jsonwebtoken</code> 等 JWT 依赖</strong>。<div class="loc">route-center src/main.rs:332-350（origin/prod）</div></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C2</td>
+              <td>明文生产凭据在被 git 跟踪的 <code>.env</code>/<code>README</code> 中</td>
+              <td><code>.env</code> <strong>仍被跟踪</strong>：goods_cart <code>.env</code>、goods_consumer <code>.env</code> + <code>erp_stock_sync/.env</code>、rust-for-order <code>pos-order/.env</code></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C3</td>
+              <td>飞鹅扫码回调只做 RSA 解密就置 <code>verified: true</code>（加密≠认证）</td>
+              <td><code>verified: true</code> <strong>仍在原位</strong><div class="loc">src/channel/feie/outbound.rs:165（origin/prod）</div></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C4</td>
+              <td><code>POST /api/v1/proxy/:channel_id</code> 第三方凭据代理无鉴权</td>
+              <td>路由<strong>仍直接注册无鉴权</strong>：<code>.route("/api/v1/proxy/:channel_id", post(proxy_request))</code><div class="loc">src/server.rs:696（origin/prod）</div></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+            <tr>
+              <td>C5</td>
+              <td>POS 结算接口空数组下标必 panic</td>
+              <td><code>let coupon = &amp;coupons[coupons.len() - 1];</code> <strong>仍在</strong>——传 <code>{"coupons":[]}</code> 即 panic<div class="loc">coupon-service/src/calculator/validator.rs:611</div></td>
+              <td><span class="badge danger">仍存在</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>High 抽查</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项</th><th>prod 实测</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td><strong>促销引擎</strong>优先级与冲突机制惰性（全部注册 priority 10、<code>set_conflict</code> 从不调用）</td><td><code>set_conflict</code> 在全仓<strong>仍无任何调用点</strong>（仅有定义）→ 冲突机制依旧完全不生效</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>会员动态码</strong>无密钥（硬编码 7919 乘数）</td><td><code>const OFFSET_MULTIPLIER: u64 = 7919;</code> 仍在，且模块注释仍写着「使用 时间片 × 7919 作为偏移量加密」→ <strong>仍可为任意卡号伪造有效码</strong></td><td><span class="badge danger">仍存在</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>结论：Rust 服务群是本次重校中「零修复」的一组</strong> 5 项 Critical 与抽查的 High 项<strong>全部仍存在</strong>，与 07/08/11/14 篇中「部分已修」的情况形成明显对比。
+        <p>其中三项属于<strong>可被外部直接利用</strong>的类型：管理端伪造身份（改写灰度路由 / 回调转发地址）、第三方凭据代理无鉴权、POS 资金接口远程 panic。建议将这三项与「会员动态码不可作为鉴权因子」一并列入最高优先级。</p>
+      </div>
+      <div class="callout warn"><strong>分支提示</strong> <code>retail-thirdpart-gateway</code> 当前签出在 feature 分支（落后 prod 8 个提交）。本次核验读的是 <code>origin/prod</code> 内容，但该仓最新的 admin 相关改动可能在 feature 分支上——若那些改动包含鉴权加固，合并后需重新核验 C1/C4。</div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>5 项 Critical · 鉴权普遍缺失 · 引擎存在双实现矛盾</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">7</div><div class="l">代码仓</div></div>
+        <div class="stat"><div class="n">~62k</div><div class="l">Rust 代码行</div></div>
+        <div class="stat"><div class="n">5</div><div class="l">Critical 风险</div></div>
+        <div class="stat"><div class="n">21</div><div class="l">High 风险</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>Critical 概览</strong>
+        <ol>
+          <li><strong>管理端 <code>authjwt</code> 只是未验签的 JSON</strong>：两个网关服务均无 JWT 库；带上 <code>authjwt: {"name":"某人"}</code> 即获管理员权限，环境变量未设时<strong>连头都不需要</strong>。可改写灰度路由规则、改写第三方回调转发地址（数据外泄 + SSRF）。</li>
+          <li><strong>明文生产凭据入库</strong>：6 处 <code>.env</code>/<code>README</code> 已被 git 跟踪，含 PolarDB、RDS、Kafka、MongoDB、Redis、RocketMQ 凭据与飞书 webhook。</li>
+          <li><strong>飞鹅扫码回调可伪造</strong>：只做 RSA <em>解密</em> 就置 <code>verified: true</code>——加密不是认证；打印回调的 <code>verify_callback</code> 更是无条件返回 true。可区分的错误还构成 Bleichenbacher 解密预言机。</li>
+          <li><strong>第三方凭据代理无鉴权</strong>：<code>POST /api/v1/proxy/:channel_id</code> 无任何鉴权，任何调用方都能让网关用平台凭据签名并转发任意请求到美团/饿了么/飞鹅。</li>
+          <li><strong>POS 结算接口必崩</strong>：<code>&coupons[coupons.len() - 1]</code> 对未校验的空数组取下标，传 <code>{"coupons":[]}</code> 直接 panic——在收银资金路径上可远程触发。</li>
+        </ol>
+      </div>
+      <div class="callout warn"><strong>panic 策略差异</strong> <code>icc-task</code> 用 <code>panic = "abort"</code>，请求路径上任何 panic 都会<strong>杀掉整个 pod</strong>；其余仓为 unwind（按任务隔离）。</div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>服务全景 <em>统一 axum + tokio · 存储各异</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>仓</th><th>Crate 数</th><th>存储</th><th>MQ</th><th>panic</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>rust-for-order</code></td><td>10（4 bin / 4 lib / 2 WASM）</td><td>MySQL（仅 pos-order）</td><td>—</td><td>unwind</td><td>优惠促销计算、会员码、POS 单、SSE</td></tr>
+            <tr><td><code>goods_cart</code></td><td>1</td><td>Redis</td><td>—</td><td>默认</td><td>购物车</td></tr>
+            <tr><td><code>goods_consumer</code></td><td>3 + vendored rocketmq</td><td>Redis + MongoDB</td><td>Kafka + RocketMQ</td><td>unwind</td><td>ERP 库存/商品同步</td></tr>
+            <tr><td><code>icc-task</code></td><td>5</td><td>MySQL(sqlx) + Redis + OSS</td><td>Kafka ×2</td><td><strong>abort</strong></td><td>企微任务看板（4 部署单元）</td></tr>
+            <tr><td><code>retail-route-center</code></td><td>1</td><td>MySQL + Redis + OSS</td><td>Redis pub/sub</td><td>默认</td><td>路由决策中心</td></tr>
+            <tr><td><code>retail-thirdpart-gateway</code></td><td>1</td><td>MongoDB + Redis</td><td>—</td><td>默认</td><td>第三方网关（美团/飞鹅）</td></tr>
+            <tr><td><code>rs-gray-ms</code></td><td>1</td><td>MySQL + OSS</td><td>—</td><td>默认</td><td>灰度名单</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>优惠促销计算引擎 <em>两套完全独立且不一致的引擎</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph CS["coupon-service"]
+    subgraph E1["优惠券引擎 calculator/ · Decimal · 仅服务端"]
+      V["trait CouponValidator<br/>Discount / Item / Money"]
+      P["CouponProcessor.process_coupon<br/>7 步流水线"]
+      D["distribute_discount<br/>按占比分摊·末项吸收余额"]
+    end
+    subgraph E2["促销引擎 promotion/ · f64 · 与 WASM 共享"]
+      N["trait PromotionNode"]
+      T["5 种促销类型"]
+      S["SimplePromotionEngine<br/>按优先级分组取最小价"]
+    end
+    DEAD["calculator/mod.rs<br/>并行的死校验链<br/>与 validator.rs 逻辑相反"]
+  end
+  CW["coupon-web :3000"] --> E1 & E2
+  WASM["coupon-assembly（WASM）"] --> E2
+  MP["小程序"] --> WASM
+  CS -.-> DEAD
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class DEAD,E2 bad
+        </pre>
+        <p class="arch-title">图 1 · 双引擎结构（红色 = 存在缺陷或死代码）</p>
+      </div>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>优惠券引擎（Decimal）</h4>
+          <p>策略模式，7 步流水线：金额校验 → 商品范围过滤 → 门槛金额计算（可排除促销/会员/找零商品）→ 适用与可抵扣项过滤 → 使用次数限制（含循环倍数）→ 折扣计算 → 回写购物车。</p>
+          <p>分摊按 <code>item_due/total_due</code> 截断到 2 位，<strong>末项吸收舍入残差</strong>——这点做得对。券商品优先于其它券处理。</p>
+          <div class="loc">calculator/validator.rs:21-34,182-203,467-487,574-579</div>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">2</span>促销引擎（f64）</h4>
+          <p><code>Money(f64)</code> + <code>(v*100).round()/100</code>——<strong>浮点金额</strong>，与优惠券引擎的 <code>Decimal</code> 不一致。5 种类型：单品折扣、特价、限时秒杀、第三件半价、跨品第三件半价。</p>
+          <p>选择逻辑：按优先级分组倒序遍历，组内取 <code>promo_price × promo_quantity</code> 最小者。</p>
+          <div class="loc">promotion/mod.rs:19-24,55-63 · simple_promotion_engine.rs:46-98</div>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <strong>引擎层面的确定性缺陷</strong>
+        <ul>
+          <li><strong>同优先级组内的冲突判定失效</strong>：冲突只查 <code>applied</code>，而它在每组<strong>结束时</strong>才填充 → 同优先级的两个互斥促销都会生效。仓库自带测试就注册了两个 priority 90 且 <code>set_conflict</code> 的促销，该冲突从未触发。</li>
+          <li><strong>生产环境优先级与冲突机制完全惰性</strong>：两个入口都把所有促销注册为 <strong>priority 10</strong> 且<strong>从未调用 <code>set_conflict</code></strong> → 引擎退化为纯粹的最小价选择器，<code>PromotionRelation</code> 四种关系与 <code>can_combine()</code> 全是死代码。</li>
+          <li><strong>两引擎选出不同赢家</strong>：simple 的比较器忽略 <code>regular_quantity</code>，graph 引擎却计入。</li>
+          <li><strong><code>Money</code> 券返回面额而非实际抵扣额</strong> → 调用方多减。</li>
+          <li><strong><code>calculator/mod.rs</code> 是一条并行的死校验链</strong>，且与 <code>validator.rs</code> <strong>逻辑相反</strong>（一个在 <code>member_id.is_some() && !flag</code> 时拒绝，另一个在 <code>member_id.is_some() && flag</code> 时拒绝）。该文件 717 行里约 560 行是内嵌 JSON 测试数据。</li>
+        </ul>
+      </div>
+      <p><strong><code>simple</code> vs <code>graph</code> feature</strong>：<code>simple</code>（默认）无额外依赖故 <strong>WASM 兼容</strong>，是 <code>coupon-web</code>/<code>coupon-assembly</code> 唯一使用的引擎；<code>graph</code> 基于 <code>petgraph</code> 提供环检测与拓扑排序，功能更强但<strong>从未在生产启用</strong>。</p>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>会员动态码 <em>无密钥 · 校验形同虚设 · 不可作为鉴权因子</em></h2>
+      <pre><code>time_slice = unix_secs / 60
+offset     = (time_slice × 7919) mod 1e8
+encoded    = (card_code + offset) mod 1e8
+输出        = format!("{:02}{:08}", time_slice % 100, encoded)</code></pre>
+      <div class="callout danger">
+        <strong>该方案不提供任何安全性</strong>
+        <ol>
+          <li><strong>不存在密钥</strong>：<code>7919</code> 是硬编码常量（模块注释里就写着），<code>time_slice</code> 来自墙上时钟 → 任何人都能为<strong>任意卡号</strong>生成有效码，也能反解任意观测到的码。源码注释声称「可防止重放攻击」，<strong>该说法不成立</strong>。</li>
+          <li><strong>时间标记从不校验</strong>：解析时直接切掉前两位，从不与 <code>time_slice % 100</code> 比对——前两位是装饰性的。</li>
+          <li><strong>几乎任何 10 位数字串都能解析成功</strong>：唯一的完整性检查在前置条件下<strong>恒真</strong>（<code>u64.to_string()</code> 必然 ≤8 位 ASCII 数字）。无校验和、无 MAC。<code>parse("0000000000")</code> 会返回一个看似合理的卡号。因此 ±2 时间片的回退逻辑是<strong>不可达死代码</strong>。</li>
+          <li><strong>重放窗口 3-5 分钟</strong>：码在整个 60s 片内稳定，解析又接受 −2..+2 片，且无 nonce、无一次性消费记录。</li>
+          <li><strong>前导零丢失</strong>：返回未补零字符串，卡号 <code>00123456</code> 往返后变成 <code>123456</code>。测试用例恰好都用非零开头，故从未发现。</li>
+          <li><strong>请求路径上有 panic</strong>：时钟回拨会命中 <code>.expect("Time went backwards")</code>。</li>
+        </ol>
+        <strong>结论：动态码只能作为展示层混淆。</strong>修复需要服务端对 <code>(card_id, time_slice)</code> 做 HMAC 截断进码内，并配重放缓存。
+        <div class="loc">member-service/src/dynamic_code/mod.rs:28,34-45,61-83,96-131,146,164-198 · platform.rs:37</div>
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>路由决策中心 <em>规则引擎可用 · 但配置加载会静默失败开放</em></h2>
+      <p>规则模型：<code>MatchField{phone,storeId,code,coupon}</code> × <code>MatchOperator{exact,suffix,missing,regex}</code>，支持 AND/OR 嵌套，输出 <code>{targetServiceKind: xlb|wc, targetEnvironment: prod|gray}</code>，并可导出 DSL 给多端客户端。</p>
+      <div class="callout danger">
+        <strong>三处严重缺陷</strong>
+        <ul>
+          <li><strong>配置加载静默失败开放</strong>：缺表错误会回退为<strong>空规则集</strong>（全部流量走默认路由）；父节点读取失败被 <code>.ok()</code> 吞掉 → 节点重挂到根，<strong>改变 AND/OR 语义</strong>；<code>enabled</code> 不可读时默认为 <strong>true</strong>；多个根节点时静默只保留第一个。<div class="loc">route/config_loader.rs:202,214,222,313,341,349-353</div></li>
+          <li><strong>缓存刷新无投递保证</strong>：Redis pub/sub 是 at-most-once，无轮询兜底、无版本校验 → 正在重启或退避中的 pod 会<strong>永久提供陈旧路由</strong>。发布方还丢弃了订阅者计数；流正常结束会导致无退避的重连循环。<div class="loc">infra/redis.rs:58,84-140</div></li>
+          <li><strong>规则冲突检测存在组合爆炸</strong>：DNF 展开对 AND 子节点做笛卡尔积，10 个 OR 组 × 10 项即 10¹⁰ 分支 → OOM。且该接口的鉴权就是上面的 C1。<div class="loc">admin/conflict.rs:255-266</div></li>
+        </ul>
+      </div>
+      <p><strong>另有未鉴权的 PII 泄露</strong>：<code>GET /api/route/rules</code> 返回含<strong>明文手机号白名单</strong>的 DSL；<code>rs-gray-ms</code> 的 <code>GET /api/gray/list</code> 直接返回手机号列表；<code>POST /api/oss/upload-gray-list</code> 可无鉴权覆盖生产小程序配置。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>第三方网关 <em>签名可走私 · 出口治理失败开放</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph IN["入站回调"]
+    MT["美团"] --> CB["ANY /callbacks/:channel/*"]
+    FE["飞鹅"] --> CB
+  end
+  CB --> V{"验签"}
+  V -->|"美团 md5"| OK1["转发"]
+  V -->|"飞鹅打印：verify 恒 true"| BAD1["无验签"]
+  V -->|"飞鹅扫码：仅解密即置 verified"| BAD2["可伪造"]
+  subgraph OUT["出站代理"]
+    ANY["任意调用方"] --> PX["POST /api/v1/proxy/:channel<br/>无鉴权"]
+    PX --> SIGN["用平台凭据签名"]
+    SIGN --> TP["第三方 API"]
+  end
+  EG["EgressGovernor<br/>Redis 计数"] -.Redis 错误即放行.-> OUT
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class BAD1,BAD2,PX,EG bad
+        </pre>
+        <p class="arch-title">图 2 · 网关入站验签与出站代理的鉴权缺口</p>
+      </div>
+      <ul>
+        <li><strong>签名规范化允许参数走私</strong>：<code>k=v</code> 用 <code>&amp;</code> 拼接且<strong>不做转义</strong> → 不同参数集可产生相同待签串。飞鹅还把空值参数排除在签名之外，攻击者可追加未签名但仍被转发的参数。</li>
+        <li><strong>回调无重放保护</strong>：无 nonce、无时间戳窗口、无内容派生的幂等键（<code>delivery_id</code> 是新生成的 UUID）→ 抓取到的已签名回调可重放成重复下游投递（重复订单/重复打印）。</li>
+        <li><strong>出口治理失败开放且泄漏配额</strong>：任何 Redis 错误即放行；配额在后续限流拒绝时<strong>已被消耗且无补偿回退</strong>；采用滚动窗口允许 2× 突发 → 可能导致合作方 API 封禁。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>库存同步管道 <em>Lua 只保护单字段 · 派发是轮询非哈希分区</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  K["Kafka erp_stock_detail"] --> B["批处理 max32/60s + 去重<br/>仅覆盖单批内精确三元组"]
+  B --> WP["worker_pool<br/>轮询派发（非按 key 哈希）"]
+  WP --> LUA["Lua 脚本<br/>仅原子化单字段 HSET"]
+  WP --> RC["跨渠道可售量重算<br/>读全部 item hash → min → HSET"]
+  RC --> RACE["读改写竞态<br/>同 SKU 不同字段必落不同 worker"]
+  RC --> MG[("MongoDB goods.inventory")]
+  RC --> K2["Kafka 售罄状态事件"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class RACE,WP bad
+        </pre>
+        <p class="arch-title">图 3 · ERP 库存同步管道的原子性缺口</p>
+      </div>
+      <ul>
+        <li><strong>跨渠道重算非原子</strong>：Lua 的原子性只覆盖单字段 <code>HSET</code>；「读 item hash → 取 min → 写 AVAILABLE」整体是普通读改写。派发是<strong>轮询而非按 <code>(store,item)</code> 哈希分区</strong>，同一 SKU 的不同库位/批次字段<strong>必然</strong>落到不同 worker 上竞争 → 实时库存丢更新。</li>
+        <li><strong>跨分区排序被 offset 去重破坏</strong>：用 <code>m.offset()</code> 作序号且比较时<strong>不带分区</strong>，而 Kafka offset 只在分区内可比 → 同 key 落不同分区时排序无意义，旧记录可能胜出。Lua 的时间戳守卫部分补偿了这点，但时间戳解析失败会 <code>unwrap_or(0)</code> → <code>0 &lt; old_time</code> 恒真 → <strong>畸形时间戳会静默把更新丢弃为 EXPIRED</strong>。</li>
+        <li><strong>RocketMQ 监听器内有无超时的阻塞 HTTP 调用</strong>：<code>block_in_place</code> + <code>block_on</code> 且 <code>reqwest::Client::new()</code> 未设超时 → 上游挂起会占死运行时 worker；JSON 解析错误返回 FAILURE → <strong>毒消息无限重试</strong>。</li>
+        <li><strong>所有 Kafka 客户端关闭了 TLS 校验</strong>，RocketMQ 亦关闭 TLS → SASL_PLAIN 凭据走未验证通道。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>风险清单（分级） <em>Critical 5 · High 21 · Medium 若干</em></h2>
+      <h3>High（21 项摘要）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th><th>仓</th></tr></thead>
+          <tbody>
+            <tr><td>H1-H2</td><td>库存跨渠道重算非原子（轮询派发致同 SKU 竞态）；跨分区 offset 去重破坏排序，畸形时间戳静默丢更新</td><td>goods_consumer</td></tr>
+            <tr><td>H3</td><td>规则冲突检测 DNF 组合爆炸 → OOM</td><td>route-center</td></tr>
+            <tr><td>H4</td><td><code>for _ in 0..item.quantity</code> 使用攻击者提供的 <code>u32</code> → 远程 OOM（HTTP 与小程序 WASM 双入口）</td><td>rust-for-order</td></tr>
+            <tr><td>H5-H6</td><td><code>LIMIT</code> 无上界（负数会回绕成 <code>u32::MAX</code>）+ 全量 XLSX 导出无分页；在 <code>panic=abort</code> 下 OOM 直接杀 pod，且失败会被补偿调度器<strong>永久重投</strong></td><td>icc-task</td></tr>
+            <tr><td>H7</td><td>出口治理失败开放 + 配额泄漏 + 2× 突发</td><td>thirdpart-gateway</td></tr>
+            <tr><td>H8-H9</td><td>入站回调无重放保护；签名规范化允许参数走私</td><td>thirdpart-gateway</td></tr>
+            <tr><td>H10</td><td>会员动态码可伪造且校验是空操作</td><td>rust-for-order</td></tr>
+            <tr><td>H11-H12</td><td>未鉴权的灰度人群 PII 导出；未鉴权的 OSS 生产配置覆盖</td><td>route-center / rs-gray-ms</td></tr>
+            <tr><td>H13</td><td>购物车身份仅凭未签名的 <code>member-id</code> 头 → 可读写清空任意会员购物车</td><td>goods_cart</td></tr>
+            <tr><td>H14-H15</td><td>运维端点无鉴权（其中一个会同步驱动 ICC 分页 → 未鉴权放大攻击）；<code>access-token</code> 从不与 <code>user-id</code> 绑定，且新路径丢了 <code>has_auth</code> 过滤 → 组织权限过授</td><td>icc-task</td></tr>
+            <tr><td>H16</td><td>POS 订单明细 INSERT <strong>漏掉 money/basic_price/discount_money 等已填充字段</strong> → 静默财务数据丢失</td><td>rust-for-order</td></tr>
+            <tr><td>H17</td><td>券计算失败在资金路径上被 <code>eprintln!</code> 吞掉并继续，接口仍返回 200 但折扣少算</td><td>rust-for-order</td></tr>
+            <tr><td>H18</td><td>RocketMQ 监听器内阻塞 HTTP 无超时 + 毒消息无限重试</td><td>goods_consumer</td></tr>
+            <tr><td>H19</td><td>全部 Kafka/RocketMQ 客户端关闭 TLS 校验</td><td>goods_consumer / icc-task</td></tr>
+            <tr><td>H20</td><td>Redis pub/sub 缓存刷新无投递保证 → 永久陈旧路由</td><td>route-center</td></tr>
+            <tr><td>H21</td><td>规则配置加载静默失败开放/语义改变/默认启用</td><td>route-center</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>另有：rs-gray-ms 的两个设计问题</h3>
+      <ul>
+        <li><strong>缓存一次性写入且不可刷新</strong>：启动时从 DB 加载一次进内存，此后无刷新机制——改灰度名单必须重启 pod。</li>
+        <li><strong>隐式规则语义危险</strong>：手机号后缀匹配的语义使白名单里一个短后缀即可命中大量用户。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>修复排序 <em>先补鉴权与 panic，再修一致性</em></h2>
+      <ol>
+        <li><strong>鉴权</strong>：两个网关的 <code>authjwt</code> 改为真实 JWT 验签（引入 jwt 库 + 公钥），环境变量未设时<strong>默认拒绝</strong>而非放行；给 <code>/api/v1/proxy/*</code>、<code>icc-task</code> 运维端点、<code>rs-gray-ms</code> 的 OSS 上传加内网鉴权；<code>goods_cart</code> 的 <code>member-id</code> 改为从已验签 JWT 提取。</li>
+        <li><strong>凭据</strong>：轮换 6 处 <code>.env</code>/<code>README</code> 中的全部凭据并清理 git 历史，补 <code>.gitignore</code>。</li>
+        <li><strong>panic</strong>：修 <code>coupons[len-1]</code> 空数组下标；给 <code>quantity</code>、<code>page_size</code> 加上界；<code>partial_cmp().unwrap()</code> 改为 NaN 安全比较；<code>expect("Time went backwards")</code> 改为容错。<code>icc-task</code> 考虑改回 unwind。</li>
+        <li><strong>验签</strong>：飞鹅回调改为真实签名验证（RSA 签名而非解密）；签名规范化加转义与固定分隔；回调加时间戳窗口 + 内容派生幂等键。</li>
+        <li><strong>库存一致性</strong>：派发改为按 <code>(store_id, item_id)</code> 哈希分区；把跨渠道重算整体移入 Lua；序号改为 <code>(partition, offset)</code>；时间戳解析失败改为拒绝而非当 0。</li>
+        <li><strong>路由可靠性</strong>：配置加载失败改 fail-closed（保留旧规则集）；缓存刷新加版本号 + 定期轮询兜底；冲突检测加分支数上限。</li>
+        <li><strong>引擎一致性</strong>：促销引擎金额改 <code>Decimal</code>；修同优先级组内的冲突判定；真正传入优先级与冲突关系（或删除这套死机制）；删除 <code>calculator/mod.rs</code> 的矛盾死校验链；<code>Money</code> 券返回实际抵扣额。</li>
+        <li><strong>会员码</strong>：改为服务端 HMAC + 重放缓存，并审计所有把「解析成功」当作持卡证明的调用方。</li>
+        <li><strong>数据完整性</strong>：修 POS 订单明细 INSERT 的漏字段。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

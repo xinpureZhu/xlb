@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>平台运维深度分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+    <h1>平台运维（gitops / logs-monitor）· 代码深度分析</h1>
+    <p class="subtitle">Jsonnet 渲染内核的取值优先级、三套并行的灰度机制、金丝雀分析门槛的实际有效性，以及日志巡检的静默失效问题。</p>
+    <p class="meta">最后更新：2026-08-01 · 基准：gitops 非 git 副本 / logs-monitor <code>master</code> · 数据来源：Jsonnet 与 Python 源码静态分析</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html" class="active">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s0">结论速览</a></li>
+        <li><a href="#s1">渲染内核与取值优先级</a></li>
+        <li><a href="#s2">密钥引用机制</a></li>
+        <li><a href="#s3">生成对象与 sync-wave</a></li>
+        <li><a href="#s4">三套灰度机制</a></li>
+        <li><a href="#s5">ArgoCD 同步策略</a></li>
+        <li><a href="#s6">配置层级与安全闸门</a></li>
+        <li><a href="#s7">logs-monitor</a></li>
+        <li><a href="#s8">风险清单（分级）</a></li>
+      </ol>
+    </div>
+
+    <div class="callout warn" id="provenance">
+      <strong>分析基准 · 关键指标已重校</strong> ArgoCD 部署仓是 <code>repos/gitops/apps</code>（<strong>不是</strong> <code>repos/gitops/</code> 本身，后者不是 git 工作副本），现在 <code>test</code> 分支 <code>5184831706c</code>（2026-08-07，落后 0）。<code>logs-monitor</code> 在 <code>master</code>（无 prod 分支）。
+      <p><strong>该仓迭代极快</strong>——从 07-31 到 08-07 一周内前进约 2900 个提交。已对规模与风险指标重新测量，见下方「重校结果」；Jsonnet 渲染内核的实现细节（取值优先级、密钥引用、lane 展开）<strong>仍需复核</strong>。</p>
+    </div>
+
+    <section class="card" id="recheck">
+      <h2><span class="num">00</span>重校结果 <em>规模持续增长 · 风险机制未变</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>指标 / 结论</th><th>本篇原值</th><th>最新实测（08-07）</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td><code>*.app.yaml</code> 服务定义</td><td>684</td><td><strong>699</strong></td><td><span class="badge warn">已变化</span></td></tr>
+            <tr><td>命名空间目录</td><td>113 业务 + 约 50 平台</td><td><strong>159</strong></td><td><span class="badge warn">已变化</span></td></tr>
+            <tr><td><strong>H6</strong> 无 <code>resources</code> 限制的服务</td><td>89</td><td><strong>89</strong>（占比从 13% 降至 12.7%，绝对值未变）</td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>C1</strong> 含明文 <code>PASSWORD</code> 的 app.yaml</td><td>约 348</td><td><strong>155 / 699</strong>——按更严格的「值为非空字面量」口径测得。<strong>数量显著下降</strong>，可能有部分已迁到 <code>secretKeyRef</code>，但仍有 <strong>22% 的服务定义直接内联密码</strong></td><td><span class="badge warn">部分改善</span></td></tr>
+            <tr><td><strong>H3</strong> 配了 <code>rolloutSteps</code> 的服务</td><td>17 / 684</td><td><strong>39 个文件</strong>（含 <code>.jsonnet</code>），但 <strong><code>*.app.yaml</code> 中为 0</strong>——说明金丝雀步骤只在手写 jsonnet 的服务里配置，占绝大多数的 app.yaml 服务<strong>仍无任何 pause/weight 步骤</strong></td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>H3</strong> AnalysisTemplate 阈值 0.9999 且 <code>len(result) == 0</code> 判成功</td><td>—</td><td><strong>完全未变</strong>：<code>successCondition: 'len(result) == 0 || !(result[0] &lt; ' + threshold + ')'</code>，默认阈值仍 <code>0.9999</code> → <strong>canary 无流量时分析恒通过</strong></td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>H1</strong> 除 argocd 外全部命名空间自动 prune + selfHeal</td><td>—</td><td><strong>未变</strong>：<code>prune: app != 'argocd'</code>、<code>selfHeal: true</code><div class="loc">argocd/Application.libsonnet:111-112</div></td><td><span class="badge danger">仍存在</span></td></tr>
+            <tr><td><strong>H5</strong> PDB 非生产环境 <code>minAvailable: 0</code>，生产默认 <code>floor(minReplicas/2)</code></td><td>—</td><td><strong>逻辑一字未改</strong>：<code>std.get({prod: ...floor(minReplicas/2)}, clusterParams.artifactsBranch, 0)</code> → 非 prod 仍为 0<div class="loc">templates/App/PodDisruptionBudget.libsonnet:10</div></td><td><span class="badge danger">仍存在</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <strong>唯一的正向信号：明文密码的服务定义数下降</strong> 从约 348 降到 <strong>155 / 699</strong>。虽然口径略有差异（本次采用「值为非空字面量」的更严格匹配），但降幅明显，说明有部分服务已改用 <code>secretKeyRef</code>。<strong>不过仍有 22% 的服务定义直接内联密码</strong>，且仓库历史仍保留全部旧值——<strong>轮换仍是必需的</strong>。
+      </div>
+      <div class="callout danger">
+        <strong>风险机制层面零变化</strong> 自动 prune + selfHeal、金丝雀分析的空结果判成功、PDB 非生产形同虚设、89 个服务无资源限制——这些<strong>模板层的设计缺陷一个都没动</strong>。它们的共同特征是<strong>失败模式偏静默</strong>：不会报错，只在故障时才显现。建议优先处理「金丝雀恒通过」与「渲染失败可导致静默 prune」这两项，因为它们会让发布流程<strong>看起来正常但实际无保护</strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s0">
+      <h2><span class="num">00</span>结论速览 <em>设计精巧但失败模式偏静默</em></h2>
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">684</div><div class="l">*.app.yaml 服务定义</div></div>
+        <div class="stat"><div class="n">~348</div><div class="l">含明文 PASSWORD 的 app.yaml</div></div>
+        <div class="stat"><div class="n">17/684</div><div class="l">配了 rolloutSteps 的服务</div></div>
+        <div class="stat"><div class="n">89</div><div class="l">无 resources 限制的服务</div></div>
+      </div>
+      <div class="callout danger">
+        <strong>Critical（3 项）</strong>
+        <ol>
+          <li><strong>明文生产凭据遍布 gitops</strong>：RabbitMQ / RocketMQ 四环境凭据、ES 生产密码、阿里云推送 appSecret、Redis 密码、腾讯云 SecretId/Key、美团 APP_SECRET，以及 ACR 仓库账号密码<strong>内联在渲染模板里</strong>。<code>PASSWORD:</code> 带字面量的 grep 命中约 <strong>348 / 684</strong> 个服务文件。<code>argocd-repo-server</code> 容器与每个 CI job 都持有生产数据面凭据；轮换需改动数十个文件且无审计。</li>
+          <li><strong>密钥以普通 env var 下发，且「敏感」路径仍写明文进 manifest</strong>：敏感判定只匹配名字含 <code>PASSWORD</code>/<code>SECRET</code>，所以 <code>TOKEN</code>、<code>ACCESS_KEY</code> 类名称<strong>直接内联为字面量</strong>；即使走了敏感分支，生成的 Secret 用的是 <code>stringData</code>——<strong>明文照样进渲染产物</strong>。而 env var 对 <code>kubectl describe/exec</code> 可见，还会被 crash dump 与全程开启的 OTEL 链路捕获。</li>
+          <li><strong>单个 <code>clusterName.libsonnet</code> 写错即部署到错误集群</strong>：这一行字符串决定制品分支、镜像仓库、域名、Pulumi 栈（即 <code>IAC__*</code> 凭据）、env 分支、Application 清单与 ArgoCD 目标分支。改成 prod 会让每个渲染产物指向生产端点与生产凭据，<strong>无任何对象级防护</strong>。引导脚本有严密的三方校验，但那只在引导时运行——<strong>普通提交 + 常规同步完全绕过它</strong>。雪上加霜：dev/test/staging <strong>三个环境共用同一 git 分支</strong>。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>渲染内核与取值优先级 <em>逗号键语法 + 五级引用解析</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  IN["*.app.yaml / 1compose/*.yaml"] --> C["Compose.libsonnet<br/>渲染内核"]
+  ART["artifacts.libsonnet<br/>镜像 tag"] --> C
+  C --> T["traverseValue 递归遍历"]
+  T --> G["getEnvSpecificValue<br/>按环境取值"]
+  G --> G1["1. 精确成员匹配<br/>prod,prod-gray: 同时命中"]
+  G1 --> G2["2. -gray 回退到基础环境<br/>但 branch/deploy/cronjobs 等 4 键不继承"]
+  G2 --> G3["3. default 字段"]
+  G3 --> G4["4. 逗号键内的 default"]
+  G4 --> G5["5. defaultValue 参数"]
+  T --> R["字符串引用解析（按序）"]
+  R --> R1["IAC__* → cloudEnvs（缺失则报错）"]
+  R1 --> R2["envs.a.b.c"]
+  R2 --> R3["ENVS__A__B__C"]
+  R3 --> R4["services.name"]
+  R4 --> R5["SERVICES__NAME"]
+  R5 --> R6["字面量"]
+  C --> OUT["K8s 对象列表"]
+        </pre>
+        <p class="arch-title">图 1 · 取值与引用解析的优先级链</p>
+      </div>
+      <p><strong>逗号键语法</strong>：<code>prod,prod-gray: '4301'</code> 同时命中两个环境。<code>-gray</code> 环境会回退到基础环境取值，<strong>但 <code>branch</code>/<code>enablePublicAccess</code>/<code>deploy</code>/<code>cronjobs</code> 四个键刻意不继承</strong>——灰度 lane 必须显式声明才会部署。</p>
+      <div class="callout warn">
+        <strong>三处静默歧义</strong>
+        <ul>
+          <li>匹配到多个键时取<strong>字母序第一个</strong>且无断言 → <code>prod:</code> 与 <code>prod,prod-gray:</code> 并存时按字母序偶然决定。</li>
+          <li>「是否环境选择器」的判定是启发式的 → 任何嵌套配置对象只要有字段名恰好叫 <code>prod</code>/<code>test</code>/<code>default</code>，就会被<strong>误判并塌缩为单一分支</strong>。</li>
+          <li>环境判定完全依赖<strong>名称后缀</strong> <code>-gray</code> → 一个正常命名恰好以 <code>-gray</code> 结尾的服务会被自动当作灰度 lane。</li>
+        </ul>
+      </div>
+      <p><strong>制品缺失即静默跳过</strong>：服务只在「可部署 ∧ 有制品 tag」时渲染。<strong>tag 缺失不报错，直接跳过整个服务</strong>——配合 ArgoCD 的自动 prune，一次 <code>artifacts.libsonnet</code> 合并事故就会静默删除该服务在生产的全部对象。而本地渲染脚本<strong>不聚合退出码</strong>，渲染失败仍返回 0。</p>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>密钥引用机制 <em>设计正确，但补丁层把明文写回产物</em></h2>
+      <p>基础 <code>cloudEnvs</code> 由<strong>提交进仓库的 Pulumi 栈状态 JSON</strong> 派生：折叠资源清单，按 URN 尾部 <code>{env}--{namespace}--{name}</code> 三段命名解析，把资源类型映射为属性集（OSS、Kafka、ES、MongoDB、PolarDB、RAM、RDS、Redis、RocketMQ、腾讯 CAM/COS）。<strong>密码始终以 <code>secretKeyRef</code> 指针形式输出，真实值不进 manifest</strong>——这部分设计是正确的。</p>
+      <div class="callout danger">
+        <strong>但补丁层破坏了该设计</strong> <code>cloudEnvsPatch</code> 的条目会覆盖 <code>cloudEnvs</code>：
+        <ul>
+          <li>名字含 <code>PASSWORD</code>/<code>SECRET</code> 的 → 换成 <code>secretKeyRef</code>，<strong>但字面量被聚合并以 <code>stringData</code> 写入一个真实的 Opaque Secret</strong> → 明文照样出现在渲染产物中。</li>
+          <li>其余（<code>TOKEN</code>、<code>ACCESS_KEY</code> 等）→ <strong>直接内联为普通字符串</strong>。</li>
+        </ul>
+        <strong>命名约定是承重的</strong>：Pulumi 资源名若 <code>--</code> 段数不对，会从 <code>cloudEnvs</code> 中<strong>静默消失</strong>，直到渲染时报出「IAC key 不存在」。
+      </div>
+      <p>整体优先级：<strong><code>IAC__</code> 补丁 &gt; Pulumi 栈输出 &gt; 报错</strong>。</p>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>生成对象与 sync-wave <em>波次是计算得出而非硬编码</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>对象</th><th>关键默认值</th><th>sync-wave</th></tr></thead>
+          <tbody>
+            <tr><td>DestinationRule（+canary）</td><td><code>consistentHash</code> 为空则不设 trafficPolicy；maglev 表 65537</td><td><strong>0</strong></td></tr>
+            <tr><td>AnalysisTemplate</td><td>阈值 <code>0.9999</code></td><td><strong>0</strong></td></tr>
+            <tr><td>Rollout / Deployment</td><td>默认 <code>Rollout</code>；<code>revisionHistoryLimit: 0</code>；优雅停机 30s；拓扑分散 maxSkew 1 ScheduleAnyway</td><td><strong>1</strong>（= DR 波次 +1）</td></tr>
+            <tr><td>HPA v2</td><td><strong>只有一个指标</strong>：Resource/cpu 的 AverageValue</td><td><strong>10</strong></td></tr>
+            <tr><td>Service（+canary）</td><td>非 grpc 时端口固定 <strong>80</strong>；默认走 waypoint（6 个遗留应用例外）</td><td>默认</td></tr>
+            <tr><td>HTTPRoute</td><td>parentRef 指向自身 Service:80；默认规则 stable 100 / canary 0</td><td>默认</td></tr>
+            <tr><td>AuthorizationPolicy</td><td>默认<strong>黑名单</strong>模式；始终 <code>action: DENY</code></td><td>默认</td></tr>
+            <tr><td>PodDisruptionBudget</td><td><strong>仅 prod</strong> 取 <code>floor(minReplicas/2)</code>，其它环境 <code>minAvailable: 0</code></td><td>默认</td></tr>
+            <tr><td>ConfigMap</td><td>md5 打进 pod 注解以强制重启</td><td>默认</td></tr>
+            <tr><td>CronJob</td><td><code>Forbid</code> + <code>OnFailure</code>；灰度应用完全跳过</td><td>默认</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <strong>CronJob 的「间隔 hack」</strong> 分钟字段被解析成秒；若 ≤300s，容器会跑<strong>无限 <code>while true; ...; sleep N; done</code> 循环</strong>而非一次性 curl——一个「永不退出的 CronJob」，靠 <code>Forbid</code> 防重。后果：该 pod 成了事实上的单例守护进程，<strong>无存活探针、无挂起检测、无 CronJob 失败信号</strong>；curl 失败只 echo 后继续（一次性路径会 exit 1）。命令还是字符串拼接且<strong>不转义</strong>，header 或 body 里的引号会破坏或注入 shell 命令。
+      </div>
+      <p><strong>平台 env 注入</strong>：每个容器都会被前置注入固定 env 块（NAMESPACE / APP / POD_NAME / POD_IP / CLUSTER_TYPE / OTEL 系列），用户 env 追加在后且 <code>OTEL_URL</code> 被过滤——所以用户<strong>不能覆盖 OTEL_URL 但可以遮蔽其它键</strong>（重复键，K8s 取最后一个）。</p>
+      <p><strong>反亲和性不对称</strong>：Deployment/StatefulSet 得到真实的 required 反亲和；而 <strong>Rollout 的 required 变体被一个 <code>&amp;&amp; false</code> 永久禁用</strong>，只剩 weight 100 的 preferred。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>三套灰度机制 <em>-gray 兄弟应用 / baggage lane / Argo 金丝雀</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph M1["机制① -gray 兄弟应用"]
+    A1["每服务生成影子 name-gray"]
+    A2["基础 HTTPRoute 注入 preRule<br/>匹配 header is-gray: true"]
+    A1 --> A2
+  end
+  subgraph M2["机制② 多迭代 lane（baggage）"]
+    B1["artifacts tag 为对象时<br/>每个 lane 展开成一个完整应用"]
+    B2["router 占据裸名<br/>Service selector 指向默认 lane"]
+    B3["按 W3C baggage 头正则匹配 lane"]
+    B1 --> B2 --> B3
+  end
+  subgraph M3["机制③ Argo Rollouts 金丝雀"]
+    C1["canaryService / stableService"]
+    C2["maxSurge 50% / maxUnavailable 50%"]
+    C3["AnalysisTemplate istio-success-rate"]
+    C4["rolloutSteps 默认为空<br/>仅 17/684 服务配置"]
+    C1 --> C2 --> C3 --> C4
+  end
+  M1 -.正交.- M2
+  M2 -.正交.- M3
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class C2,C4 bad
+        </pre>
+        <p class="arch-title">图 2 · 三套并行且正交的灰度机制</p>
+      </div>
+      <div class="callout danger">
+        <strong>金丝雀门槛阈值正确，但闸门几乎无用</strong>
+        <ul>
+          <li>成功条件是 <code>len(result) == 0 || !(result[0] &lt; 0.9999)</code>——<strong><code>len(result) == 0</code> 判定为成功</strong>。而默认规则给 canary 的权重是 <strong>0</strong>，且只有 17/684 的服务配了 <code>rolloutSteps</code>，因此<strong>绝大多数情况是「canary 完全没有流量」→ 分析永远通过</strong>；指标读取失败返回空序列同样通过。</li>
+          <li>指标只统计 <code>response_code!~"5.*"</code> 在 40s <code>irate</code> 窗口内的比例 → <strong>对延迟劣化、4xx 洪峰、连接重置、崩溃重启完全失明</strong>；低 RPS 下 40s 内的 0.9999 在统计上无意义。</li>
+          <li><code>maxSurge</code>/<code>maxUnavailable</code> 均为 <strong>50%</strong>（发布期间可有一半实例不可用），而 <code>revisionHistoryLimit: 0</code> 意味着<strong>没有上一个 ReplicaSet 可回滚</strong>。</li>
+        </ul>
+      </div>
+      <p><strong>跨集群迁移权重</strong>：因 Gateway 与 Waypoint 各应用一次权重，实际比例是 <code>W×(200−W)/100</code>，所以配置值是反解出来的 <code>W = ceil(100 − 10√(100−目标))</code>。有断言强制「灰度先行」。另有一个<strong>手写的正则校验器</strong>逐字符检查括号配对与量词合法性，避免非法正则进到 Envoy。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>ArgoCD 同步策略 <em>自动 prune + ignoreDifferences 掩盖漂移</em></h2>
+      <ul>
+        <li><strong>源</strong>：固定仓库、路径为命名空间名、递归、<strong>排除 <code>*.app.yaml</code></strong>（它们是输入而非直接应用的清单）。</li>
+        <li><strong>目标分支</strong>：<code>dev/test/staging → 'test'</code>，<code>prod → 'prod'</code>——<strong>三个环境共用一个分支</strong>。</li>
+        <li><strong>同步选项</strong>：<code>RespectIgnoreDifferences</code>、<code>PruneLast</code>、前台传播、<code>ApplyOutOfSyncOnly</code>、<code>CreateNamespace</code>；<code>ServerSideApply</code> <strong>仅</strong>对 observability 与 chaos-mesh 开启（因超大 CRD 会撞上注解 256KB 上限）。</li>
+        <li><strong>自动化</strong>：<code>prune: true</code>（仅 argocd 自身豁免）+ <code>selfHeal: true</code>。</li>
+      </ul>
+      <div class="callout danger">
+        <strong><code>ignoreDifferences</code> 掩盖真实漂移</strong> 除了必要的 replicas 与 Argo header 路由外，还忽略了 <strong>Rollout 的整个 <code>/metadata/annotations</code></strong>——而 sync-wave 与 configmap-md5 恰好就放在该注解 map 里。任何注解级变更（波次调整、手工 annotate、operator 写入状态）对 ArgoCD <strong>永久不可见</strong>。配合 <code>RespectIgnoreDifferences</code>，这些排除对同步也生效，<strong>漂移永不被纠正</strong>。另有一段被注释的规则若启用，会让所有 HTTPRoute 的流量权重<strong>完全脱管</strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>配置层级与安全闸门 <em>引导脚本的三方校验很严密</em></h2>
+      <pre><code>clusterName.libsonnet（一行字符串，如 'ali-test'）
+  └─ clusterParams：解析 cloud-type[-version]
+       ├─ 制品分支 dev/test/staging/prod
+       ├─ 镜像仓库域名（ali / tencent）
+       ├─ 域名 &lt;cloud&gt;-&lt;type&gt;.xlbsoft.com
+       ├─ useAliIstio / useAlb（按版本号）
+       └─ patchWorkload / patchArtifacts（dev/staging 复用 test tag）
+  ├─ cloudEnvs ← Pulumi 栈 JSON → IAC__* 映射（被 cloudEnvsPatch 覆盖）
+  ├─ envs：手工维护的各环境基础设施端点
+  ├─ services：扁平的「服务 → 集群内 URL」注册表（114 条）
+  ├─ contacts：各命名空间飞书 webhook 与负责人
+  └─ routes-to-new-cluster：各应用迁移权重</code></pre>
+      <p><strong>引导脚本的六步安全闸门</strong>（这部分做得很好）：① 交互输入 clusterName 并对白名单校验；② kubeconfig 路径校验；③ <strong>渲染 <code>clusterName.libsonnet</code> 必须与输入值一致</strong>（仓库状态须与操作者意图相符）；④ 从 kubectl 当前上下文提取 ACK 集群 hash，并以 Pulumi 栈状态中的托管集群 id 作白名单校验；⑤ 摘要表 + 生产环境需输入固定英文短语确认；⑥ clusterName 二次输入且两次必须一致。</p>
+      <div class="callout warn"><strong>但闸门只在引导时生效</strong>：一次针对 <code>clusterName.libsonnet</code> 的普通提交 + 常规 ArgoCD 同步就完全绕过它，且<strong>无 CI 断言校验分支的 clusterName 是否与其目标环境匹配</strong>。第 4 步的白名单还是用文本 grep 抓 Pulumi JSON，Pulumi 一旦重排或改格式即失效。</p></div>
+      <p><strong>按服务制品分支模型</strong>：一个辅助脚本为某命名空间的每个服务文件派生一条独立分支，逐条 ff-only 合并后再汇总到 <code>test</code>。<strong>为何需要精确 refspec</strong>：macOS 默认卷<strong>大小写不敏感</strong>，而 git 松散引用是文件；本仓的制品 tag 与分支名<strong>大小写混用</strong>（如 <code>i20260531</code> 与 <code>I20260729</code>），两者会碰撞成同一路径导致 <code>git fetch</code> 报 ref 锁错误并<strong>污染整次 fetch</strong>。只 fetch 精确需要的引用即可避免。</p>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>logs-monitor <em>Cookie 约 1 小时过期 → 巡检大部分时间是坏的</em></h2>
+      <p>职责是 API 路径覆盖率巡检：查 Grafana→VictoriaLogs 的 Istio sidecar 访问日志（LogsQL <code>stats(path) count()</code>），把观测到的路径与预设清单比对，累计写入按命名空间的 JSON 状态，最后推送飞书交互卡片。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  CRON["cron 每小时 :05"] --> RUN["run.sh<br/>首次自动建 venv"]
+  RUN --> CLI["cli run"]
+  CLI --> Q["grafana.query_paths<br/>按 max_window_hours 切段求和"]
+  Q --> P["三级启发式解析<br/>① VictoriaLogs JSON 单元<br/>② 列式 dataframe<br/>③ 兜底首列/末列"]
+  P --> M["state.merge_observed<br/>累计计数 + 原子写"]
+  M --> C["coverage.compute<br/>对比预设清单"]
+  C --> R["report.build_card"]
+  R --> F["飞书群"]
+  Q -.401 Cookie 过期.-> ERR["抛错 → cli 捕获 → 日志一行 → exit 1<br/>无飞书消息 = 唯一信号"]
+  classDef bad fill:#fef2f2,stroke:#dc2626
+  class ERR bad
+        </pre>
+        <p class="arch-title">图 3 · 巡检闭环与静默失效路径</p>
+      </div>
+      <div class="callout danger">
+        <strong>Grafana Cookie 约 1 小时过期，而 cron 是每小时跑</strong> <code>GRAFANA_COOKIE</code> 是必填环境变量并作为静态 session 头，<strong>无刷新、无服务账号、无 API token 路径</strong>。过期后抛错 → 被 CLI 的兜底 <code>except</code> 捕获 → 只记一行日志并返回 1；而 cron 把输出重定向到 <code>/tmp</code>，<strong>失败完全不可见——「没收到卡片」是唯一信号</strong>。结论：<strong>该巡检大部分时间处于失效状态</strong>。而它恢复后又会因读累计状态而报出一个「健康」的百分比（反映的是历史而非当前覆盖）。
+      </div>
+      <p><strong>其它设计细节</strong>：状态写入是<strong>原子的</strong>（写 tmp 再 rename），但 tmp 是固定同名兄弟文件，<strong>同命名空间并发运行会互相覆盖</strong>；<code>json.load</code> 无 try/except，文件损坏后每次运行都失败且唯一恢复手段是 reset（会丢弃数月累计）；覆盖率对比<strong>累计</strong>集合，故一旦见过即永久「已覆盖」——几个月前就坏掉的端点仍计入；<strong>无预设路径的服务会报 0.0% 而非 100%</strong>；卡片只有绿/橙两态，<strong>无红色失败态</strong>，且尽管状态里记了 <code>last_seen</code> 却没有陈旧度检查。</p>
+      <p><strong>另有一处会直接导致不可用</strong>：<code>crontab.example</code> 里的路径<strong>缺了一级目录</strong>（少了 <code>xlb/</code>），照抄安装后会立即「No such file or directory」，且错误只写进无人查看的 <code>/tmp</code> 日志。同时它硬编码了某开发者的 <code>$HOME</code>。</p>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>风险清单（分级） <em>Critical 3 · High 7 · Medium 8</em></h2>
+      <h3>High</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>问题</th></tr></thead>
+          <tbody>
+            <tr><td>H1</td><td><strong>除 argocd 外全部命名空间开启自动 prune</strong>，配合递归目录同步：任何误删<strong>或渲染失败</strong>导致对象从清单消失，即会删除线上资源。而制品 tag 缺失是<strong>静默跳过</strong>（不报错），本地渲染脚本又不聚合退出码 → 一次 artifacts 合并事故可静默 prune 掉生产服务的全部对象；<code>selfHeal</code> 还会把删除重新应用到任何人工恢复上</td></tr>
+            <tr><td>H2</td><td><code>ignoreDifferences</code> 忽略 <strong>Rollout 的整个 annotations map</strong>（而 sync-wave 与 configmap-md5 就在其中）→ 漂移永久不可见且不被纠正</td></tr>
+            <tr><td>H3</td><td><strong>金丝雀分析门槛几乎无效</strong>：空结果判成功 + 默认 canary 权重 0 + 仅 17/684 配步骤 → 绝大多数情况恒通过；指标对延迟/4xx/崩溃失明；50% maxUnavailable + <code>revisionHistoryLimit: 0</code>（无可回滚版本）</td></tr>
+            <tr><td>H4</td><td><strong>HPA 只有单一 CPU 指标</strong>：无内存、无 RPS、无自定义指标、无 behavior。IO 或内存瓶颈型服务<strong>永远不会扩容</strong>；<code>AverageValue</code> 是绝对核数而非利用率，与 requests 解耦</td></tr>
+            <tr><td>H5</td><td><strong>PDB 在非生产环境形同虚设</strong>（<code>minAvailable: 0</code>，允许排空所有 pod）；生产默认 <code>floor(minReplicas/2)</code> 故 minReplicas=1 时仍为 0。<strong>684 个文件中无一个覆盖该配置</strong></td></tr>
+            <tr><td>H6</td><td><strong>89 个服务无 resources 限制</strong> → 落入 BestEffort QoS，最先被 OOM/驱逐、可饿死同节点服务，且与 H4 的绝对值 HPA 目标叠加使扩缩容不可预测。模板里有收集 resources 的校验列表，但<strong>两个消费点都被注释</strong></td></tr>
+            <tr><td>H7</td><td><strong>logs-monitor Cookie 过期致巡检静默失效</strong>（见 §07）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Medium</h3>
+      <ul>
+        <li><strong>M1</strong> 状态文件损坏无处理、并发运行争用同一 tmp 文件、无 fsync、无 schema 版本；状态在 gitignore 中即<strong>无备份的本地数据</strong>却已积累数月历史。</li>
+        <li><strong>M2</strong> <code>crontab.example</code> 路径缺一级目录且硬编码个人 <code>$HOME</code> → 照抄即失败。</li>
+        <li><strong>M3</strong> 环境取值的三处静默歧义（多键匹配取字母序、启发式误判配置对象、按名称后缀判定 gray）。</li>
+        <li><strong>M4</strong> <strong><code>-gray</code> lane 默认继承生产凭据与生产端点</strong> → 灰度金丝雀是<strong>全权限的生产客户端</strong>；配合 <code>is-gray</code> 头路由，任何能设该头的调用方都能到达它。</li>
+        <li><strong>M5</strong> CronJob 的 <code>while true</code> 循环使其成为无探针的单例守护进程；命令字符串拼接<strong>不转义</strong>，引号可破坏或注入 shell。</li>
+        <li><strong>M6</strong> 跨集群迁移权重是<strong>手工维护的 433 行表</strong>，按 (namespace, app) 字符串相等匹配，typo 静默得到权重 0（流量悄悄不迁移）。<strong>表中已有一处数据缺陷：某应用名带尾随空格，永远无法匹配</strong>。双重路由补偿公式仅在 Gateway 与 Waypoint 都在链路上时才正确。</li>
+        <li><strong>M7</strong> 1.27MB 的 CRD 大文件用客户端 apply（正是需要 ServerSideApply 的场景，但该选项只给了另两个命名空间）；dev/test/staging 共用一个 git 分支，本意给 dev 的提交下次同步就会到 staging。</li>
+        <li><strong>M8</strong> 覆盖率语义可能读成假绿：无预设路径报 0.0%、累计对比使历史问题永久算「已覆盖」、卡片无红色态、记了 <code>last_seen</code> 却无陈旧检查；配置文件还允许把飞书凭据内联（直接值优先于环境变量引用），而 gitignore 只排除了 <code>.env</code> 与状态文件。</li>
+      </ul>
+      <h3>修复建议</h3>
+      <ol>
+        <li><strong>把全部明文凭据迁到既有的 <code>IAC__*</code> → <code>secretKeyRef</code> 路径</strong>（该机制本身设计正确），并叠加 sealed-secrets 或 external-secrets；<strong>轮换目前已提交的全部凭据</strong>（git 历史仍保留）；把敏感判定从「名字含 PASSWORD/SECRET」改为显式白名单/标注。</li>
+        <li>加 CI 断言：<strong>分支的 <code>clusterName</code> 必须与其目标环境匹配</strong>；给 dev/test/staging 分开 git 分支。</li>
+        <li>渲染管线 fail-fast：制品 tag 缺失应<strong>报错而非跳过</strong>；本地渲染脚本聚合退出码；对「本次渲染对象数相比上次骤降」加门禁以防误 prune。</li>
+        <li>金丝雀：<code>len(result) == 0</code> 改为失败；补延迟与 4xx 指标；为关键服务补 <code>rolloutSteps</code>；<code>revisionHistoryLimit</code> 提到 ≥2；收紧 maxUnavailable。</li>
+        <li>HPA 补内存/自定义指标与 behavior；给 89 个无限制服务补 requests/limits 并恢复模板里被注释的校验；PDB 在非生产也给出有意义的下限。</li>
+        <li>logs-monitor 改用 Grafana <strong>服务账号 API token</strong> 替代 Cookie；失败时也推送飞书（红色态）；加陈旧度检查（用已有的 <code>last_seen</code>）；修 crontab 示例路径；状态文件加 try/except 与文件锁。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>
