@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>502 / 504 问题分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>502 / 504 问题分析</h1>
+    <p class="subtitle">两类完全不同的故障：<strong>502</strong> 集中在效能平台的一个接口（后端服务在 prod 根本没有部署）；<strong>504</strong> 全部落在 <code>external-split</code> 跨集群切流边上（prod → prod-136，固定 10s 上游超时）。</p>
+    <p class="meta">最后更新：2026-10-16 · 数据来源：生产 VictoriaLogs（访问日志 + 应用日志）、VictoriaMetrics（istio_requests_total / ALERTS / kube_pod_info）、效能平台服务状态、gitops 与 skill 参考</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html" class="active">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <strong>分析基准与边界</strong>
+      数据取自<strong>老 <code>prod</code> 集群</strong>的观测面（Pod/IP/Node 已与效能平台条目核对一致）。
+      <code>prod-136</code> 集群有独立的 VictoriaLogs（<code>vlselect.observability.svc.cluster.local:9471</code>）。
+      观测 MCP 端点只覆盖老 prod；<strong>136 侧数据本次通过 grafana-136 的已登录会话 + 数据源只读代理取得</strong>（Grafana <code>Logs</code> 数据源 uid <code>victoriaLogs</code>，见 <a href="#s9">§09</a>），
+      因此 §09 的 136 侧结论为实测，而 §04 的「136 内部为何超时」仍属未覆盖项。
+      代码侧仅引用 gitops 配置与既有 skill 参考（<code>cross-cluster-fallback-envoyfilter-504.md</code>）；<code>repos/efficiency_platform_web</code> 本地为 <code>prod</code> @ <code>9606ca26</code>（2026-08-11，<span class="badge warn">早于事故，可能滞后</span>），其内容不包含本页结论。
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论摘要 <em>502＝目标服务在 prod 不存在；504＝跨集群切流边 10s 超时</em></h2>
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#s1">结论摘要</a></li>
+          <li><a href="#s2">502：单一接口全量失败</a></li>
+          <li><a href="#s3">502 根因：后端服务在 prod 未部署</a></li>
+          <li><a href="#s4">504：跨集群切流的 10s 超时</a></li>
+          <li><a href="#s5">504 的分布与量级</a></li>
+          <li><a href="#s6">排除项与未覆盖边界</a></li>
+          <li><a href="#s7">修复建议</a></li>
+          <li><a href="#s8">排查口径备忘</a></li>
+          <li><a href="#s9">retail-gateway 专项与 136 边界</a></li>
+        </ol>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">≈10 / min</div><div class="l">502 持续速率（近 3h 440 次，100% 同一接口）</div></div>
+        <div class="stat"><div class="n">1 个接口</div><div class="l">502 的收敛度：<code>/api/agent-square/available-agents</code></div></div>
+        <div class="stat"><div class="n">13 个域名</div><div class="l">504 的影响面（3h 内），全部走 <code>external-split</code></div></div>
+        <div class="stat"><div class="n">≈10.01 s</div><div class="l">504 的上游耗时（固定超时，非随机慢）</div></div>
+      </div>
+
+      <div class="callout danger">
+        <strong>第一类 · 502（效能平台，持续中）</strong>
+        <code>z.xlbsoft.com</code> 前端（<code>efficiency-platform-web</code>）代理接口
+        <code>/api/agent-square/available-agents</code> 转发到 <code>http://agent-square.agent-square</code>，
+        但<strong>该服务在 prod / prod-gray 环境没有部署</strong>（效能平台状态 <code>missing</code>，prod 观测面里该命名空间<strong>只有 waypoint、没有应用 Pod</strong>）
+        → 前端代理立即失败 → 每个请求都是 <strong>502</strong>（<code>flags="-"</code>、12–19ms、<code>bytes_received=0</code>）。
+      </div>
+
+      <div class="callout danger">
+        <strong>第二类 · 504（跨集群切流，间歇）</strong>
+        老 prod 网关按 <code>HTTPRoute</code> 的 <code>external-split</code> 规则把部分流量转发到
+        <code>outbound|80||ack-136-ingressgateway-inner-ips…</code>（即 prod-136 内网网关），
+        等待<strong>恰好 ~10s</strong> 仍未拿到响应 → 返回 504（24 字节 <em>upstream request timeout</em> 体）。
+        位置固定、与具体业务无关：3 小时内波及 <strong>13 个域名</strong>（scm-web / tms-web / wms-web / public-web.mdm / pushly / fsms-web / erp-web / bi-new / cdp-api …）。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>502：单一接口全量失败 <em>440 行 / 3h，100% 落在同一个 path</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  B["浏览器 z.xlbsoft.com"] --> IG["istio ingressgateway"]
+  IG --> WP["waypoint · efficiency"]
+  WP --> FE["efficiency-platform-web<br/>Node 代理 :4321"]
+  FE -->|"http://agent-square.agent-square/api/available-agents"| AS["agent-square<br/>prod 未部署 · 无 Pod"]
+  AS -.->|"连接失败 · 12-19ms"| FE
+  FE -.->|"502 · 67 字节"| B
+        </pre>
+        <p class="arch-title">图 1 · 502 链路：断点在后端服务的「不存在」</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>观测值（2026-10-16 12:00–15:00）</th></tr></thead>
+          <tbody>
+            <tr><td>数量</td><td>440 条访问日志（waypoint 侧），≈ <strong>2.4/min</strong>；近 30 分钟 320 条（≈10.7/min）</td></tr>
+            <tr><td>path 收敛度</td><td><code>/api/agent-square/available-agents</code> = <strong>440 / 440（100%）</strong></td></tr>
+            <tr><td>authority</td><td><code>z.xlbsoft.com</code> 409 · <code>efficiency-platform-web.efficiency.ali-prod.xlbsoft.com</code> 25 · <code>z.ali-prod.xlbsoft.com</code> 3 · gray 域名 3</td></tr>
+            <tr><td>upstream_host</td><td>三个 prod 前端 Pod <code>:4321</code>（172.16.58.103 / 172.16.58.6 / 172.16.55.16）——<strong>502 由前端 Pod 自己产生</strong></td></tr>
+            <tr><td>时延与报文</td><td><code>duration=12–19ms</code>、<code>bytes_received=0</code>、<code>bytes_sent=67</code>、<code>response_flags="-"</code> ⇒ 立即失败，非超时</td></tr>
+            <tr><td>趋势（30m 桶）</td><td>10-14 15:00–21:00 ≈0.10–0.17 rps 高峰；10-14 22:00–10-15 20:00 近 0；<strong>10-15 21:40 起回升并持续 ≈0.10–0.21 rps 至今</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>502 根因：后端服务在 prod 未部署 <em>前端日志直接给出上游地址，后端侧无 Pod</em></h2>
+      <p><strong>① 前端自己的日志</strong>（证明上游是谁）：</p>
+      <div class="loc">VictoriaLogs · <code>{namespace="efficiency", pod="efficiency-platform-web-65746df9d-f79gs"}</code></div>
+      <pre><code>[agent-square Proxy] Forwarding request to: http://agent-square.agent-square/api/available-agents?name=z-agent</code></pre>
+
+      <p><strong>② 上游侧事实</strong>（证明它不存在）：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>核查项</th><th>结果</th></tr></thead>
+          <tbody>
+            <tr><td>效能平台 <code>agent-square</code>（id 41872，namespace <code>agent-square</code>）</td><td>dev / test / staging = <strong>Healthy（各 2 副本）</strong>；<strong>prod-gray = missing、prod = missing</strong></td></tr>
+            <tr><td>prod 集群 <code>namespace=agent-square</code> 的日志来源</td><td>近 2 小时只有 <code>waypoint-74db7b5846-*</code> 两条 Pod，<strong>没有任何 <code>agent-square</code> 应用 Pod</strong></td></tr>
+            <tr><td>调用方（效能平台后端）配置</td><td><code>efficiency/efficiency.app.yaml</code>：<code>AGENT_SQUARE_SERVER_URL: "http://agent-square.agent-square"</code> —— 同一地址，prod 同样打不通</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <strong>结论与语义问题</strong>
+        「后端不存在」本应是 <strong>404 / 503（无可用上游）</strong> 或带业务语义的降级响应；
+        当前前端代理把它变成<strong>裸 502 + 67 字节响应体</strong>，终端用户看到的是「网关错误」，排查者看到的是「502 一堆」，两边都拿不到「这个功能在 prod 没有后端」这一信息。
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>504：跨集群切流的 10s 超时 <em>route_name=external-split · upstream=prod-136 内网网关</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  B["浏览器 / 客户端"] --> IG["老 prod ingressgateway"]
+  IG --> RT{"HTTPRoute<br/>external-split"}
+  RT -->|"本地权重"| L["prod 本地服务 · 正常"]
+  RT -->|"远端权重"| R["ack-136-ingressgateway-inner-ips<br/>172.16.120.145 / 172.16.185.105"]
+  R -.->|"~10010ms 无响应"| IG
+  IG -.->|"504 · 24 字节 upstream request timeout"| B
+        </pre>
+        <p class="arch-title">图 2 · 504 链路：固定 10s 卡在跨集群那一段</p>
+      </div>
+      <p><strong>访问日志原文</strong>（三例，均为 <code>bytes_sent=24</code>、<code>upstream_service_time≈10010ms</code>）：</p>
+      <pre><code>authority: scm-web.scm.ali-prod.xlbsoft.com      path: /scm/...           504
+authority: fsms-web.fsms.ali-prod.xlbsoft.com     path: /fsms/hxl.fsms.board.customercomplaintmonth.read   504
+authority: wms-web.wms.ali-prod.xlbsoft.com       path: /wms/hxl.wms.pickorder.page                         504
+route_name:        external-split
+upstream_cluster:  outbound|80||ack-136-ingressgateway-inner-ips.istio-system.svc.cluster.local;
+upstream_host:     172.16.185.105:80 / 172.16.120.145:80
+upstream_service_time: 10008 / 10010 / 10024     duration: 10008 / 10010 / 10024
+response_flags:    -                             bytes_sent: 24</code></pre>
+      <div class="callout">
+        <strong>判读要点</strong>
+        <ul>
+          <li><code>upstream_service_time</code> 与 <code>duration</code> 几乎相等且<strong>钉在 10s</strong> ⇒ <strong>上游请求超时</strong>（固定超时被触发），不是随机慢、不是连接被拒。</li>
+          <li><code>bytes_sent=24</code> 是 Envoy <em>upstream request timeout</em> 的固定短响应体（与本报关 502 的 67 字节形成对照）。</li>
+          <li><code>route_name=external-split</code> ⇒ 命中的是<strong>老集群→新集群切流规则</strong>，与业务代码无关；同一域名下的本地流量正常。</li>
+          <li>远端 IP 只有两个（<code>172.16.120.145</code>、<code>172.16.185.105</code>），<strong>两者都出现 504</strong> ⇒ 不是「单个网关 Pod 生病」，而是这一段链路整体在超时。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>504 的分布与量级 <em>平台级、间歇性、峰值出现在 10-14 15:00–17:00</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>authority（3h 内）</th><th>504 次数</th><th>authority</th><th>504 次数</th></tr></thead>
+          <tbody>
+            <tr><td><code>scm-web.scm…</code></td><td>39</td><td><code>fsms-web.fsms…</code></td><td>5</td></tr>
+            <tr><td><code>tms-web.tms…</code></td><td>34</td><td><code>bi-new.bi…</code></td><td>4</td></tr>
+            <tr><td><code>wms-web.wms…</code></td><td>28</td><td><code>erp-web.erp…</code></td><td>4</td></tr>
+            <tr><td><code>public-web.mdm…</code></td><td>18</td><td><code>cdp-api.bi…</code> · <code>mobile-fsms</code> · <code>oa-web</code> · <code>erp-h5</code> · <code>fss-web.bms</code></td><td>2 · 1 · 1 · 1 · 1</td></tr>
+            <tr><td><code>pushly.pushly…（SSE 长连接）</code></td><td>13</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li><strong>速率</strong>：3h 共 154 条（≈0.85/min）；1h 内远端 IP 分布 172.16.120.145 = 43 / 172.16.185.105 = 28。</li>
+        <li><strong>趋势</strong>（30m 桶，rps）：10-14 15:00–17:00 峰值 <strong>0.117–0.209</strong>（≈7–12/min）；夜间回落到 0.002–0.01；10-15 有一波 0.086（≈03:00 CST）；近期维持在 <strong>0.01–0.02</strong>（≈1/min）并偶有抬升。</li>
+        <li><strong>性质</strong>：与 doc 28（wms 跨集群 503）同源 —— 都是「老集群 → prod-136」这条切流边路的可靠性问题，只是失败模式不同：那次是远端<strong>立即 503</strong>，本次是远端<strong>约 10s 不回</strong>。</li>
+        <li><strong>SSE 需单独判读</strong>：<code>pushly /pushly/sse.connect.v2</code> 是长连接，10s 超时在 SSE 场景可能是既有告警噪声（参见 skill <code>istio-gateway-sse-latency-false-positive.md</code>），不要与普通 API 的超时混为一谈。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>排除项与未覆盖边界 <em>已排除 mesh/网络/业务代码；136 侧不可见</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项</th><th>结论</th></tr></thead>
+          <tbody>
+            <tr><td>502 是否 mesh 返回</td><td>否：<code>response_flags="-"</code> + <code>upstream_host</code> 已连到前端 Pod <code>:4321</code> ⇒ 前端应用自身返回</td></tr>
+            <tr><td>502 是否本地服务过载</td><td>否：前端 3 个 Pod 均在线、时延 12–19ms、无 5xx 之外的异常；只有一条上游地址失败</td></tr>
+            <tr><td>504 是否本地业务慢</td><td>否：<code>route_name=external-split</code> ⇒ 请求被送去远端；<code>upstream_service_time</code> 全部≈10s，与本地后端耗时无关</td></tr>
+            <tr><td>504 是否单点故障</td><td>否：两个远端内网网关 IP 都出现，且 13 个不同域名命中</td></tr>
+            <tr><td><strong>136 侧为何超时</strong></td><td><strong>本数据源不可达</strong>（136 有独立 VictoriaLogs/Trace）。需在 grafana-136 侧核对：远端网关是否收到该请求、远端应用耗时、远端是否有 10s 的 route/cluster 超时配置</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <strong>顺带发现（同类「配置指向不存在的目标」）</strong>
+        prod 的 <code>efficiency-platform-web</code> 自身日志持续打印
+        <code>[OpenTelemetry Proxy] 转发追踪数据到: http://opentelemetry-collector--observability.test.xlbsoft.com/v1/traces</code>
+        且 <code>Collector 响应状态: 503</code> —— <strong>生产前端把跟踪数据发往 <code>.test.</code> 域名并被 503 拒绝</strong>，
+        属于同类问题（目标错配 + 静默失败），建议一并纠正。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>修复建议 <em>先把「目标是否存在」变成可校验的发布前置条件</em></h2>
+
+      <div class="callout danger">
+        <strong>P0 · 502：先决定「agent-square 是否该在 prod 有后端」，再消除裸 502</strong>
+        <ul>
+          <li>若功能应在生产可用 ⇒ <strong>把 <code>agent-square</code> 部署到 prod</strong>（当前 prod/prod-gray 均为 missing，只有 dev/test/staging 有）。</li>
+          <li>若暂不上线 ⇒ 前端<strong>关掉/降级</strong>该调用（平台配置开关），或让代理在目标不可达时返回 503 + 业务可读文案，而不是 502 裸响应。</li>
+          <li>该接口当前≈10 次/分钟稳定报错、用户可见，修复成本低、收益直观。</li>
+        </ul>
+      </div>
+
+      <div class="callout danger">
+        <strong>P0 · 504：给跨集群边路明确「超时预算 + 降级」</strong>
+        <ul>
+          <li>10s 固定超时说明<strong>远端不响应直到超时</strong>。需要在 136 侧确认是「服务慢」还是「请求根本没到/被静默黑洞」；前者调优远端，后者排查远端网关的路由与安全组。</li>
+          <li>跨集群路由应显式配置<strong>更短的单次超时 + 有限重试 + 失败回落本地</strong>（老集群权重兜底），避免用户端等待 10s 才拿到 504。</li>
+          <li>把「远端权重」与「远端健康/时延」绑定：远端不可用时自动回落到本地，而不是硬等超时。</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <strong>P1 · 可观测性与告警</strong>
+        <ul>
+          <li>按 <code>route_name</code> + <code>upstream_cluster</code> 维度增加 504/502 比率告警：现在这两类问题<strong>都没有触发告警</strong>（同期该命名空间只有 <code>HpaMaxedOut</code>）。</li>
+          <li>把「<code>upstream_service_time ≈ 固定值</code>」作为一种超时指纹纳入巡检：固定 10s/5s 直接指向超时配置而非业务慢。</li>
+          <li>502/504 的 <code>bytes_sent</code> 可作为快速指纹：24 字节 = Envoy 上游超时体；67 字节 = 本次前端代理的自定义错误体。</li>
+        </ul>
+      </div>
+
+      <div class="callout ok">
+        <strong>P1 · 发布前置校验（覆盖本次两类问题）</strong>
+        <ul>
+          <li>服务注册/路由发布时校验<strong>目标 workload 是否存在于目标环境</strong>（agent-square 这类「配置指向未部署服务」可被一次校验拦住）。</li>
+          <li>跨集群切流放量前校验<strong>远端可用性</strong>（与 doc 28 的建议同一条）。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>排查口径备忘 <em>别被查询语法和聚合口径误导</em></h2>
+      <div class="callout warn">
+        <strong>LogsQL 语法坑</strong>
+        <ul>
+          <li><code>response_code :&gt; 500</code>（Grafana 里的写法）在本环境返回 <strong>0 行</strong> —— <code>response_code</code> 是字符串字段，数值比较不生效。请用 <code>response_code:~"50[0-9]"</code> 或显式 <code>response_code:"502"</code>。</li>
+          <li>「5xx 的行数 ≠ 失败请求数」：同一请求会在 <strong>waypoint Pod 与 ingressgateway Pod 各记一条</strong>，统计数量时需除以 2（doc 29 的 236 行 = 118 个请求即由此而来）。</li>
+          <li>跨集群远端流量的流标签是 <code>namespace="istio-system"</code> + <code>svc="&lt;upstream cluster 名&gt;"</code>，<strong>不是目的服务所在命名空间</strong>；按 <code>{namespace="&lt;业务 ns&gt;"}</code> 查会漏。</li>
+          <li>字段位置：<code>authority/path/response_code/upstream_cluster</code> 等可直接过滤；<code>route_name/upstream_host/bytes_sent</code> 等在 <code>_msg</code> 内，需 <code>unpack_json from _msg fields (...)</code>。</li>
+        </ul>
+      </div>
+    </section>
+  <section class="card" id="s9">
+      <h2><span class="num">09</span>retail-gateway 专项 <em>老 prod：504=0；136：4 次 502/504 全部是美团开放平台出向失败</em></h2>
+      <p>若把范围限定到用户最初那条查询的命名空间（<code>{namespace='retail-gateway', container='istio-proxy'}</code>），
+      <strong>本数据源（老 prod 集群）14 天的实况如下</strong>：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>状态码</th><th>14 天数量</th><th>收敛特征</th><th>判读</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>502</strong></td><td><strong>10 条</strong>（10-02 ×4、10-04 ×2、10-12 ×2、10-13 ×1、10-14 ×1）</td>
+              <td>100% 同一路径 <code>/api/v1/proxy/meituan_miaoti</code>；内部 authority <code>retail-thirdpart-gateway.retail-gateway</code>；<code>route_name=default</code>、<code>response_flags="-"</code>、<code>upstream_host=envoy://connect_originate/&lt;网关 Pod&gt;:3000</code></td>
+              <td><strong>网关应用自己回的 502</strong>：<code>retail-thirdpart-gateway</code> 的第三方代理路径出向失败（该路径正常请求返回 200/OP_SUCCESS，如 <code>forward_url: https://api-open-cater.meituan.com/foodmop/sku/update</code>）⇒ 约 0.7 次/天的第三方偶发抖动，非平台故障</td>
+            </tr>
+            <tr>
+              <td><strong>504</strong></td><td><strong>0 条</strong></td>
+              <td>日志 regex 检索（<code>50[24]</code> 14 天）+ 精确 <code>response_code:"504"</code>（10-13~10-16）+ 指标 <code>rate[30m]</code> 14 天全为 0</td>
+              <td>该命名空间在<strong>老 prod 集群</strong>没有 504 类故障</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <strong>136 侧实测（你看到的正是这 4 条）</strong>
+        在 grafana-136 的数据源上用同一条查询（<code>{namespace='retail-gateway', container='istio-proxy'} response_code :&gt; 500</code>，最近 2 天）返回 <strong>4 条</strong>，
+        且 7 天内 <code>50[24]</code> 汇总也只有这 4 条 —— <strong>收敛到同一条通道</strong>：<code>/api/v1/proxy/meituan_miaoti</code>（<code>route_name=default</code>），调用方固定为 <code>self-takeaway-stock-sync-mqconsumer.goods</code>。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间（CST）</th><th>状态</th><th>waypoint Pod</th><th>耗时 / 响应体</th><th>应用侧日志与含义</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>10-16 16:10</td><td><strong>504</strong></td><td><code>waypoint-674655f56-k9pk7</code></td><td>227ms / 164B</td>
+              <td rowspan="2"><code>proxy forward response status=504</code>，<code>forward_url=https://api-open-cater.meituan.com/foodmop/sku/update</code>，
+                  响应体是<strong>美团侧 openresty 的 HTML</strong>：<code>&lt;title&gt;504 Gateway Time-out&lt;/title&gt;…openresty</code>
+                  ⇒ <strong>美团开放平台自己超时</strong>，平台只是透传</td>
+            </tr>
+            <tr><td>10-15 22:37</td><td><strong>504</strong></td><td><code>waypoint-674655f56-t6bjh</code></td><td>228ms / 164B</td></tr>
+            <tr>
+              <td>10-15 20:31</td><td><strong>502</strong></td><td><code>waypoint-674655f56-k9pk7</code></td><td>8ms / 0B</td>
+              <td rowspan="2"><code>public gateway request failed</code>，
+                  <code>error=upstream request failed: error sending request for url (https://api-open-cater.meituan.com/foodmop/sku/update)</code>
+                  ⇒ <strong>平台网关到美团的请求「发送失败」</strong>（连接/握手层错误，毫秒级快速失败，故无响应体）</td>
+            </tr>
+            <tr><td>10-15 19:35</td><td><strong>502</strong></td><td><code>waypoint-674655f56-t6bjh</code></td><td>14ms / 0B</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout ok">
+        <strong>平台侧无异常（已排除）</strong>
+        <ul>
+          <li>同窗口同路径的其它请求全部 <strong>200 / <code>OP_SUCCESS</code></strong>（例：<code>proxy forward response status=200 duration_ms=362</code>，美团返回 <code>{"code":"OP_SUCCESS"…}</code>）。</li>
+          <li>136 侧网关 Pod 健康：<code>retail-thirdpart-gateway-7554dc8796-8rpp6</code>（172.16.147.161）与 <code>-pp5qw</code>（172.16.179.130），<strong>restarts=0</strong>，两者都在正常处理请求。</li>
+          <li>影响面：仅「美团秒提 SKU 库存同步」这一条出向通道、仅该 goods 侧消费者；属<strong>第三方偶发不可用</strong>（7 天 4 次），非平台故障。</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <strong>怎么读到 136 侧数据的（可复用）</strong>
+        grafana-136 的 <code>Logs</code> 数据源（uid <code>victoriaLogs</code>，<code>access=proxy</code>）后端就是 136 的
+        <code>vlselect.observability.svc.cluster.local:9471</code>。用已登录会话在 Grafana 页面内直接请求数据源代理即可跑任意 LogsQL（本次即如此，未在页面里做任何点击/导航）：
+        <pre><code># 浏览器内（同源 fetch，自带会话）
+/api/datasources/proxy/uid/victoriaLogs/select/logsql/query?query=&lt;LogsQL&gt;&amp;start=&lt;epoch&gt;&amp;end=&lt;epoch&gt;&amp;limit=N
+/api/datasources/proxy/uid/prometheus/api/v1/query?query=&lt;PromQL&gt;   # Metrics 数据源=136 vmselect</code></pre>
+        注意：grafana-136 的 VL <strong>同时含「迁移过来的老 prod 日志」与「136 自身日志」</strong>，标签相同，需按 <code>pod</code>/<code>node</code> 区分。
+      </div>
+
+      <div class="callout">
+        <strong>拿到行之后的判读表（按指纹直接归类）</strong>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>指纹</th><th>含义与下一步</th></tr></thead>
+            <tbody>
+              <tr><td><code>502</code> + <code>flags="-"</code> + <code>upstream_host=&lt;应用 Pod&gt;:3000</code></td><td>网关应用自己返回 502（第三方出向失败）。查 <code>proxy forward response</code> 的 <code>forward_url</code> 与对端返回体</td></tr>
+              <tr><td><code>502</code> + <code>flags=URX / UF / UH</code></td><td>mesh 层：重试耗尽 / 上游连接失败 / 无可用上游；按 <code>pod</code> 聚合定位是否单 Pod</td></tr>
+              <tr><td><code>504</code> + <code>route_name=external-split</code> + <code>upstream_cluster=ack-136-ingressgateway-inner-ips…</code> + <code>≈10s</code> + <code>bytes_sent=24</code></td><td>老集群→136 跨集群超时（本文 §04）</td></tr>
+              <tr><td><code>504</code> + <code>flags=UT/UO</code> + <code>≈5s</code> + <code>upstream_cluster=cross-cluster-agg&#124;…</code></td><td>136 侧 <code>CrossClusterFallback</code> 聚合集群的 <code>per_try_timeout: 5s</code> 触发（skill <code>cross-cluster-fallback-envoyfilter-504.md</code>）</td></tr>
+              <tr><td><code>504</code> + <code>route_name=default</code> + <code>upstream_host=&lt;应用 Pod IP&gt;</code></td><td>目标应用自身慢/挂起（应用侧看耗时与线程池）</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="callout ok">
+        <strong>结论</strong>
+        <code>retail-gateway</code> 的 502/504 <strong>不是平台或 mesh 故障</strong>：老 prod 集群 14 天内 504 为 0、502 仅 10 条（同为美团代理出向的偶发失败）；
+        136 集群的 4 条同样收敛在「网关 → <code>api-open-cater.meituan.com</code>」这一段，且分别由<strong>美团侧 openresty 504</strong> 与<strong>平台到美团的请求发送失败（502）</strong>造成。
+        建议：对这条出向通道加「连续失败 ≥2 次即告警 + 自动重试/补偿」的治理（当前失败只落日志，无告警、无补投），并把第三方 HTML 504 体识别为「上游网关超时」而非平台异常。
+      </div>
+      <div class="callout warn">
+        <strong>仍待查（本次未覆盖）</strong>
+        §04 的「老集群→136 固定 10s 超时」尚未从 136 侧核对（远端是否收到、远端应用耗时、远端 10s 超时配置）——
+        现在可以通过上面的数据源代理把 136 侧一并查了，需要的话我接着做。
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档基于生产观测数据与配置静态分析生成，仅供故障定位与架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

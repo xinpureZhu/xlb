@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wms.wms 跨集群 503 事故复盘 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>wms.wms 跨集群 503 事故复盘</h1>
+    <p class="subtitle">2026-10-15 20:19–20:58：一次 <code>routeToGray</code> 变更把 prod 灰度客群放进切流路径，叠加既有的 100% 灰度切流权重与过宽的 <code>baggage-to-remote</code> 规则，142 万次请求被送往新集群并按 503 全量失败。</p>
+    <p class="meta">最后更新：2026-10-16 · 数据来源：生产 VictoriaLogs 访问/应用日志、VictoriaMetrics 指标与告警、gitops <code>prod</code> 分支提交历史、rustyproxy 源码</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html" class="active">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <strong>分析基准</strong>
+      事故数据取自生产观测面（VictoriaLogs / VictoriaMetrics，窗口 2026-10-15 ~ 10-16），与代码分支无关。
+      配置结论来自 <code>repos/gitops/apps</code> 的 <code>prod</code> 分支（<code>83266bda1b25</code>，2026-10-16 拉取）；
+      <strong>本机 <code>repos/gitops/apps</code> 工作副本当前签出的是 <code>test</code> 分支（<code>33ef7ae23c4e</code>，2026-10-09，落后远端 23847）</strong>，
+      因此凡涉及生产路由的表述均以 fetch 下来的 <code>origin/prod</code> 内容为准，不以工作副本为准。
+      代理行为来自 <code>repos/devops-utils</code>（<code>feature/wasm-property-groups-v0.11</code> · <code>42b648f</code> · 2026-09-02 · 与远端 0/0）的 <code>rustyproxy</code> 源码；
+      <code>xlb_wms_web</code>（<code>prod</code> · <code>f6bc063</code> · 2026-10-14 · 0/0）是前端 SPA，<strong>不是</strong>事故中的反向代理。
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论摘要 <em>本地 WMS 全程健康；失败全部发生在「被切到新集群」的那条跨集群边上</em></h2>
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#s1">结论摘要</a></li>
+          <li><a href="#s2">请求链路与故障点</a></li>
+          <li><a href="#s3">时间线与量级</a></li>
+          <li><a href="#s4">证据链：日志与指标原文</a></li>
+          <li><a href="#s5">触发原因：配置变更与规则叠加</a></li>
+          <li><a href="#s6">影响面：谁被打了</a></li>
+          <li><a href="#s7">排除项：本地 WMS 与基础设施</a></li>
+          <li><a href="#s8">为什么会出现「同一域名一部分通、一部分 503」</a></li>
+          <li><a href="#s9">修复建议与遗留问题</a></li>
+        </ol>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">1,420,336</div><div class="l">远端 503 次数（20:00–21:00 小时桶）</div></div>
+        <div class="stat"><div class="n">20:19–20:58</div><div class="l">故障窗口 · 约 39 分钟（CST）</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">事故期间本地 wms 的 5xx（20/20 Ready）</div></div>
+        <div class="stat"><div class="n">10 分钟</div><div class="l">最后一次配置变更到故障起始的间隔</div></div>
+      </div>
+
+      <div class="callout danger">
+        <strong>一句话归因</strong>
+        <code>2026-10-15 20:04–20:08</code> 三笔效能平台变更把 <code>prod</code> 客群写进 <code>wms</code> 的 <code>routeToGray</code>（灰度客群匹配）；
+        而生产路由对 <code>wms</code> 的配置是 <code>grayToNewClusterFrom0To100.prod = 100</code>，即<strong>灰度流量 100% 切到新集群</strong>。
+        这批请求（以及携带 <code>baggage</code> 头的 <code>rn</code> 泳道流量，被过宽的 <code>baggage-to-remote</code> 规则 100% 命中）
+        被送往 <code>ack-136-ingressgateway-inner-ips</code>，<strong>新集群侧无可用上游、按 503 立即失败</strong>；
+        老集群本地 <code>wms</code> 全程正常，因此表现为「域名不变、一半请求通、一半 503」。
+      </div>
+
+      <div class="callout ok">
+        <strong>当前状态</strong>
+        该放量故障已于 <code>2026-10-15 20:58</code> 自行停止（远端流量归零，不再是 200 也不是 503，说明<strong>匹配面本身不再命中</strong>）。
+        但同一条远端路径仍残留 <code>wms.wms.1</code> 的 <strong>约 14–15 次/小时 503</strong>（持续到 10-16，10-16 09:00 小时桶出现 172 次的尖峰），属于需要收口的存量问题。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>请求链路与故障点 <em>失败边只有一条：waypoint → 新集群内网网关</em></h2>
+      <p>调用方访问的是内网域名 <code>wms.wms</code>。该域名不是独立网关，而是 <code>wms</code> 这个 <code>HTTPRoute</code> 的 hostname 之一
+      （模板：<code>hostnames: [app.name, app.name + '.' + app.namespace, …]</code>，见 <code>repos/gitops/apps/templates/App/HTTPRoute.libsonnet</code>），
+      因此同一域名下<strong>同时存在本地规则与跨集群规则</strong>。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph CALLERS["调用方"]
+    RN["rn.react-web · RN 泳道"]
+    WMSRN["wms-rn.react-web"]
+    BFF["wms-web · rustyproxy 反向代理"]
+    TMS["tms.tms / tms-rn"]
+  end
+  GW["istio ingressgateway / inner-ingressgateway"]
+  WP["waypoint · namespace wms · HTTPRoute wms"]
+  subgraph OLD["prod 老集群"]
+    WMS["wms 20/20 Ready · 本地后端"]
+  end
+  subgraph NEW["prod-136 新集群"]
+    A136["ack-136-ingressgateway-inner-ips"]
+  end
+  RN --> GW
+  WMSRN --> GW
+  BFF --> GW
+  TMS --> GW
+  GW --> WP
+  WP -->|"default / external-split · 正常路径"| WMS
+  WP -.->|"baggage-to-remote · wms.wms.2 · 100% 远端"| A136
+  A136 -.->|"503 URX · 135–230ms · 1.42M 次"| WP
+        </pre>
+        <p class="arch-title">图 1 · wms.wms 的双路路由与本次唯一失败边</p>
+      </div>
+
+      <div class="callout warn">
+        <strong>可观测性陷阱（排查时最耗时的一步）</strong>
+        这批远端失败在 VictoriaLogs 里的流标签是
+        <code>namespace="istio-system"</code> + <code>svc="ack-136-ingressgateway-inner-ips"</code>，
+        <strong>而不是</strong> <code>namespace="wms"</code> / <code>svc="wms"</code>（标签取自 upstream cluster 名）。
+        因此按 <code>{namespace="wms"}</code> 检索「目的服务 wms 的 503」会<strong>完全查不到</strong>，容易误判为「wms 侧没有 503」。
+        正确入口是 <code>authority="wms.wms"</code> 或 upstream cluster 名。
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as 调用方 · rn.react-web
+  participant N as 内网网关
+  participant W as waypoint · ns wms
+  participant O as prod 老集群 wms
+  participant X as prod-136 内网网关
+  C->>N: POST /wms/hxl.wms.storehouse.find
+  N->>W: HTTP 请求 · 携带 baggage 头
+  Note over W: HTTPRoute 命中 baggage-to-remote · Host wms.wms
+  W->>X: 100% 转发远端 · 不按 1% 权重
+  X-->>W: 503 Service Unavailable · 135–230ms
+  W-->>C: 503 URX · 重试已耗尽
+  Note over O: 本地 wms 全程 200 · 未被这批请求命中
+        </pre>
+        <p class="arch-title">图 2 · 单次失败请求的时序</p>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>时间线与量级 <em>变更 20:08 → 故障 20:19 → 归零 20:58</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  T1["20:04–20:08 · 效能平台改 wms routeToGray · prod 纳入灰度客群"] --> T2["20:19 · 远端 503 起始"]
+  T2 --> T3["20:22 · waypoint 2→10 pod · success_ratio 告警"]
+  T3 --> T4["20:58 · 远端流量归零 · 故障停止"]
+  T4 --> T5["10-16 · 仍余 ~14-15 次/小时 wms.wms.1 503"]
+        </pre>
+        <p class="arch-title">图 3 · 变更—故障—收敛</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间（CST）</th><th>事件</th><th>证据</th></tr></thead>
+          <tbody>
+            <tr><td>10-13 16:23</td><td><code>routes-to-new-cluster.libsonnet</code> 最近一次线路变更落地，<code>wms</code> 变为 <code>gray=100 / normal=1</code></td><td>gitops <code>prod</code> 提交 <code>375288949792</code></td></tr>
+            <tr><td>10-15 20:04:35</td><td>变更单 <code>6ad0c152b5a9d499031e77c2</code>（变更人 梅玉虎）拆分 <code>routeToGray</code></td><td>提交 <code>7db897ee6790</code></td></tr>
+            <tr><td>10-15 20:05:49</td><td>变更单 <code>6ad0c19c3d9471992d9d0b69</code>：<code>dev</code> → <code>dev,prod</code></td><td>提交 <code>84e5582f6c78</code></td></tr>
+            <tr><td>10-15 20:08:38</td><td>变更单 <code>6ad0c245b5a9d499031e785b</code>：prod 获得独立灰度匹配块</td><td>提交 <code>3ed342e9dd83</code></td></tr>
+            <tr><td>10-15 20:19</td><td>远端 503 起始（首分钟 13,146 次 <code>baggage-to-remote</code> + 6,062 次 <code>wms.wms.2</code>）</td><td><code>_time:1m</code> 分桶</td></tr>
+            <tr><td>10-15 20:22–20:46</td><td>wms namespace waypoint 副本 2 → 10 → 4 → 2（HPA 放量后回落）</td><td><code>count(kube_pod_info{pod=~"waypoint.*"})</code></td></tr>
+            <tr><td>10-15 20:30–21:10</td><td>告警 <code>namespace:app:istio_requests_total:success_ratio{namespace wms} &lt; 0.99</code> 连续 4 个 10 分钟点，最低 0.115</td><td>VictoriaMetrics <code>ALERTS</code></td></tr>
+            <tr><td>10-15 20:58</td><td>远端 503 归零；<code>wms.wms.2</code> 更早在 20:38 前后先归零</td><td>5 分钟分桶</td></tr>
+            <tr><td>10-16 09:00</td><td>同路径再次出现 172 次 503 小尖峰（<code>wms.wms.1</code>）</td><td>小时分桶</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>量级</strong>：故障窗口内远端 503 共 <strong>1,420,336</strong> 次；本地 <code>wms</code> 的 200 响应同期从约 110–130 rps 掉到 53–96 rps（被抽走的正是这批流量），
+      应用日志量同步腰斩 —— 说明请求<strong>确实没有到达本地应用</strong>，不是「到了但返回慢」。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>证据链：日志与指标原文 <em>URX + connect_originate 远端 IP = 重试耗尽后放弃</em></h2>
+      <p>waypoint 访问日志原文（已截取关键字段）：</p>
+      <div class="loc">VictoriaLogs · <code>{namespace="istio-system",svc="ack-136-ingressgateway-inner-ips"} authority:"wms.wms"</code> · limit 1</div>
+      <pre><code>{
+  "authority": "wms.wms",
+  "downstream_peer": "wms-web.wms",
+  "path": "/wms/hxl.wms.distribute.center.find",
+  "response_code": 503,
+  "response_flags": "URX",
+  "route_name": "wms.wms.2",
+  "upstream_cluster": "outbound|80||ack-136-ingressgateway-inner-ips.istio-system.svc.cluster.local;",
+  "upstream_host": "172.16.120.145:80",
+  "upstream_service_time": "135",
+  "duration": 137,
+  "start_time": "2026-10-15T12:24:04.807Z"
+}</code></pre>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>取值</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>response_flags</code></td><td><code>URX</code></td><td>UpstreamRetryLimitExceeded：上游一直返回可重试失败，Envoy 重试用尽后把 503 交回调用方</td></tr>
+            <tr><td><code>upstream_cluster</code></td><td><code>…ack-136-ingressgateway-inner-ips…</code></td><td>目标不是本地 <code>wms</code> Service，而是<strong>新集群的内网网关</strong></td></tr>
+            <tr><td><code>upstream_service_time</code></td><td>135–230 ms</td><td>远端在百毫秒级<strong>主动回 503</strong>，不是超时/挂死</td></tr>
+            <tr><td><code>upstream_host</code></td><td>远端 IP:80</td><td>已建立连接并收到响应，排除「连不上」</td></tr>
+            <tr><td><code>route_name</code></td><td><code>baggage-to-remote</code> / <code>wms.wms.2</code> / <code>wms.wms.1</code></td><td>命中规则：跨集群 baggage 规则与 <code>wms.wms</code> 主机上的编号规则</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><strong>调用方侧（wms-web 反向代理）原文</strong>：<code>wms-web</code> 的 Pod 里跑的是 <code>rustyproxy</code>（见 <code>Compose.libsonnet</code> 对 <code>template: web</code> 的镜像注入），
+      其源码只在<strong>上游状态码非 200 且非重定向</strong>时打印该行（<code>repos/devops-utils/rustyproxy/src/main.rs:396-398</code>）：</p>
+      <div class="loc">VictoriaLogs · <code>{namespace="wms",svc="wms-web",container="wms-web"}</code> · 20:19–20:36 每分钟 256–931 行</div>
+      <pre><code>origin:https://gdp.xlbsoft.com, host: wms-web.wms.ali-prod.xlbsoft.com, pathname: /wms/hxl.wms.migrate.config.list
+target_url: http://wms.wms/wms/hxl.wms.migrate.config.list
+status 503 Service Unavailable : http://wms.wms/wms/hxl.wms.distribute.center.find</code></pre>
+      <p>即：<strong>用户侧「WMS 打不开/接口 503」直接来自这里</strong>；浏览器看到的 503 与 RN/端侧的失败同源。</p>
+
+      <p><strong>规则维度归属</strong>（同一窗口，按规则 × 调用方 × 路径聚合）：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>规则</th><th>调用方</th><th>路径</th><th>503 次数</th></tr></thead>
+          <tbody>
+            <tr><td><code>baggage-to-remote</code></td><td><code>rn.react-web</code></td><td><code>/wms/hxl.wms.departurecenter.store.find</code></td><td>698,207</td></tr>
+            <tr><td><code>baggage-to-remote</code></td><td><code>rn.react-web</code></td><td><code>/wms/hxl.wms.storehouse.find</code></td><td>579,549</td></tr>
+            <tr><td><code>wms.wms.2</code></td><td><code>wms-rn.react-web</code></td><td><code>/wms/hxl.wms.migrate.config.list</code></td><td>29,245</td></tr>
+            <tr><td><code>wms.wms.2</code></td><td><code>wms-rn.react-web</code></td><td><code>/wms/hxl.wms.storehouse.find</code></td><td>10,763</td></tr>
+            <tr><td><code>wms.wms.2</code></td><td><code>wms-web.wms</code></td><td><code>/wms/hxl.wms.migrate.config.list</code></td><td>7,844</td></tr>
+            <tr><td><code>baggage-to-remote</code></td><td><code>tms.tms</code></td><td><code>/wms/hxl.wms.outapplicationorder.pickinfo.findbyfid</code></td><td>4,136</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>触发原因：配置变更与规则叠加 <em>20:08 的灰度匹配 + 既有的 100% 切流 + 过宽的 baggage 规则</em></h2>
+      <p>生产路由（gitops <code>prod</code> 分支）对 <code>wms</code> 的切流配置：</p>
+      <div class="loc">repos/gitops/apps/routes-to-new-cluster.libsonnet:450（origin/prod 83266bda）</div>
+      <pre><code>{ namespace: 'wms', app: 'wms',
+  grayToNewClusterFrom0To100:   { staging: 100, prod: 100 },
+  normalToNewClusterFrom0To100: { staging: 100, prod: 1 } }</code></pre>
+      <p>含义：<strong>灰度流量 100% 去新集群</strong>、普通流量 1%；模板还对「普通权重 &gt; 0 必须先灰度到 100」有断言
+      （<code>HTTPRoute.libsonnet</code>：<code>assert rawNormalWeight == 0 || rawGrayWeight == 100</code>），也就是说<strong>灰度这条路是设计上「全量切新集群」的开关</strong>。</p>
+
+      <p>20:04–20:08 的三笔变更改变了「谁算灰度」：</p>
+      <div class="loc">repos/gitops/apps/wms/wms.app.yaml · routeToGray（origin/prod）</div>
+      <pre><code>routeToGray:
+  dev:
+    - headers: [{ name: "company-id",   type: "Exact",            value: "1001" }]
+    - headers: [{ name: "user-id",      type: "RegularExpression", value: "^(100100000617|6666600128890)$" }]
+    - headers: [{ name: "warehouse-id", type: "RegularExpression", value: "^(6655500039844)$" }]
+  prod:                                    # ← 10-15 20:05/20:08 新增
+    - headers: [{ name: "company-id",   type: "Exact",            value: "1001" }]
+    - headers: [{ name: "user-id",      type: "RegularExpression", value: "^(100100000617|6666600128890)$" }]
+    - headers: [{ name: "warehouse-id", type: "Exact",            value: "6655500039844" }]</code></pre>
+
+      <div class="callout danger">
+        <strong>两处放大器同时生效</strong>
+        <ol>
+          <li><strong>灰度 → 100% 远端</strong>：<code>renderPreRules</code> 对灰度规则按 <code>grayWeight</code> 改写后端，<code>grayWeight=100</code> 时等价于
+            <code>localBackendRefs(0) + remoteBackendRef(100)</code> —— 灰度的语义在这里不是「小流量验证」，而是「整批换集群」。
+            本次被纳入灰度的是 <code>company-id=1001</code> 等条件，覆盖的是<strong>整批真实生产客群</strong>，不是内部白名单。</li>
+          <li><strong>baggage-to-remote 抢跑</strong>：模板对 <code>baggage</code> 任意非空值的匹配规则<strong>不校验 Host 权重</strong>，命中后 100% 转发远端
+            （<code>matches: headers baggage =~ .+</code>，backendRefs 只有 <code>remoteBackendRef{weight:100}</code>）。
+            模板注释本身已给出警告：必须让 <code>gray-baggage</code> 排在它之前，否则「携带 baggage 的灰度请求会被'任意非空 baggage 全量转发新集群'抢先命中」；
+            而 <code>gray-baggage</code> <strong>仅在 136 及以上集群生成</strong>（老 prod 不生成），所以老集群上这条保护<strong>缺位</strong>。</li>
+        </ol>
+      </div>
+
+      <div class="callout warn">
+        <strong>仍是推断的部分（未取得 136 侧遥测）</strong>
+        <ul>
+          <li>「<code>baggage</code> 头为何在 20:19 同时放量、且归零时间与 <code>wms.wms.2</code>（20:38）不一致」——本数据源只覆盖 prod 老集群，
+            无法看到新集群侧与泳道/灰度标记的生成端；从代码路径看，最合理的解释是灰度标记经 W3C baggage 透传后被过宽的 baggage 规则整批命中（见上图 2）。</li>
+          <li>「20:58 归零」是标记面不再命中、还是远端被修复，两者在本数据源内不可区分（<strong>归零后远端既无 503 也无 200</strong>，倾向于前者）。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>影响面：谁被打了 <em>RN 端最重（1.28M），WMS Web 用户可见 503，TMS/SCM/ERP 有连带</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>调用方（downstream_peer）</th><th>503 次数</th><th>业务含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>rn.react-web</code></td><td>1,278,960</td><td>RN / 端侧入口，仓库与发货中心基础数据接口（<code>storehouse.find</code>、<code>departurecenter.store.find</code>）</td></tr>
+            <tr><td><code>wms-rn.react-web</code></td><td>112,480</td><td>端侧泳道的 WMS 代理，覆盖拣货、上架、库位、参数等 20+ 接口</td></tr>
+            <tr><td><code>wms-web.wms</code></td><td>10,132</td><td><strong>WMS Web 后台（用户直接可见）</strong>：页面接口 503</td></tr>
+            <tr><td><code>tms.tms</code></td><td>9,503</td><td>运输系统调用 WMS（出库单拣货信息、明细）</td></tr>
+            <tr><td><code>tms-rn.react-web</code></td><td>4,352</td><td>端侧 TMS 泳道</td></tr>
+            <tr><td><code>react-web.react-web</code></td><td>3,424</td><td>Web 侧 BFF</td></tr>
+            <tr><td><code>scm.scm</code></td><td>498</td><td>供应链</td></tr>
+            <tr><td><code>tms-gray.tms</code> · <code>erp-mall.erp</code> · <code>logistics.logistics</code></td><td>121 · 106 · 12</td><td>灰度/ERP/物流零星连带</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>次级影响（同源，非独立故障）</strong>：</p>
+      <ul>
+        <li>wms namespace waypoint 副本 20:22 起 2 → 10，20:46 回到 2：远端全失败导致调用方重试/重试排队，waypoint 侧被放大（同期 <code>waithandle.find</code> 429 抬升，属限流路径的正常反应）。</li>
+        <li><code>success_ratio{namespace="wms"}</code> 掉到 0.115 并触发告警：该指标由 waypoint 以 source 侧视角统计，因此把远端 503 计入了 wms 命名空间的失败率 —— <strong>这反而是本次最灵敏的告警</strong>。</li>
+        <li>本地 <code>wms</code> 应用日志量腰斩、请求数下降 40–50%：不是应用退化，而是流量被抽到远端。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>排除项：本地 WMS 与基础设施 <em>20/20 Ready、零 5xx、无 OOM/JVM 异常</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>被排除项</th><th>核查结果</th></tr></thead>
+          <tbody>
+            <tr><td>wms Pod 健康</td><td><code>prod</code>：20/20 Ready，镜像 <code>prod-f05c48a6…-2026-10-14</code>，事故期间无重建批次</td></tr>
+            <tr><td>wms 应用返回码</td><td>事故窗口内本地目的服务为 <code>wms</code> 的 5xx 仅 136 次/整天量级（与平日同阶），<strong>无 503</strong></td></tr>
+            <tr><td>waypoint 内存</td><td>事故期各 Pod 工作集 0.9–1.3 GiB，<code>waypoint-mem-guard</code> 阈值 8 GiB，扫描结果 <code>over-threshold=0</code>，无重建</td></tr>
+            <tr><td>数据面（ztunnel）</td><td>事故小时内 ztunnel 提及 wms 的日志仅约 20 条，无连接风暴/panic 特征</td></tr>
+            <tr><td>K8s 侧告警</td><td>仅在 20:30–21:10 出现 wms 命名空间 <code>success_ratio</code> 告警，无 CrashLoop/OOMKilled/探针失败</td></tr>
+            <tr><td>本地限流</td><td><code>waithandle.find</code> 429 属既有路径级限流（<code>requests_per_second: 2</code>），与 503 不同源</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout ok">
+        <strong>结论</strong>
+        本次是<b>路由/切流配置类故障</b>，不是应用、数据库、JVM、内存或集群容量问题。任何「重启 wms / 扩容 wms」的动作都不会改变现象 —— 因为请求根本没有到达本地 wms。
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>为什么会出现「同一域名一部分通、一部分 503」 <em>同一 hostname 上并存本地规则与远端规则，命中面由请求头决定</em></h2>
+      <ul>
+        <li><code>wms.wms</code> 同时挂在 <code>wms</code> 的 <code>HTTPRoute</code> 上：<strong>默认规则</strong>指向本地 <code>wms</code> Service，<strong>跨集群规则</strong>指向 <code>ack-136-ingressgateway-inner-ips</code>。</li>
+        <li>命中哪条由<strong>请求头</strong>决定：<code>baggage</code> 非空 → 远端；命中灰度条件（company-id / user-id / warehouse-id）→ 灰度规则 → 远端（权重 100）。</li>
+        <li>因此同一个域名、同一批接口，会出现「大部分 200、一小部分稳定 503」，且<strong>503 的分布与客户端/仓库/客群强相关</strong>，而不是按时间随机分布（本案例的 503 集中在 RN 端与特定客群即为此表现）。</li>
+        <li>反过来，收到 503 的终端会重试，进一步把远端请求量推高（本窗口远端请求量约为本地同时段的数倍），放大故障观感。</li>
+      </ul>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>修复建议与遗留问题 <em>先给切流加「远端可用」门禁，再收紧 baggage 匹配</em></h2>
+
+      <div class="callout danger">
+        <strong>P0 · 切流前必须校验远端可服务</strong>
+        <ul>
+          <li>灰度权重 <code>gray=100</code> 是「整批客群换集群」的开关，当前<strong>没有任何「远端健康才放量」的门禁</strong>：本次远端 503 期间，权重照旧为 100，失败持续到匹配面自己消失。</li>
+          <li>建议在灰度放量流程中加入远端探活（对目标 host 的健康接口或金丝雀请求）作为前置条件；远端不可用时<strong>自动回落本地权重</strong>，而不是让 <code>URX</code> 把失败透传给终端。</li>
+        </ul>
+      </div>
+
+      <div class="callout danger">
+        <strong>P0 · 收紧 <code>baggage-to-remote</code> 的匹配面</strong>
+        <ul>
+          <li>现状：<code>baggage =~ .+</code> 即 100% 远端，且老集群不生成 <code>gray-baggage</code> 兜底 → 任何透传 Sentry/OTel baggage 的调用都可能被整批送走，<strong>与权重设计完全脱钩</strong>。</li>
+          <li>建议：改为只匹配<strong>显式泳道标记</strong>（如 <code>baggage</code> 中的 <code>&lt;base&gt;.&lt;ns&gt;=&lt;lane&gt;</code> 或专用头 <code>x-cross-cluster</code>），或按 Host 限定；并补齐老集群侧的灰度 baggge 规则顺序约束（或在不生成该规则时禁用宽松匹配）。</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <strong>P1 · 可观测性与告警口径</strong>
+        <ul>
+          <li>远端转发流的日志标签把 <code>namespace</code>/<code>svc</code> 记成 upstream cluster 的归属（<code>istio-system</code> / <code>ack-136-ingressgateway-inner-ips</code>），导致「按目的服务名查 503」为盲区；建议在标签派生里保留<strong>真实目的服务</strong>（authority / destination_service）。</li>
+          <li>增加跨集群转发<strong>失败率</strong>的直接告警（route_name 维度的 5xx），不必依赖 <code>success_ratio</code> 间接暴露。</li>
+          <li><code>routeToGray</code> 这类「影响谁算灰度」的变更应带<strong>变更人/变更单/生效范围</strong>到看板，缩短「配置变更 ↔ 流量异常」的关联时间。</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <strong>P2 · 存量残留</strong>
+        <ul>
+          <li><code>wms.wms.1</code> 持续约 <strong>14–15 次/小时 503</strong>（贯穿 10-15 全天与 10-16），10-16 09:00 小时桶出现 172 次尖峰 —— 同一条远端路径仍有零星不可用，建议单独定位（可能是探活/定时任务类调用）。</li>
+          <li>本报告未覆盖的取证项：新集群（prod-136）侧 wms 的可用性、以及灰度/泳道标记的生成端配置（平台侧）。</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <strong>本次排查的可复用要点</strong>
+        <ol>
+          <li>「某服务访问不通」先区分<strong>目的地</strong>（老集群 / 新集群）而不是先看应用指标：本例本地应用指标几乎无异常。</li>
+          <li>域名既是「内网服务名」也是「HTTPRoute hostname」时，两个集群的同名路由会共存；按 <code>authority</code> 查证比按 <code>namespace+svc</code> 更可靠。</li>
+          <li><code>response_flags=URX</code> + 有 <code>upstream_host</code> + 百毫秒级 <code>upstream_service_time</code> = <strong>远端主动 503、重试耗尽</strong>，可直接排除网络不可达与超时。</li>
+          <li>反向代理（rustyproxy）只在上游非 2xx 时打印 <code>status … : target_url</code>，这条日志是「用户可见失败」的第一手证据。</li>
+        </ol>
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档基于生产观测数据与 gitops/源码静态分析生成，仅供故障复盘与架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

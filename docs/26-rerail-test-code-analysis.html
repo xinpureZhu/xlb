@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rerail-test-code 会员服务与压测实验室 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>rerail-test-code 会员服务与压测实验室</h1>
+    <p class="subtitle">一个 AI 编码试验台：FastAPI 会员后端 <code>member-service</code> + k6 v2 压测/冒烟工程 <code>loader-test</code>，含 16 条接口、13 张表、28 例冒烟与 24 条对抗评审记录。</p>
+    <p class="meta">最后更新：2026-10-14 · 数据来源：源码静态分析（未运行测试）</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html" class="active">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>：<code>repos/rerail-test-code</code>（CodeUp <code>retail-ai/rerail-test-code</code>，private，repo_id 7555462）
+      分支 <code>master</code>·<code>6cf2c5b</code>·2026-10-13（与远端 <code>0/0</code>）。
+      <b>该仓没有 <code>prod</code> 分支</b>，<code>master</code> 即默认分支；本工作副本是 <code>--depth 1 --single-branch</code> 浅克隆（本地仅 1 个可见提交），
+      历史与演进过程不可见，全部结论仅代表该快照内容。
+      本文为<b>源码静态阅读</b>结果——按仓库规则，<code>repos/</code> 下的 CodeUp 工作副本只读（不改、不装依赖、不跑构建/测试），故文中「测试全过」「冒烟 28 例通过」等均引自仓库内文档记录，非本次复跑。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">这是什么</a></li>
+        <li><a href="#s2">member-service 架构与接口面</a></li>
+        <li><a href="#s3">资产变动的资损防线</a></li>
+        <li><a href="#s4">数据模型</a></li>
+        <li><a href="#s5">loader-test 压测与冒烟工程</a></li>
+        <li><a href="#s6">质量证据链</a></li>
+        <li><a href="#s7">问题清单</a></li>
+        <li><a href="#s8">修复优先级</a></li>
+        <li><a href="#s9">结论</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>这是什么 <em>不是一个产品仓，而是一套「AI 实现 + 对抗评审 + k6 冒烟」的闭环样板</em></h2>
+
+      <div class="callout ok">
+        <b>结论</b>：本仓的真实价值不在业务代码本身，而在它把三件事串成了可复现的闭环——
+        <b>实现</b>（FastAPI 会员后端，含 PRD / DDL / 冒烟计划三份规范文档）、
+        <b>对抗评审</b>（独立模型 Hermes 做只读审查，产出 24 条带 <code>file:line</code> 的问题清单）、
+        <b>自动化验证</b>（k6 v2 三步编排：seed → 压测 → 库级 verify）。
+        业务上它是「会员系统」的最小可用切片：注册、资产加减、注销冷静期、多账号资产合并、信息修改、资产查询。
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><span class="n">3</span><span class="l">子目录：member-service / loader-test / order-service（空占位）</span></div>
+        <div class="stat"><span class="n">16</span><span class="l">member-service HTTP 路由</span></div>
+        <div class="stat"><span class="n">13</span><span class="l">MySQL 表（DDL 手写文档，无迁移工具）</span></div>
+        <div class="stat"><span class="n">28</span><span class="l">冒烟用例（6 模块，k6 自动化执行）</span></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>目录</th><th>内容</th><th>规模</th></tr></thead>
+          <tbody>
+            <tr><td><code>member-service/app</code></td><td>5 路由 / 7 服务 / 4 仓储 / 5 模型 + <code>core</code>（enums·errors·clock·sms·masking）</td><td>2534 行</td></tr>
+            <tr><td><code>member-service/tests</code></td><td>单元测试（禁真库：autouse 把 <code>create_engine</code> 换为抛错）+ 集成测试（连 <code>member_test</code>，每例 TRUNCATE 13 表）</td><td>113 单测 + 13 集成</td></tr>
+            <tr><td><code>member-service/docs</code></td><td>PRD 195 行 / schema 382 行（13 表 DDL）/ 冒烟计划 28 例 / 对抗评审记录 24 条</td><td>803 行</td></tr>
+            <tr><td><code>loader-test</code></td><td>10 个 k6 入口 + <code>lib</code> 封装 + k8s Job + Dockerfile + 冒烟编排 + 对抗评审脚本</td><td>约 1861 行</td></tr>
+            <tr><td><code>order-service</code></td><td>仅 <code>.gitkeep</code>；<code>loader-test/src/config/env.ts:10</code> 的 <code>ORDER_SERVICE_URL</code> 全仓无引用 <span class="badge warn">死配置</span></td><td>0</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph LT[loader-test · k6 v2 原生 TS]
+    SM["smoke / load / stress<br/>打 BASE_URL/"]
+    MS["member-*.ts 7 场景<br/>打 /api/v1"]
+    RUN["scripts/member-smoke/run.mjs<br/>seed → k6 → verify"]
+  end
+  subgraph DB["MySQL · member / member_test"]
+    T13["13 张表<br/>DDL 以 docs/sql 为准手工执行"]
+  end
+  SVC["member-service<br/>FastAPI + SQLAlchemy 2.x<br/>无鉴权 · 身份取自请求头"]
+  DBPY["scripts/member-smoke/db.py<br/>PyMySQL 直连 · 库级断言"]
+  RUN --> MS
+  MS -->|"X-Operator-Type / X-Operator-Id"| SVC
+  RUN --> DBPY
+  DBPY --> T13
+  SVC --> T13
+  SM -.->|"k8s Job 指向 member-service:8081/"| SVC
+        </pre>
+        <p class="arch-title">图 1 · 仓库构成与运行链路：k6 侧两条链路（HTTP 打服务 + PyMySQL 验库）</p>
+      </div>
+
+      <div class="loc">证据：<code>member-service/AGENTS.md</code>（项目约定）· <code>loader-test/README.md</code> · <code>member-service/docs/cr/cr-20261011-170526.md</code></div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>member-service 架构与接口面 <em>api → deps → services → repositories → models 严格单向，Session 全层透传</em></h2>
+
+      <p>
+        技术栈：Python ≥3.12、FastAPI（同步路由）、SQLAlchemy 2.x（<code>Mapped</code> 声明式）、PyMySQL、Pydantic v2 + pydantic-settings、uv 管理依赖。
+        入口 <code>app/main.py:17-30</code>：注册 5 个 router（前缀 <code>/api/v1</code>）+ <code>BizError</code> 全局处理器 + <code>GET /health</code>。
+        DB 引擎/会话工厂惰性创建（<code>app/db.py:14-26</code>），无 Alembic —— <b>schema 以 <code>docs/sql/member-schema.md</code> 为准手工建表</b>，集成测试直接解析该文档的 <code>CREATE TABLE</code> 建库（顺带验证 DDL 文档可重放）。
+      </p>
+
+      <div class="callout">
+        <b>一个关键设计</b>：所有路由的服务装配都写 <code>Depends(get_session, scope="function")</code>（<code>app/api/deps.py:55,66,79,94,115,136,148</code>）。
+        这是评审记录 CR #8 的修复点——默认的 yield 依赖会在<b>响应发送之后</b>才 commit，存在「客户端已收到 2xx、事务却没提交」的窗口；改成 <code>scope="function"</code> 让提交先于响应。
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>域</th><th>路由</th><th>语义要点</th></tr></thead>
+          <tbody>
+            <tr><td>会员</td><td><code>POST /members/register</code> · <code>GET /members/{id}</code> · <code>PUT /members/{id}/info</code></td><td>短信校验 → 渠道码失效降级为 <code>NATURAL</code> → <code>uk_phone</code> 兜底；C 端本人视角不脱敏</td></tr>
+            <tr><td>资产</td><td><code>POST /members/{id}/asset-changes</code> · <code>GET /members/{id}/assets</code> · <code>GET /members/{id}/asset-flows</code></td><td>幂等加扣（见 §03）；明细游标分页 <code>flow_id &lt; cursor</code> + <code>has_more</code></td></tr>
+            <tr><td>注销</td><td><code>POST /members/{id}/cancel-applies</code> · <code>POST /members/{id}/cancel-withdraw</code></td><td>短信验证 + 前置校验 + 冷静期 7 天；冷静期内可撤回、可重申并重算</td></tr>
+            <tr><td>合并</td><td><code>POST /merge-orders</code> · <code>/merge-orders/verify</code> · <code>/merge-orders/{no}/confirm</code></td><td>双账号短信验证 → 二次确认 → 单事务原子转移，失败整体回滚</td></tr>
+            <tr><td>管理端</td><td><code>GET /admin/members</code> · <code>POST /admin/asset-adjust-orders</code> · <code>.../{no}/approve</code> · <code>.../{no}/reject</code> · <code>POST /admin/cancel-applies/execute-due</code></td><td>B 端手机号+邮箱脱敏；人工调整走审批；到期注销批量执行</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <b>鉴权现状（评审已记录、需求方已决策接受）</b>：全站<b>没有认证授权</b>。身份取自可伪造请求头 <code>X-Operator-Type</code>（默认 2=MEMBER）/ <code>X-Operator-Id</code>（默认空，<code>app/api/deps.py:34-44</code>）；
+        5 个 admin 路由无角色校验；路径 <code>member_id</code> 无归属校验（IDOR）；
+        <code>/admin/cancel-applies/execute-due</code> <b>连 operator 依赖都没有</b>（<code>app/api/v1/admin.py:57-60</code>），审计里 <code>operator_id</code> 恒空。
+        成立前提是「仅内网部署、仅可信内部服务可达、不直接对 C 端开放」；对 C 端开放或接统一登录时必须补齐。
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>横切设施</th><th>现状</th></tr></thead>
+          <tbody>
+            <tr><td>错误模型</td><td>只有 <code>BizError(code, message, http_status)</code>（<code>app/core/errors.py</code>），全仓 33 个魔法字符串错误码，无注册表、无 trace_id；响应固定 <code>{"code","message"}</code></td></tr>
+            <tr><td>异常兜底</td><td>仅注册了 <code>BizError</code> 处理器（<code>app/main.py:19</code>）；<code>ValueError</code>、<code>IntegrityError</code>、<code>DataError</code> 与依赖层 commit 失败都落框架默认 500，无统一日志</td></tr>
+            <tr><td>脱敏</td><td><code>app/core/masking.py</code> 真实现（<code>mask_phone</code> 前 3 + <code>****</code> + 后 4、<code>mask_email</code> 首字母 + <code>***@domain</code>），仅 B 端查询调用</td></tr>
+            <tr><td>时钟</td><td><code>Clock</code> 协议 + <code>SystemClock</code>；但 <code>models/base.py:11-12</code> 的 <code>TimestampMixin</code> 仍用 <code>default=datetime.now</code> 绕过 Clock</td></tr>
+            <tr><td>短信</td><td><code>FakeSmsProvider</code> 纯 stub：只比较常量码（默认 <code>123456</code>），无 TTL / 无频控 / 无次数锁定</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>资产变动的资损防线 <em>幂等键 + savepoint + 行锁 + 场景符号校验，四道防线是这仓最扎实的部分</em></h2>
+
+      <p>资损面集中在 <code>POST /members/{id}/asset-changes</code>，防线按顺序叠了四层（<code>app/services/asset_service.py</code>）：</p>
+
+      <div class="grid cols-4">
+        <div class="mech m1">
+          <h4><span class="num">1</span>幂等键</h4>
+          <p>唯一索引 <code>uk_biz_asset (biz_no, asset_type, asset_ref_id)</code>；账户型 <code>asset_ref_id</code> 强制 0、卡类必须 &gt;0，键各段全由服务端决定。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>命中即校验</h4>
+          <p>幂等命中后比对 member / 场景 / 金额符号，不一致返回 <code>409 IDEMPOTENCY_CONFLICT</code>（避免「退款被吞」）。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>savepoint 兜底</h4>
+          <p>并发撞唯一键时用 <code>begin_nested()</code> 只回滚流水插入，不丢弃调用方（审批单）未提交状态。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>行锁 + 非负</h4>
+          <p>余额/卡更新走 <code>with_for_update()</code>；<code>after &lt; 0</code> 直接 <code>409 INSUFFICIENT_BALANCE</code>；DDL 另有 CHECK 兜底。</p>
+        </div>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant C as 调用方
+  participant S as AssetService
+  participant R as Repository · Session
+  participant DB as MySQL
+  C->>S: change · biz_no + amount + scene
+  S->>R: get_by_biz · biz_no asset_type ref_id
+  R->>DB: SELECT 流水
+  alt 已存在
+    DB-->>S: 命中流水
+    S->>S: 校验 member · scene · 金额符号一致
+    S-->>C: 200 idempotent=true
+  else 首次
+    S->>R: get_for_update 账户或卡行
+    R->>DB: SELECT FOR UPDATE
+    S->>S: 校验非负并计算 before / after
+    S->>R: begin_nested · INSERT 流水 · flush
+    alt 唯一键冲突
+      R->>DB: SAVEPOINT 回滚 + 重查
+      S-->>C: 200 idempotent=true
+    else 插入成功
+      S-->>C: 201 idempotent=false
+    end
+    Note over S,DB: 请求级 Session 在响应前 commit · 余额与流水同事务
+  end
+        </pre>
+        <p class="arch-title">图 2 · 资产变动调用时序：预检幂等 → 行锁 → savepoint 兜底 → 同事务提交</p>
+      </div>
+
+      <div class="callout warn">
+        <b>隐性不变式（读码推断，未在此环境验证）</b>：幂等路径的正确性依赖「余额/卡余额的 UPDATE 被 flush 在 <code>begin_nested()</code> <b>之内</b>」（<code>asset_service.py:117-127</code>，<code>flow_repo.add()</code> 触发 flush）。
+        冲突时 savepoint 连带回滚这笔余额改动、并由 SQLAlchemy 让对象失效，于是重复请求不会二次加钱。
+        一旦有人把流水插入的 flush 挪到 savepoint 之外，重复请求就会真的重复加扣。建议补一条<b>并发重复请求</b>的集成测试，把这个前提钉死。
+      </div>
+
+      <p>其他已修的关键点（来自评审记录）：单轮无盐 sha256 → <code>pbkdf2_hmac</code> + 每用户盐（<code>register_service.py:28-31</code>）；金额入参 <code>Field(max_digits=16, decimal_places=2)</code> + 积分整数校验；响应金额一律经 <code>dto.money()</code> 输出两位小数字符串，避免 JSON float 精度损失；注销 <code>phone_archive</code> 在<b>申请时刻</b>定格（<code>cancel_service.py:101</code>），冷静期内换绑也能回溯原号。</p>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>数据模型 <em>13 张表，金额 DECIMAL(18,2)，流水带符号、不设 direction 字段</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>分组</th><th>表</th><th>关键约束 / 约定</th></tr></thead>
+          <tbody>
+            <tr><td>身份</td><td><code>member</code> · <code>channel</code></td><td><code>uk_phone</code> 全局唯一；注销后 <code>phone → del_&lt;member_id&gt;</code> 释放唯一索引；渠道码失效不阻断注册</td></tr>
+            <tr><td>资产</td><td><code>member_asset_account</code> · <code>member_asset_flow</code></td><td><code>uk_member_asset (member_id, asset_type)</code>；流水 <code>uk_biz_asset</code> 幂等 + <code>uk_flow_no</code>；<code>before/change/after_amount</code> 带符号</td></tr>
+            <tr><td>卡券</td><td><code>member_stored_value_card</code> · <code>member_gift_card</code> · <code>member_coupon</code></td><td>卡支持多次部分消费、每次必写流水；券为一次性核销（只改状态 + <code>operation_log</code>）</td></tr>
+            <tr><td>单据</td><td><code>asset_adjust_order</code> · <code>asset_merge_order</code> · <code>asset_merge_detail</code> · <code>member_cancel_apply</code></td><td>状态机 1..5 / 1..6 / 1..3；合并明细记录 <code>ADD_UP · NEW_CARD · REASSIGN · INVALIDATE</code> 四种转移方式</td></tr>
+            <tr><td>审计</td><td><code>member_info_change_log</code> · <code>operation_log</code></td><td>信息修改记前后值 + 验证方式；<code>operation_log</code> 追加型（仅 created_at），<code>detail</code> 用 MySQL JSON</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <b>环境约束</b>：<code>detail</code> / <code>precheck_snapshot</code> 用 JSON 类型、DDL 里用了 <code>CHECK</code> 约束——JSON 需 MySQL 5.7.8+、CHECK 到 8.0.16 才真正生效。
+        文档已注明这一点：在 5.7 上「余额非负」只靠应用层校验，DB 不兜底。
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+erDiagram
+  member ||--o{ member_asset_account : "1 个会员 N 类账户"
+  member ||--o{ member_asset_flow : "全量流水"
+  member ||--o{ member_cancel_apply : "注销申请"
+  member ||--o{ asset_merge_order : "主账号 / 从账号"
+  member ||--o{ member_stored_value_card : "储值卡"
+  member ||--o{ member_gift_card : "礼品卡"
+  member ||--o{ member_coupon : "券实例"
+  asset_merge_order ||--o{ asset_merge_detail : "逐笔转移明细"
+  asset_adjust_order ||--o| member_asset_flow : "入账后回写 flow_id"
+  channel ||--o{ member : "首次注册渠道"
+        </pre>
+        <p class="arch-title">图 3 · 数据模型主干关系（无物理外键，关系由应用层保证）</p>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>loader-test 压测与冒烟工程 <em>k6 v2 原生跑 TS、无打包层；member 冒烟是 seed → 压测 → 库级 verify 的三步编排</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>场景</th><th>打什么</th><th>负载模型</th><th>阈值</th></tr></thead>
+          <tbody>
+            <tr><td><code>smoke.ts</code></td><td><code>GET BASE_URL/</code></td><td>constant-vus 1 VU × 1m</td><td>p95&lt;1500ms · failed&lt;1% · checks&gt;0.99</td></tr>
+            <tr><td><code>load.ts</code></td><td>同上（丢弃响应体）</td><td>ramping-vus 0→20（3m 保持）→0</td><td>p95&lt;1000ms</td></tr>
+            <tr><td><code>stress.ts</code></td><td>同上</td><td>ramping-arrival-rate 50→100→150 it/s</td><td>p95&lt;2000ms · failed&lt;5%</td></tr>
+            <tr><td><code>member-*.ts</code> ×7</td><td><code>/api/v1</code> 各业务端点（register / asset / card / cancel / merge / info / query）</td><td>per-vu-iterations 1 VU × 1 iter</td><td>checks&gt;0.99 · p95&lt;1000ms（<b>有意不卡</b> failed/error_rate，因场景内含预期 409）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>工程约定对齐 k6 官方最佳实践：<code>options.scenarios</code> 显式声明 executor（不再用顶层 <code>vus/duration</code>）；请求用 <code>name</code> 标签聚合同名指标；功能断言走 <code>check</code>、性能断言只走 <code>thresholds</code>；自定义指标 <code>error_rate</code> / <code>api_duration</code> 由 <code>lib/http.ts</code> 自动埋点；jslib <code>k6-summary</code> 已 vendored 进 <code>src/lib/vendor/</code>，容器内不依赖外网 CDN。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  A["pnpm typecheck<br/>tsc --noEmit"] --> D
+  B["pnpm deps:check<br/>k6 deps 拒绝 xk6 与远程 import"] --> D
+  C["Dockerfile 构建期<br/>重复一遍依赖门禁"] --> D
+  D["k6 run src/tests/*.ts<br/>原生 TS · 无打包"] --> E["handleSummary<br/>stdout 彩色摘要 + results/*.json"]
+  F["run.mjs 编排"] --> G["db.py seed<br/>写 fixture"]
+  G --> H["k6 run member-*.ts"]
+  H --> I["db.py verify<br/>库级断言 + TRIGGER 注入故障"]
+        </pre>
+        <p class="arch-title">图 4 · 校验链路：通用压测（左）与 member 三步冒烟（右）</p>
+      </div>
+
+      <div class="callout warn">
+        <b>可直接落地性的三个卡点</b>：
+        ① member-* 场景在 init 阶段就 <code>open('../../results/.member-smoke/&lt;场景&gt;.json')</code>（如 <code>member-asset.ts:29</code>），文件只由 <code>db.py seed</code> 生成——<b>不能单独 <code>k6 run</code></b>，而 <code>results/</code> 又被 <code>.dockerignore:2</code> 排除，镜像内跑 member 场景必崩；
+        ② <code>scripts/member-smoke/run.mjs:20</code> 默认解释器指向<b>仓库外</b>的 <code>../member-service/.venv/bin/python</code>，且 <code>:48-56</code> 用 <code>zsh -lc</code> 从登录 shell 取 MySQL 密码 → Linux/CI 不可跑；
+        ③ <code>k8s/k6-jobs.yaml:19-20,52-53</code> 把 <code>BASE_URL</code> 指向 <code>http://member-service:8081</code>，但 smoke/load 打的是 <code>${BASE_URL}/</code>——member-service 只有 <code>/api/v1/*</code> 与 <code>/health</code>，根路径 404，<code>checks&gt;0.99</code> 会直接挂。
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>质量证据链 <em>21 条对抗评审 + 8 条自查 → 16 条已修、5 条明确「接受风险」；冒烟两轮抓到 1 个必现缺陷</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>环节</th><th>做法</th><th>产出</th></tr></thead>
+          <tbody>
+            <tr><td>实现</td><td>按 PRD 5.1–5.6 + 13 表 DDL 分层实现，docstring 标注 PRD 章节与 CR 编号</td><td><code>member-service/app</code> 2534 行</td></tr>
+            <tr><td>对抗评审</td><td>Hermes <code>--oneshot --ignore-rules</code>（独立模型、不注入项目记忆），prompt 明令「假设必有缺陷、必须给 <code>file:line</code>」；脚本前后做文件快照比对，发现改动即作废（exit 2）</td><td>21 条问题（5 high / 14 medium / 2 low）+ 作者自查 8 条</td></tr>
+            <tr><td>修复与决策</td><td>16 条本轮修复；5 条交需求方决策——无鉴权/IDOR、敏感信息明文、FakeSms、审批角色、注销缺订单校验，均以「仅内网部署」为前提接受并留档</td><td><code>docs/cr/cr-20261011-170526.md</code></td></tr>
+            <tr><td>冒烟验证</td><td>28 例覆盖 PRD 第 9 章验收标准；<code>db.py verify</code> 只断言 API 看不见的库级事实，SM-023 用 MySQL TRIGGER 注入确定性故障验证「整体回滚」</td><td>两轮全量通过；第二轮回跑暴露 <code>biz_no</code> 超 <code>VARCHAR(64)</code> 的必现 DataError（已修）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        这套「实现 → 对抗评审（独立模型）→ 逐条判定修复/决策 → 自动化冒烟复跑」的闭环，是整仓最值得复制的工程实践。
+        尤其两点：<b>评审要求 <code>file:line</code> 证据</b>（避免泛泛而谈），<b>用运行前后文件快照保证评审只读</b>（否则评审 agent 可能顺手改代码，结论作废）。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>问题清单 <em>已修的不重复列；以下为本次静态复核仍存在、或与已修补丁不一致的项</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>级别</th><th>问题</th><th>证据</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge danger">高</span></td><td>资产变动入口只<b>黑名单</b>了 <code>MANUAL_ADJUST</code>：<code>MERGE_IN/MERGE_OUT/CANCEL_DISCARD/EXPIRE_CLEAR/*_REGISTER_GIFT</code> 等「系统内部」场景外部可传，<code>biz_no</code> 也由调用方指定；叠加无鉴权 ≈ 任意会员资产凭空增减。CR #12 只堵了人工调整。</td><td><code>app/services/asset_service.py:143-144</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>「超阈值二级审批」不是两级：<code>_get_approvable</code> 允许 <code>PENDING</code> 与 <code>SECOND_APPROVING</code> 同样一步通过，<code>Approved</code> 状态从不落库（置位后立刻被覆盖为 <code>POSTED</code>），无第二审批人 / 分级留痕；冒烟 SM-010 只验到「状态=2 → 他审 → POSTED」。</td><td><code>app/services/adjust_service.py:82,100,130-137</code></td></tr>
+            <tr><td><span class="badge danger">高</span></td><td>批量执行到期注销的接口无 operator 依赖：审计 <code>operator_id</code> 恒空、<code>operator_type=SYSTEM</code>；配合无鉴权即可被任一可达进程触发全量注销。</td><td><code>app/api/v1/admin.py:57-60</code> · <code>app/services/cancel_service.py:151-152</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>合并<b>不处理冻结资金</b>：只搬 <code>available_amount</code>，随后从账号被置 <code>CANCELLED</code>，<code>frozen_amount</code> 成为无流水孤儿。</td><td><code>app/services/merge_service.py:216-222,205-211</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>券/礼品卡改挂 <code>REASSIGN</code> 只改 <code>member_id</code>、不写流水，与 schema 自定的「数值型资产变动必写流水」冲突——礼品卡余额易主无流水轨迹。</td><td><code>merge_service.py:287-296,313-322</code> · <code>docs/sql/member-schema.md:40</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>同类 <code>biz_no</code> 溢出缺陷在注销侧<b>未同步修</b>：仍拼 <code>{apply_no}:{type}:{ref}</code>（35+17+1+位数），DDL 为 <code>VARCHAR(64)</code>，卡 ID ≥ 10¹⁰ 时 DataError。</td><td><code>app/services/cancel_service.py:225</code> · <code>docs/sql/member-schema.md:137</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>手机号换绑的并发语义与注册不一致：注册有 <code>IntegrityError → 409 MEMBER_EXISTS</code> 兜底，换绑只做预检后 <code>setattr</code>，并发撞 <code>uk_phone</code> 会在依赖层 commit 抛 IntegrityError → 500。</td><td><code>app/services/info_service.py:104-105</code> vs <code>register_service.py:67-71</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>合并 <code>confirm</code> 的 <code>except Exception</code> 把所有异常（含 <code>BizError</code>）压成 500 <code>MERGE_FAILED</code>，丢失错误码；<code>fresh = get_by_no(...)</code> 未判 None，工单缺失时 <code>AttributeError</code> 掩盖原错。</td><td><code>app/services/merge_service.py:153-163</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>调整单可建为永远无法入账的状态：建单不校验 <code>COUPON</code> 与卡类 <code>asset_ref_id</code>，要到 approve 才在 AssetService 报错，工单滞留 <code>PENDING</code>。</td><td><code>app/services/adjust_service.py:56-71</code> · <code>asset_service.py:137-142</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>入参长度无约束：<code>nickname/avatar/email/remark</code> 缺 <code>max_length</code>，超长直接触发 pymysql <code>DataError</code> → 500。</td><td><code>app/schemas/requests.py</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>member-* 冒烟脚本不能独立运行（init 期强依赖 seed 产物 + 仓库外 venv + <code>zsh -lc</code> 取密码），k8s Job 的 <code>BASE_URL</code> 指向 member-service 根路径/8081 与实际路由不符。</td><td><code>loader-test/src/tests/member-asset.ts:29</code> · <code>scripts/member-smoke/run.mjs:20,48-56</code> · <code>k8s/k6-jobs.yaml:19-20</code></td></tr>
+            <tr><td><span class="badge warn">中</span></td><td>依赖门禁两份实现不等价：Dockerfile 用 <code>grep '"customBuildRequired": true'</code> 文本匹配（依赖 k6 <code>deps --json</code> 输出格式），<code>check-deps.mjs</code> 走 JSON 解析；格式一变则构建期门禁空转。</td><td><code>loader-test/Dockerfile:17,20</code> · <code>scripts/check-deps.mjs:33-46</code></td></tr>
+            <tr><td><span class="badge">低</span></td><td><code>TimestampMixin</code> 用 <code>default=datetime.now</code> 绕过 Clock 协议；幂等命中先于状态校验返回（冷静期/已注销会员重放仍 200）；<code>list_due</code> 无 LIMIT，单条失败整批 500；合并对 0 余额储值卡也开新卡；<code>AssetMergeDetail.status=2</code> 等魔法数无枚举。</td><td><code>app/models/base.py:11-12</code> · <code>asset_service.py:85-94</code> · <code>order_repo.py:105-109</code> · <code>merge_service.py:246-256,383</code></td></tr>
+            <tr><td><span class="badge">低</span></td><td>文档漂移：<code>member.ts</code> 实际 15 个端点封装 vs README/头注释写「13 个」；<code>member-register.ts:24</code> 加载的 <code>fixture</code> 从未被读取却要求文件必须存在；<code>main.py</code> <code>version="1.0.0"</code> vs <code>pyproject.toml</code> <code>0.1.0</code>。</td><td><code>loader-test/src/lib/member.ts</code> · <code>README.md:25</code> · <code>member-service/app/main.py:18</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>修复优先级 <em>前三条是「不修就不能上线」，后两条决定这套冒烟能否进 CI</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>动作</th><th>理由</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>资产变动入口改<b>场景白名单</b>（外部仅允许消费/退款类），内部场景走独立入口或内部标记</td><td>比 CR #12 的黑名单补丁更根本；无鉴权前提下这是唯一的资损闸门</td></tr>
+            <tr><td>2</td><td>二级审批补真实分级：第二审批人 + <code>Approved</code> 落库留痕 + 分级审计</td><td>否则 PRD 5.3「超阈值需二级审批」在合规上不成立</td></tr>
+            <tr><td>3</td><td><code>cancel_service</code> 的 <code>biz_no</code> 统一为 <code>MG</code> 同款短格式，并补长度断言/单测</td><td>同族缺陷已在合并侧暴露过一次，注销侧仍留坑</td></tr>
+            <tr><td>4</td><td>合并补冻结资金处置 + <code>REASSIGN</code> 流水；明确「冻结资产是否随合并转移」的业务口径</td><td>资产对账闭环；也是 PRD 5.4「转移规则」未覆盖的空白</td></tr>
+            <tr><td>5</td><td>loader-test 三处可运行性缺陷：fixture 改由 env/<code>setup()</code> 注入、门禁收敛为单一实现、k8s 目标地址改为 <code>member-service:8000/api/v1</code> 或改用 member 场景</td><td>否则这套冒烟只能在开发机跑，进不了 CI/Pod</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>结论 <em>工程方法论值 8 分，生产就绪度值 3 分——差距全部集中在「无鉴权 + 业务规则未闭合」</em></h2>
+      <ul>
+        <li><b>值得学</b>：规范先行（PRD / DDL / 冒烟计划三份文档驱动实现）、独立模型对抗评审且强制 <code>file:line</code> 证据、评审产物逐条判定「修 / 决策接受」并留档、k6 三步编排把「API 断言 + 库级断言 + 故障注入」串成一次执行。</li>
+        <li><b>实现水平</b>：资损防线（幂等 / 行锁 / savepoint / 金额精度 / 脱敏 / 审计流水）做得比多数业务仓扎实，且每条都有对应的评审编号与修复说明。</li>
+        <li><b>不可上线的硬伤</b>：全站无鉴权 + 资产变动入口场景面过宽 + 登录态之外的 admin 能力（含批量注销）——这三项叠加，风险等级高于文档里「接受风险」的内网前提所能覆盖的范围；二级审批是纸面规则；注销前置校验缺「无未完成订单/售后」（依赖订单系统，本仓无）。</li>
+        <li><b>一句话</b>：把它当「AI 辅助研发流水线」的样板仓库看，价值很高；当「会员系统」的生产代码看，还差鉴权、审批真实性、业务规则闭合三块。</li>
+      </ul>
+
+      <div class="callout">
+        本文为静态阅读结论，<b>未运行任何测试</b>；引用「126 个测试全过、覆盖率约 95%」「冒烟 28 例两轮通过」均来自 <code>member-service/AGENTS.md</code> 与 <code>docs/smoke/member-test-plan</code> 的仓库内记录，未在本次分析中复现。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

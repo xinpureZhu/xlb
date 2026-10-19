@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>k6 落地手册：从调研结论到可执行清单 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>k6 落地手册：从调研结论到可执行清单</h1>
+    <p class="subtitle">把 <b>25 / 26 / 27 三篇调研</b>收敛成一套可执行动作：<b>用例归服务仓 <code>perf/</code></b>、<b>执行复用已有的 k6-operator</b>、<b>编排与判红下沉到集群自闭环节点（路线 C）</b>、gitops 只管开关与 RBAC。含四件套落地清单、S0–S7 执行与判红口径、集群首轮跑通 Runbook、分阶段验收与排障表。</p>
+    <p class="meta">最后更新：2026-10-17 · 数据来源：本工作区源码与 GitOps 清单静态分析 + 观测后端只读查询（核对时间 2026-10-17）· 结论汇总自 25/26/27 号文档</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html" class="active">k6 落地手册</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>（本工作区只读工作副本，采集于 <b>2026-10-17</b>）：
+      <code>repos/efficiency</code> <code>prod</code>·<code>84ef8f0c</code>·2026-09-17（与远端 0/0）；
+      <code>repos/gitops/apps</code> <code>test</code>·<code>0b869eaebc37</code>·2026-10-16（<b>非 prod 分支</b>，但已与 <code>origin/test</code> 同步 0/0；上一版 25/27 号文档采集于 <code>33ef7ae23c4e</code>，期间该工作副本已被更新，GitOps 结论以本次快照为准）；
+      <code>repos/rerail-test-code</code> <code>master</code>·<code>6cf2c5b</code>·2026-10-13（无 <code>prod</code> 分支，浅克隆 depth=1）；
+      <code>repos/agent-square</code> <code>dev</code>·<code>e5ebe8d9</code>·2026-09-03（<b>非 prod 分支</b>，仅作脚本先例参考）。
+      本文<b>不新增分析结论</b>：结论与证据来自 25/26/27 三篇，本文只做收敛、补齐「动作级」清单，并复核了下列易漂移项——k6 指标空集（实测）、k6 镜像 tag（<code>:latest</code> 仍未 pin）、v4 节点序无冒烟节点（源码核对）。<b>集群与云侧的写操作一律不执行</b>，文中命令均为「交人执行」的形态（AGENTS.md 第 4 条）。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">结论与落地口径</a></li>
+        <li><a href="#s2">调研结论汇总（问题 → 结论 → 证据）</a></li>
+        <li><a href="#s3">目标架构与分工</a></li>
+        <li><a href="#s4">落地清单：四件套与配套改动</a></li>
+        <li><a href="#s5">执行流程与判红口径</a></li>
+        <li><a href="#s6">首轮跑通 Runbook</a></li>
+        <li><a href="#s7">分阶段实施与验收</a></li>
+        <li><a href="#s8">排障手册</a></li>
+        <li><a href="#s9">风险与红线</a></li>
+        <li><a href="#s10">待决事项与文档关系</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论与落地口径 <em>落地的定义是「部署后自动跑业务冒烟、失败即阻断、结论可追溯到 sha」，路线 C 是主线</em></h2>
+
+      <div class="callout ok">
+        <b>结论</b>：k6 落地不需要新平台，也不需要等平台排期。执行面（k6-operator）、编排面（Argo 环境子流程 + 模板生命周期 API）、观测面（VictoriaMetrics + vmalert + alert-webhook）三面都已存在，缺的只是把它们<strong>接起来</strong>：一个自包含的冒烟节点 + 一个自带 <code>git/kubectl/jq/k6</code> 的 runner 镜像 + 一条 RBAC + 一份服务仓 <code>perf/</code> 契约。这四件套就是「落地」的全部新建物。
+      </div>
+
+      <div class="grid cols-3">
+        <div class="stat"><span class="n">4</span><span class="l">新建物：节点模板 / runner 镜像 / RBAC / <code>perf/</code> 契约（其余全是复用）</span></div>
+        <div class="stat"><span class="n">0</span><span class="l">需要改的平台 Go 代码（路线 C；接入走模板与流程的配置 API）</span></div>
+        <div class="stat"><span class="n">3</span><span class="l">结果消费处：DAG 阻断 / VM 指标与告警 / 报告归档 + 节点回写</span></div>
+      </div>
+
+      <p>四条落地口径（决定「做对」还是「看起来做完了」）：</p>
+      <ol>
+        <li><b>判定在部署之后、人工审批之前</b>：插入点是环境子流程 <code>cd</code> 之后的独立节点。不能再借人工审批节点做「自动通过」——审批放行走私有鉴权路由，公开的 <code>/workflow/node/*</code> 不校验审批状态，等于把门禁开放给任何集群内进程。</li>
+        <li><b>用例的唯一归属是服务仓 <code>perf/</code></b>：脚本、阈值、场景元数据随接口同 PR 演进；gitops 只留「服务 × 环境 × 套件」开关，不再承载脚本正文。禁止引用浮动分支。</li>
+        <li><b>编排与判红下沉到集群侧自包含节点（路线 C）</b>：S0–S7 全部在节点 Pod 内完成，平台只收 <code>/node/start</code> 与 <code>/node/complete</code> 两个通用回调。<b>发布单引用冒烟记录是增项（路线 P）</b>，不作为一期目标。</li>
+        <li><b>无数据即失败（no_data = fail）</b>：缺脚本、环境不可达、requests/cases 计数为 0 一律判红。这条口径独立于已有的质量门禁语义（「阈值未配置 = 不检查」），必须单独实现，否则会出现最危险的假绿。</li>
+      </ol>
+
+      <div class="callout warn">
+        <b>反向结论（不要做）</b>：① 不要在服务仓的 CodeUp 流水线里跑冒烟当作门禁——那是构建期，看不到本次部署结果；② 不要为冒烟新建独立测试平台——执行、编排、观测三面都已存在；③ 不要用浮动分支或 PVC 共享脚本（结论无法回答「这是哪个 commit 的用例」）；④ 不要在 prod 跑写路径冒烟或用 k8s CronJob 做 prod 巡检（<code>cronJobMode</code> 在 <code>prod &amp;&amp; version&gt;=136</code> 硬编码为 <code>off</code>）；⑤ 不要把 UI 断言塞进 k6，也不要禁用 <code>k6 deps</code> 依赖门禁去引 xk6 自定义构建。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>调研结论汇总 <em>13 条结论定案，2 条被否定，工具基线 5 项约束</em></h2>
+
+      <p>下表是 25/26/27 三篇调研的<b>结论层</b>（不含分析过程）。「出处」列给出该结论的原始文档与主要证据文件；本文不重复论证。</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>调研问题</th><th>结论</th><th>主要证据</th><th>出处</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>现在有没有「日常自动触发的业务冒烟」？</td><td><b>没有</b>。环境流程里的 <code>smoke_test</code> 是人工审批轮询节点；<code>auto-complete-smoke-node</code> 完成的是飞书工作项节点，不是测试</td><td><code>model/workitem/code_branch.go:164,251</code>（<code>NodeSmokeTest</code> 属 <code>JobTypeApproval</code>）</td><td><a href="25-k6-cicd-integration.html">25 号</a> §1/§4</td></tr>
+            <tr><td>2</td><td>执行面（k6 到底在哪跑）</td><td><b>已存在</b>：k6-operator 装在 <b>test 集群</b>，版本 pin 到 <code>controller-v0.0.23</code>；但只有 2 个手工作业下发的购物车脚本</td><td><code>observability/grafana-k6/k6-operator.jsonnet:6,9573</code>（守卫 <code>['test']</code>）</td><td><a href="25-k6-cicd-integration.html">25 号</a> §5</td></tr>
+            <tr><td>3</td><td>要不要给冒烟新建平台或流水线？</td><td><b>不要</b>。编排用 Argo 环境子流程，接入走平台已有的模板/流程配置 API，零 Go 改动</td><td><code>templates/*.yaml</code> 的 <code>templateRef</code> 机制；<code>router/workflow/template.go:27</code>（<code>node-capabilities/refresh</code>）</td><td><a href="27-k6-repo-local-cases.html">27 号</a> §2/§8</td></tr>
+            <tr><td>4</td><td>用例放哪</td><td><b>放各服务仓 <code>perf/</code></b>（脚本 + <code>k6.config.json</code> 元数据），gitops 只留开关；跨服务链路由独立 <code>perf-story</code> 仓承载</td><td>接口语义知识只在服务仓；集中仓会让 300+ 服务的用例全经一次跨仓评审</td><td><a href="27-k6-repo-local-cases.html">27 号</a> §1/§6/§11</td></tr>
+            <tr><td>5</td><td>编排与判定落哪一层</td><td>三条路线（P 平台 job / <b>C 集群自闭环节点</b> / G Rollout AnalysisRun）对比，<b>选 C 为主线</b>；G 先试点拿「失败自动回滚」；P 仅在「发布单必须引用冒烟记录」成为硬需求时做</td><td>路线对比表见 27 号 §2；Job provider 支持见 <code>argo-rollouts/crd.yaml</code></td><td><a href="27-k6-repo-local-cases.html">27 号</a> §2</td></tr>
+            <tr><td>6</td><td>门禁体系怎么接</td><td>不新建第四套口径：一期用集群侧节点+DAG 阻断；发布单就绪判定（只读 <code>test/in</code>、<code>staging/out</code>，需 <code>active|merged</code> 绑定）作为二期增项</td><td><code>release_plan_v2.go:461-468</code>（<code>ReportsReady</code> 阻断）、<code>release_quality_report.go:150-164</code></td><td><a href="25-k6-cicd-integration.html">25 号</a> §3/§8</td></tr>
+            <tr><td>7</td><td>质量平台执行计划能不能当结果容器</td><td><b>不能一期用</b>：无环境/自动化维度、通过率不落库（读时算 <code>latest_</code>，metric 侧算 <code>first_</code>，两套口径）、写入需飞书 OAuth 会话</td><td>25 号 §3/§8-B、quality-case/gate 手册</td><td><a href="25-k6-cicd-integration.html">25 号</a> §8</td></tr>
+            <tr><td>8</td><td>冒烟与压测能不能共用一套设计</td><td><b>不能</b>：冒烟＝高频/低压力/强业务断言/&lt;2 分钟；压测＝低频/高压力/弱断言强指标。共用会把环境压出噪声，又写不出业务缺陷</td><td>两类测试工程差异表 25 号 §6</td><td><a href="25-k6-cicd-integration.html">25 号</a> §6/§8-P</td></tr>
+            <tr><td>9</td><td>判红看什么</td><td>三信号：TestRun 终态 <code>error</code>、runner 退出码非 0、<b>空数据</b>。<code>finished</code> 只代表跑完，不代表通过；仅网络类错误与 5xx 允许整轮重试一次</td><td>TestRun <code>.status.stage</code> 枚举；阈值失败以退出码体现</td><td><a href="27-k6-repo-local-cases.html">27 号</a> §3</td></tr>
+            <tr><td>10</td><td>用例工程模板从哪来</td><td><b>rerail-test-code/loader-test</b> 可直接提升为模板仓：k6 v2 原生跑 TS、<code>lib/&lt;service&gt;</code> 客户端、四套阈值预设、<code>checkCase</code> 打标、<code>seed → run → verify</code>、依赖门禁</td><td><code>loader-test/Dockerfile</code>（<code>k6 deps</code> 拒绝 xk6 与远程 import）、<code>src/lib/thresholds.ts</code></td><td><a href="26-rerail-test-code-analysis.html">26 号</a> §5</td></tr>
+            <tr><td>11</td><td>模板仓现在的可运行性</td><td><b>三处坑必须先修</b>：<code>member-*</code> 场景 init 期强依赖 <code>db.py</code> 产出的 fixture（不能单独 <code>k6 run</code>）；<code>run.mjs</code> 默认解释器指向仓库外 venv；用 <code>zsh -lc</code> 从登录 shell 取 MySQL 密码（Linux/CI 不可跑）</td><td><code>scripts/member-smoke/run.mjs:20,48-56</code>、<code>src/tests/member-asset.ts:29</code></td><td><a href="26-rerail-test-code-analysis.html">26 号</a> §5/§7</td></tr>
+            <tr><td>12</td><td>k6 结果有没有进观测</td><td><b>没有</b>。本次复核（2026-10-17）：staging 与 prod 两套观测后端 <code>count({__name__=~"k6_.*"})</code> 均为空集 ⇒ 「空数据判红」这条信号在 remote-write 验通前<b>没有数据源</b></td><td>只读 PromQL 查询，<code>seriesFetched=0</code></td><td>本文复核</td></tr>
+            <tr><td>13</td><td>阻塞路线 C 的前置</td><td>工作流 Pod 的 SA 权限不够：<code>configmaps</code> 只有 <code>get/list/watch</code>（<b>不能 create</b>），且完全没有 <code>k6.io</code> 权限</td><td><code>argo-workflows/deployment.jsonnet:193-197</code>（<code>argo-cluster-role</code>）</td><td><a href="27-k6-repo-local-cases.html">27 号</a> §2/§4</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>工具基线与已否定的选项</h3>
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">1</span>版本与运行时（保留）</h4>
+          <p>k6 <b>v2.x</b>（<code>loader-test</code> 默认 <code>grafana/k6:2.3.0</code>，内置 esbuild 直接跑 <code>.ts</code>，无打包层）；<code>@types/k6 ^2.3.0</code> + <code>typescript ^7.0.2</code> 只做类型检查；k6-operator <b>controller-v0.0.23</b>；脚本语言统一 k6 原生 TS。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>能力开关（保留）</h4>
+          <p>阈值走 <code>options.thresholds</code>（失败即非 0 退出码）；<code>constant-arrival-rate</code> 开放模型用于压测；<code>--summary-export</code> + <code>handleSummary</code> 出报告；<code>--out experimental-prometheus-rw</code> 写 VictoriaMetrics；<code>k6 deps</code> 作依赖门禁。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>已否定（不用）</h4>
+          <p><b>xk6 自定义构建</b>（依赖门禁直接拒绝，会引入镜像分发问题）；<b>k6 官方浏览器模块</b>（UI 场景交给已有 UI 自动化，k6 留在协议层）；<b>Grafana Cloud k6</b>（数据出境与网络可达性无必要）。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">4</span>已否定（不用）</h4>
+          <p><b>PVC 共享脚本</b>（版本不可信，仅本地调试）；<b>每服务一个 k6 仓</b>（评审与治理成本爆炸）；<b>脚本改用 Node/Python 重写</b>（原生 TS 已经够用，多一套工具链只增加维护面）。</p>
+        </div>
+      </div>
+
+      <div class="callout">
+        <b>operator 的两个实测坑（照抄，别重复踩）</b>：① starter 命令由 operator 固定生成 <code>sh -c "curl …"</code>，<b>官方 <code>grafana/k6</code> 镜像里没有 curl</b>，starter 必须用带 curl 的镜像（现成可用 <code>gitops-tools/curl:jq-latest</code>）；② <code>spec.arguments</code> 在 CRD 里是<b>字符串</b>，operator 原样塞进 runner argv，带引号的参数（如 <code>summaryTrendStats</code>）会被当成单个 trend stat 导致启动失败 ⇒ 这类参数写进脚本，环境相关值走 <code>env</code>/<code>envFrom</code>（<code>cart-list-test.js</code> 顶部注释即此结论的现场记录）。
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>目标架构与分工 <em>服务仓=内容 · gitops=开关+RBAC · 集群=执行 · 平台=展示与回调</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph SRC["服务仓 · 唯一 source of truth"]
+    P1["perf/k6.config.json<br/>套件·环境·阈值·writePath"]
+    P2["perf/smoke/*.ts · perf/load/*.ts"]
+  end
+  subgraph GITOPS["gitops/apps · 开关与地基"]
+    G1["smoke-switch ConfigMap<br/>服务 × 环境 × 套件"]
+    G2["RBAC Role<br/>configmaps/k6.io/rollouts"]
+    G3["versions.libsonnet<br/>smoke-runner 镜像 pin"]
+  end
+  CD["Argo 环境子流程<br/>cd 节点成功"] --> SN["smoke-run 节点<br/>自包含 · 调用 S0–S7"]
+  SRC -->|"S1 按 sha 取脚本"| SN
+  G1 -.->|"套件开关"| SN
+  G2 -.->|"权限"| SN
+  G3 -.->|"镜像版本"| SN
+  SN --> TR["TestRun · k6-operator<br/>仅 test 集群"]
+  TR --> RUN["runner Pod · k6<br/>ConfigMap 脚本 + Secret 凭据"]
+  SN --> JUDGE{"判定<br/>终态 / 退出码 / 空数据"}
+  JUDGE -->|"pass · exit 0"| NEXT["后续人工审批节点<br/>保持人工语义"]
+  JUDGE -->|"fail · exit 1"| STOP["DAG 阻断<br/>环境不推进"]
+  RUN --> VM["VictoriaMetrics<br/>remote-write"]
+  RUN --> OSS["报告归档 · 对象存储<br/>summary JSON + HTML"]
+  VM --> ALERT["vmalert → Alertmanager → alert-webhook → 飞书"]
+  VM --> DASH["Grafana 面板 / 覆盖率台账"]
+  SN --> CB["平台 node/start · node/complete<br/>节点状态与详情可见"]
+        </pre>
+        <p class="arch-title">图 1 · 落地后的目标架构：内容在服务仓、开关在地基、执行在集群、判定在节点内，平台只负责展示与生命周期回调</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>角色</th><th>归属</th><th>负责</th><th>不负责</th></tr></thead>
+          <tbody>
+            <tr><td>用例内容</td><td><b>服务仓</b> <code>perf/</code></td><td>脚本、阈值、场景元数据、断言、本地可跑命令、依赖门禁</td><td>不管集群、触发、结果落库</td></tr>
+            <tr><td>开关与地基</td><td><b>gitops</b> <code>repos/gitops/apps/</code></td><td>启停开关 ConfigMap、RBAC Role、runner 镜像版本登记、报告桶配置</td><td>不再承载脚本正文</td></tr>
+            <tr><td>执行</td><td><b>集群</b>（已有）</td><td>k6-operator、runner/starter 镜像、凭据 Secret、指标 remote-write</td><td>不解析业务语义</td></tr>
+            <tr><td>编排与判定（主线 · 路线 C）</td><td><b>Argo 自包含节点</b></td><td>S0–S7 全流程、判红、报告与指标、节点回调</td><td>不改平台 Go 代码、不写平台结果表</td></tr>
+            <tr><td>展示</td><td><b>效能平台</b>（已有接口）</td><td><code>/node/start</code>、<code>/node/complete</code> 通用回调；节点状态在流程详情页可见</td><td>不参与判定</td></tr>
+            <tr><td>增项：发布单引用</td><td><b>效能平台</b>（路线 P）</td><td>新增 <code>job_type=smoke</code> 与就绪判定新来源</td><td>一期不做</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <b>为什么「零 Go 改动」成立</b>：环境子流程 YAML 只声明 DAG 与参数，节点实现是 <code>templateRef</code> 指向集群里的 <code>WorkflowTemplate</code>；平台把 <code>deploy/argo-workflows</code> 的 YAML 作为 seed 导入并抽取节点能力，导入/发布/能力刷新都有现成 API（<code>/workflow/templates</code> 的 <code>import-yaml</code>·<code>create</code>·<code>publish</code>、<code>/workflow/flows</code> 的 draft/publish、<code>POST /api/v1/workflow/node-capabilities/refresh</code>）。节点回调只校验 environment，<code>nodeName</code> 不入枚举 ⇒ 新节点名不需要改平台代码。
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>落地清单：四件套与配套改动 <em>每件都有落点、依赖与验收，全部可独立完成</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>项</th><th>落点</th><th>要点</th><th>依赖</th><th>验收</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>1</td><td><b>RBAC Role</b><br><span class="badge warn">待建</span></td>
+              <td><code>repos/gitops/apps/argo-workflows/deployment.jsonnet</code>（新增 Role/RoleBinding，附在 <code>argo-cluster-role</code> 之外）</td>
+              <td><code>observability</code> ns 的 <code>configmaps</code> 写；<code>k6.io/testruns</code> 的 create/get/list/watch/delete；目标命名空间 <code>rollouts</code> 读</td>
+              <td>无（先行项）</td>
+              <td><code>kubectl auth can-i create configmaps -n observability --as=system:serviceaccount:argo-workflows:argo</code> 返回 <code>yes</code></td>
+            </tr>
+            <tr>
+              <td>2</td><td><b>smoke-runner 镜像</b><br><span class="badge warn">待建</span></td>
+              <td>Dockerfile 放 <code>efficiency/deploy/images/smoke-runner/</code>（照 <code>images/curl-jq/</code> 的 <code>Dockerfile</code> + <code>build.sh</code> 形状）；版本登记进 <code>observability/versions.libsonnet</code></td>
+              <td>基底 <code>grafana/k6:2.3.0</code>，加 <code>git</code>/<code>curl</code>/<code>jq</code>/<code>kubectl</code>；starter 用现成 <code>gitops-tools/curl:jq-latest</code></td>
+              <td>Registry 推送权限（交人执行）</td>
+              <td>镜像内 <code>k6 version</code>/<code>git --version</code>/<code>kubectl version --client</code>/<code>jq --version</code> 全通；tag 非 <code>latest</code></td>
+            </tr>
+            <tr>
+              <td>3</td><td><b>smoke-run 节点模板</b><br><span class="badge warn">待建</span></td>
+              <td><code>efficiency/deploy/argo-workflows/templates/smoke-run.yaml</code>（形状抄 <code>quality-gate-polling.yaml</code>）；落地后调 <code>POST /api/v1/workflow/node-capabilities/refresh</code></td>
+              <td>NodeAffinity 走 <code>pool=gitops</code>；<code>imagePullSecrets: acr-image-user</code>；pod 内实现 §5 的 S0–S7；只回调 <code>/node/start</code> 与 <code>/node/complete</code></td>
+              <td>1、2</td>
+              <td>集群里手工 <code>argo submit</code> 该模板能跑完并回调成功</td>
+            </tr>
+            <tr>
+              <td>4</td><td><b>服务仓 <code>perf/</code> 契约</b><br><span class="badge warn">待建</span></td>
+              <td>模板仓（由 <code>repos/rerail-test-code/loader-test</code> 提升）+ 试点服务仓新增 <code>perf/</code></td>
+              <td><code>k6.config.json</code> 决定跑什么与怎么判红；<code>lib/</code> 客户端；<code>smoke/</code>、<code>load/</code> 分家；<code>templateVersion</code> 用于 blast-radius</td>
+              <td>先修 loader-test 三处可运行性坑（§2 结论 11）</td>
+              <td>新服务「复制模板 → 填 config → 本地跑通」≤ 0.5 天</td>
+            </tr>
+            <tr>
+              <td>5</td><td>开关清单<br><span class="badge warn">待建</span></td>
+              <td>gitops 渲染成 <code>observability</code> ns 的 ConfigMap <code>k6-smoke-switch</code></td>
+              <td>「服务 × 环境 × 套件 + enabled」，默认关闭、逐服务灰度</td>
+              <td>3</td>
+              <td>改开关重新渲染后，节点读到的套件清单随之变化（无需重建镜像）</td>
+            </tr>
+            <tr>
+              <td>6</td><td>结果通道<br><span class="badge danger">缺口</span></td>
+              <td>runner 参数 <code>--out experimental-prometheus-rw</code> + <code>handleSummary</code> 归档；告警进 <code>observability/victoria-metrics-alert/rules/</code> + <code>alert-webhook</code></td>
+              <td>报告桶沿用 <code>jmeter</code> 的 OSS 内网端点模式（<code>oss-cn-hangzhou-internal.aliyuncs.com</code>，<code>jmeter-master.jsonnet:63-67</code>）</td>
+              <td>桶申请与告警规则评审（交人）</td>
+              <td><code>count({__name__=~"k6_.*"})</code> 非空；报告 URL 可打开</td>
+            </tr>
+            <tr>
+              <td>7</td><td>镜像 tag 收敛<br><span class="badge danger">缺口</span></td>
+              <td><code>observability/grafana-k6/grafana-k6.jsonnet:31</code> 与 <code>k6-Deployment.jsonnet:35</code></td>
+              <td>现为 <code>k6:latest</code> 与 <code>k6:v1</code>，需 pin 到具体版本并登记进 <code>versions.libsonnet</code></td>
+              <td>无</td>
+              <td>全仓无 k6 相关 <code>:latest</code></td>
+            </tr>
+            <tr>
+              <td>8</td><td>定时巡检<br><span class="badge warn">待建</span></td>
+              <td>Argo <code>CronWorkflow</code>（CRD 已装、当前零实例）</td>
+              <td>仅 test/staging；复用节点模板，不阻断发布</td>
+              <td>3</td>
+              <td>连续 3 天有巡检记录；依赖不可用时下一周期报红并出飞书告警</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>草案 1 · 服务仓 <code>perf/k6.config.json</code></h3>
+      <pre><code>{
+  "templateVersion": "1.3.0",
+  "suites": [
+    {
+      "name": "service-smoke",
+      "envs": ["test", "staging"],
+      "entry": "smoke/register.ts",
+      "tags": { "service": "member-service", "scene": "register" },
+      "thresholds": { "checks": ["rate&gt;0.99"], "http_req_duration": ["p(95)&lt;1000"] },
+      "writePath": true,
+      "maxDuration": "120s"
+    },
+    {
+      "name": "service-load",
+      "envs": ["test"],
+      "entry": "load/query.ts",
+      "executor": "constant-arrival-rate",
+      "targetRps": 50,
+      "writePath": false
+    }
+  ]
+}</code></pre>
+      <div class="loc">字段语义：<code>envs</code> 决定该环境命中哪些套件；<code>writePath</code> 决定是否必须串行并走专用账号；<code>maxDuration</code> 与节点超时形成双层兜底</div>
+
+      <h3>草案 2 · gitops RBAC（追加到 <code>argo-workflows/deployment.jsonnet</code>）</h3>
+      <pre><code>// Rule 形式与 style 对齐文件内既有 Role（apiGroups/resources/verbs 三元组）
+{
+  apiVersion: 'rbac.authorization.k8s.io/v1',
+  kind: 'Role',
+  metadata: { name: 'argo-smoke-role', namespace: 'observability' },
+  rules: [
+    { apiGroups: [''], resources: ['configmaps'],
+      verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete'] },
+    { apiGroups: ['k6.io'], resources: ['testruns'],
+      verbs: ['get', 'list', 'watch', 'create', 'delete'] },
+  ],
+},
+// 另需一个 RoleBinding 绑定到 argo-workflows/smoke-run 使用的 SA；
+// 目标命名空间（如 test 的 &lt;ns&gt;）另建同名 Role，只给 rollouts 的 get/list/watch</code></pre>
+
+      <h3>草案 3 · smoke-runner Dockerfile（骨架，照 <code>images/curl-jq</code> 与 <code>loader-test/Dockerfile</code> 的形状）</h3>
+      <pre><code># 与 loader-test 同一个 k6 版本口径：v2 原生跑 TS，依赖门禁拒绝 xk6 与远程 import
+ARG K6_IMAGE=grafana/k6:2.3.0
+FROM ${K6_IMAGE}
+
+USER root
+RUN apk add --no-cache git curl jq bash ca-certificates &amp;&amp; \
+    curl -sSLo /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" &amp;&amp; \
+    chmod +x /usr/local/bin/kubectl &amp;&amp; \
+    mkdir -p /work &amp;&amp; chown k6:k6 /work
+USER k6
+WORKDIR /work
+# 节点脚本以 sh 执行，容器内不预置任何 perf 脚本（脚本由 S1 按 sha 拉取）</code></pre>
+      <div class="callout warn">
+        <b>两处必须实测再定稿</b>：① <code>grafana/k6</code> 是 alpine 基底（<code>apk</code> 可用）——本工作区无法在该镜像内验证，需在能拉镜像的环境跑一次 <code>docker build</code>；② <code>kubectl</code> 走公网下载在 CI 里可能被墙，改为从公司内网源取二进制或直接用 <code>gitops-tools/</code> 现有工具镜像作为基底再叠 k6。
+      </div>
+
+      <h3>草案 4 · 开关 ConfigMap（gitops 渲染）</h3>
+      <pre><code>apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-smoke-switch
+  namespace: observability
+data:
+  smoke-switch.json: |
+    {
+      "member-service": { "test": ["service-smoke"], "staging": ["service-smoke"] },
+      "cart-wanquan":  { "test": ["service-smoke"], "staging": [] }
+    }</code></pre>
+      <div class="loc">未出现在清单里的服务 ⇒ 「未接入」：节点按 §1 口径 4 决定放行或判红（建议一期放行并计入覆盖率台账，硬阻断只对已启用服务生效）</div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>执行流程与判红口径 <em>S0–S7 八阶段 · 判红只看三信号 · 与选哪条编排路线无关</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>输入</th><th>动作</th><th>产出</th><th>失败处置</th></tr></thead>
+          <tbody>
+            <tr><td><b>S0 解析上下文</b></td><td>节点参数：<code>service_name</code> / <code>environment</code> / <code>namespace</code></td><td>读 live Rollout：镜像 tag、<code>efficiency/codeBranchId</code>、<code>efficiency/orchestrationWorkflowId</code>；反解 40 位 sha 与 stable/canary Service 地址</td><td><code>{sha40, imageRef, branchId, targetURL}</code></td><td>Rollout 不存在或 tag 内无 40 位 sha → 判红 <code>context_missing</code>，不重试</td></tr>
+            <tr><td><b>S1 取脚本</b></td><td>服务仓地址 + sha + 只读 deploy key</td><td><code>git clone --filter=blob:none</code> → <code>git fetch origin &lt;sha&gt;</code> → <code>git checkout --detach &lt;sha&gt;</code></td><td><code>perf/</code> 全量（含 <code>lib/</code> 与 vendored 依赖）</td><td>sha 不存在 → 判红 <code>script_missing</code>；纯网络错误重试 2 次（指数退避）</td></tr>
+            <tr><td><b>S2 契约校验</b></td><td><code>perf/k6.config.json</code></td><td>解析 <code>templateVersion</code>、本环境命中的 <code>suites</code>、<code>entry</code> 是否存在、<code>thresholds</code> 是否齐全；<b>每个套件＝一次独立 TestRun</b></td><td>本环境套件清单（空＝未接入）</td><td>元数据缺失 / entry 不存在 / 阈值空 → 判红 <code>contract_invalid</code>，不重试</td></tr>
+            <tr><td><b>S3 内容寻址打包</b></td><td>脚本目录 + sha</td><td>ConfigMap <code>k6-scripts-&lt;svc&gt;-&lt;sha8&gt;</code>，key 用仓内相对路径，打 labels{sha,service,suite}</td><td>名字即寻址的 ConfigMap</td><td>同名且内容一致 → 复用（幂等）；同名不同内容 → 判红（有人手工覆盖过）</td></tr>
+            <tr><td><b>S4 拉起 TestRun</b></td><td>套件元数据 + ConfigMap + 凭据 Secret</td><td>TestRun：<code>parallelism: 1</code>、<code>script.configMap</code>、<code>runner.image</code>、<code>envFrom.secretRef</code>、<code>arguments</code>（字符串）</td><td><code>k6-smoke-&lt;svc&gt;-&lt;sha8&gt;-&lt;env&gt;</code></td><td>CR 创建失败（CRD/RBAC 缺失）→ 判红并打印前置检查项</td></tr>
+            <tr><td><b>S5 等待终态</b></td><td>TestRun 名</td><td>轮询 <code>.status.stage</code> 至 <code>finished</code>/<code>error</code>；<b>节点超时 &gt; TestRun 超时</b></td><td>终态 + 实际耗时</td><td>节点超时 → 判红 <code>timeout</code>；先删 TestRun 释放 runner 再采证据</td></tr>
+            <tr><td><b>S6 判定</b></td><td>终态 + runner 退出码 + 远端指标</td><td>按三信号判红；仅网络类错误与 5xx 允许整轮重试一次</td><td><code>pass</code>/<code>fail</code> + 证据指针</td><td>非 0 退出码 / 空数据 → 判红；重试后仍失败即终局</td></tr>
+            <tr><td><b>S7 入账与清理</b></td><td>判定结果</td><td>回调 <code>/node/complete</code>，<code>outputData</code> 带 <code>{runId, sha, suite, env, passed, reportUrl}</code>；指标已 remote-write；失败抓 runner 日志</td><td>节点状态 + 报告 + 指标 + 可复现证据</td><td>回调失败只记日志（不反转判定）；证据采集失败 → 判红（无证据的 pass 不可信）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  S0["S0 解析上下文"] --> S1["S1 按 sha 取脚本"] --> S2["S2 契约校验"] --> S3["S3 ConfigMap 打包"] --> S4["S4 拉起 TestRun"] --> S5["S5 等终态"] --> S6{"S6 判定"}
+  S6 -->|"退出码 0 且计数大于 0"| S7["S7 回调与归档 · exit 0"]
+  S6 -->|"退出码非 0 / 空数据"| FAIL["exit 1 · DAG 阻断"]
+  S0 -.->|"无 sha"| FAIL
+  S1 -.->|"无脚本"| FAIL
+  S2 -.->|"契约非法"| FAIL
+  S5 -.->|"超时"| FAIL
+        </pre>
+        <p class="arch-title">图 2 · S0–S7 与失败出口：六种上游异常全部收敛成「节点 exit 1」这一个阻断信号</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>判红信号</th><th>怎么取</th><th>判红条件</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>TestRun 终态</td><td><code>.status.stage</code>（<code>initialization</code>/<code>initialized</code>/<code>created</code>/<code>started</code>/<code>stopped</code>/<code>finished</code>/<code>error</code>）</td><td><code>error</code> → 红</td><td><code>finished</code> 只代表跑完，<b>不代表通过</b></td></tr>
+            <tr><td>runner 退出码</td><td>runner Pod <code>status.containerStatuses[*].exitCode</code></td><td>非 0 → 红</td><td>阈值未满足/脚本异常统一「非 0 即红」，不绑定具体码值</td></tr>
+            <tr><td>空数据</td><td>远端 <code>k6_*</code> 计数或 summary 内请求计数</td><td>请求数或用例数为 0 → 红</td><td>专治「脚本跑通但什么都没测」的假绿</td></tr>
+            <tr><td>环境不可达</td><td>节点内连通性预检 + 首轮错误分类</td><td>仅网络类错误与 5xx 允许一次重试</td><td>重试固定 1 次，避免把业务断言失败重跑成 flaky</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>幂等</h4>
+          <p>ConfigMap 与 TestRun 名都含 <code>sha8</code>：同 sha 重复触发先 <code>get</code> 再决定复用或重建，sha 变了就是新 run，<b>不覆盖旧结果</b>。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>并发</h4>
+          <p>同环境 + 同服务只允许一个冒烟在跑（写路径套件必须串行）；锁用 K8s Lease 或复用 <code>init-environment-lock</code> 的思路，<b>带超时自动释放</b>。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>超时与证据</h4>
+          <p>节点超时（900s）&gt; TestRun <code>activeDeadlineSeconds</code>（600s）。<code>spec.cleanup: post</code> 会删掉 runner 资源，与「判红要读退出码/日志」冲突 ⇒ <b>不开启</b>，改为 TestRun 保留 7 天后清理。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>首轮跑通 Runbook <em>先在集群外跑通脚本，再手工下发一轮 TestRun，最后才接 DAG</em></h2>
+
+      <div class="callout warn">
+        <b>执行约束</b>：下面第 2–6 步包含镜像推送、集群写操作与平台配置 API，按 AGENTS.md <b>一律由人执行</b>（提示用 <code>!</code> 前缀）。本文档不代为执行；命令里出现的账号、Token、桶名等凭据一律以环境变量或 Secret 引用，不落盘、不进文档。
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant ENG as 工程师
+  participant REPO as 服务仓 perf
+  participant K8S as test 集群 API
+  participant OP as k6-operator
+  participant RUN as runner Pod
+  ENG->>REPO: S1 按 sha 取脚本
+  ENG->>K8S: S3 建 ConfigMap k6-scripts-svc-sha8
+  ENG->>K8S: S4 apply TestRun
+  K8S->>OP: TestRun 资源就绪 触发 reconcile
+  OP->>RUN: starter 拉起 runner 并解除 paused
+  RUN->>RUN: k6 run smoke/register.ts
+  RUN-->>OP: 写入终态 finished 或 error
+  ENG->>K8S: S5 轮询 status.stage
+  ENG->>K8S: S6 读 runner 退出码
+  ENG->>RUN: 取日志与 summary 证据
+        </pre>
+        <p class="arch-title">图 3 · 首轮跑通：人手工完成 S1–S6，用来验证镜像、CRD、RBAC 与判定口径，再接进 DAG</p>
+      </div>
+
+      <h3>步骤 1 · 本地先跑通用例（不依赖集群）</h3>
+      <pre><code># 服务仓内（或模板仓复制出的新仓）
+docker run --rm -v "$PWD/perf:/p" -w /p -e BASE_URL=http://127.0.0.1:8080 \
+  grafana/k6:2.3.0 run smoke/register.ts
+
+# 依赖门禁（与 loader-test/Dockerfile 同一口径）
+k6 deps --json smoke/register.ts   # 不得出现 customBuildRequired: true 或 https:// 远程 import
+
+# 故意改坏一条断言，确认退出码非 0（这是判红口径的本地证明）
+echo "exit=$?"</code></pre>
+
+      <h3>步骤 2 · 构建并推送 runner 镜像</h3>
+      <pre><code># 在能访问 registry 的环境执行；先确认 tag 不是 latest
+docker build -t xlb-acr-registry-vpc.cn-hangzhou.cr.aliyuncs.com/gitops-tools/smoke-runner:1.0.0 \
+  -f efficiency/deploy/images/smoke-runner/Dockerfile efficiency/deploy/images/smoke-runner
+docker push xlb-acr-registry-vpc.cn-hangzhou.cr.aliyuncs.com/gitops-tools/smoke-runner:1.0.0
+# 随后在 observability/versions.libsonnet 登记该版本并在 grafana-k6 侧 pin（草案 3）</code></pre>
+
+      <h3>步骤 3 · 手工下发一轮 TestRun</h3>
+      <pre><code>NS=test-xxx; SVC=member-service; SHA=$(kubectl -n $NS get rollout $SVC -o jsonpath='{.spec.template.spec.containers[0].image}' | grep -oE '[a-f0-9]{40}')
+SHA8=$(printf %s "$SHA" | cut -c1-8)
+
+# S1（只读 deploy key 走 Secret；不在命令行传凭据）
+git clone --depth 1 --filter=blob:none "$REPO" /work/perf-src
+git -C /work/perf-src fetch --depth 1 origin "$SHA"
+git -C /work/perf-src checkout --detach "$SHA"
+
+# S3 内容寻址打包
+kubectl -n observability create configmap "k6-scripts-$SVC-$SHA8" --from-file=/work/perf-src/perf
+
+# S4 拉起（starter 必须带 curl；arguments 只放不带引号的值）
+kubectl apply -f - &lt;&lt;'YAML'
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: k6-smoke-member-service-REPLACE_SHA8
+  namespace: observability
+spec:
+  parallelism: 1
+  script:
+    configMap:
+      name: k6-scripts-member-service-REPLACE_SHA8
+      file: smoke/register.ts
+  starter:
+    image: xlb-acr-registry-vpc.cn-hangzhou.cr.aliyuncs.com/gitops-tools/curl:jq-latest
+  runner:
+    image: xlb-acr-registry-vpc.cn-hangzhou.cr.aliyuncs.com/gitops-tools/smoke-runner:1.0.0
+    envFrom:
+      - secretRef:
+          name: k6-smoke-credentials
+  arguments: '--out experimental-prometheus-rw'
+YAML
+
+# S5 终态要同时识别 finished 与 error，所以用轮询而不是单值 wait
+for i in $(seq 1 120); do
+  STAGE=$(kubectl -n observability get testrun "k6-smoke-$SVC-$SHA8" -o jsonpath='{.status.stage}')
+  case "$STAGE" in finished|error) echo "stage=$STAGE"; break;; esac
+  sleep 5
+done
+
+# S6 退出码 = 判红第一信号（selector 以实测为准，先 kubectl get pod -l ... 确认）
+kubectl -n observability get pods -l "k6-testrun-name=k6-smoke-$SVC-$SHA8" \
+  -o jsonpath='{.items[*].status.containerStatuses[*].exitCode}'; echo</code></pre>
+
+      <h3>步骤 4 · 验证结果通道（本次实测为空集，必须验通）</h3>
+      <pre><code># 指标：remote-write 是否真的到达（当前 staging/prod 后端 k6_* 为空集）
+#   count({__name__=~"k6_.*"})   → 期望：非空
+# 报告：summary JSON / HTML 是否落到对象存储，URL 是否可打开
+# 日志：失败时 runner Pod 日志要能直接定位到失败链路
+kubectl -n observability logs -l "k6-testrun-name=k6-smoke-$SVC-$SHA8" --tail=200</code></pre>
+
+      <h3>步骤 5 · 接进 DAG（配置动作，不需要发版）</h3>
+      <pre><code># ① 导入并发布节点模板
+POST /api/v1/workflow/templates/import-yaml   # body: smoke-run.yaml
+POST /api/v1/workflow/templates/publish
+# ② 刷新节点能力清单，使节点可在流程编辑器中被编排
+POST /api/v1/workflow/node-capabilities/refresh
+# ③ 环境子流程（test）draft → publish：在 cd 之后插入 smoke-run，depends: "cd.Succeeded"
+#    开关（草案 4）先保持 enabled=false，只对试点服务打开
+POST /api/v1/workflow/flows/{id}/draft
+POST /api/v1/workflow/flows/{id}/publish
+
+# ④ 验红：改坏业务码断言 → 重跑一轮 → 期望 smoke-run 失败、后续人工审批节点不可达
+# ⑤ 验绿：还原断言 → 同 sha 重跑 → 期望节点成功、DAG 继续到人工审批</code></pre>
+
+      <div class="callout ok">
+        <b>首轮验收的四个可观察点</b>：① 本地/容器 <code>k6 run</code> 能跑通并正确非 0 退出；② 集群手工 TestRun 的终态、退出码、日志三者一致；③ <code>count({__name__=~"k6_.*"})</code> 非空且报告 URL 可打开；④ 接进 DAG 后，坏版本真的被拦在 <code>cd</code> 之后，好版本真的能推进。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>分阶段实施与验收 <em>M1 迁孤岛 → M2 立模板 → M3 接链路 → M4 铺覆盖 → M5 压测与入账</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>动作</th><th>产出</th><th>验收（可观察）</th><th>估算</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>M1 迁孤岛</b></td>
+              <td>把 <code>grafana-k6/cart-list-test.js</code>、<code>cart-update-test.js</code> 迁到对应服务仓 <code>perf/</code>；删掉 <code>cart-wanquan-test.jsonnet</code> 里的 ConfigMap，gitops 只留开关</td>
+              <td>两个服务改用「服务仓内容 + 集群执行」</td>
+              <td>该服务冒烟能在集群内按 sha 跑通，脚本不再出现在 gitops</td>
+              <td>2–3 天</td>
+            </tr>
+            <tr>
+              <td><b>M2 立模板</b></td>
+              <td><code>loader-test</code> 提升为模板仓，先修三处可运行性坑（fixture 改由 <code>env</code>/<code>setup()</code> 注入、解释器收敛、密码来源改环境变量）；补 runner 镜像与 remote-write</td>
+              <td>模板仓 + 镜像 + 报告通道</td>
+              <td>新服务「复制模板 → 填 <code>k6.config.json</code> → 本地跑通」≤ 0.5 天；<code>k6 deps</code> 门禁生效</td>
+              <td>1 周</td>
+            </tr>
+            <tr>
+              <td><b>M3 接链路</b></td>
+              <td>四件套全部落地（§4 第 1–5 项）；test 环境子流程试点 1–2 个服务，开关默认关</td>
+              <td>部署后自动冒烟 + 失败阻断</td>
+              <td>造功能回归（改错业务码）：<code>cd</code> 成功后节点失败、后续审批节点不可达；修复后同 sha 重跑转绿</td>
+              <td>1–2 周</td>
+            </tr>
+            <tr>
+              <td><b>M4 铺覆盖</b></td>
+              <td>生成器量产 T1a 只读探活层（先 P0 约 30 个服务）；手工补 T1b 业务语义断言 5–8 个资损相关服务</td>
+              <td>覆盖率台账 + 通过率趋势</td>
+              <td>台账能显示「服务 × 环境 × 套件 × 最近结果 × 缺口」；趋势按服务可查</td>
+              <td>2–3 周（可并行）</td>
+            </tr>
+            <tr>
+              <td><b>M5 压测与入账</b></td>
+              <td>P0 读场景 <code>load</code> 基线 + 巡检 CronWorkflow + （可选）发布单就绪判定新增冒烟来源</td>
+              <td>容量基线 + 定时巡检 + 发布单可引用</td>
+              <td>制造一次性能劣化能被基线拦下；发布单提交对未通过冒烟的需求给出阻断与明细</td>
+              <td>3–4 周（含平台排期）</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  M1["M1 迁孤岛<br/>脚本离开 gitops"] --> M2["M2 立模板 + 镜像 + 报告通道"]
+  M2 --> M3["M3 接链路<br/>四件套 · 试点服务 · DAG 阻断"]
+  M3 --> M4["M4 铺覆盖<br/>生成器量产 + 资损服务手写"]
+  M3 --> M5["M5 压测与入账<br/>基线 / 巡检 / 发布单引用"]
+  M4 -.->|"覆盖率台账"| CV["服务 × 环境 × 套件 覆盖可视"]
+  M5 -.->|"路线 P 增项"| RO["发布单就绪判定引用冒烟记录"]
+        </pre>
+        <p class="arch-title">图 4 · 阶段依赖：M3 是唯一的关键闸门——它一旦跑通，「部署后自动冒烟 + 失败阻断」就成立了</p>
+      </div>
+
+      <div class="callout ok">
+        <b>分层覆盖策略（决定工作量，别按 300 个服务手写估算）</b>：<b>T0 env-gate</b>（网关/鉴权/配置中心/MQ 可达，1 套手写）→ <b>T1a service-probe</b>（每服务只读探活，代码生成，可量产到全部服务）→ <b>T1b service-smoke</b>（核心正向 + 关键异常，人工写，只投 P0）→ <b>T2 story-smoke</b>（跨服务链路，独立 <code>perf-story</code> 仓）→ <b>T3 load</b>（读场景，按需）。靠 T1a 拿覆盖率、靠 T1b 拿可信度。
+      </div>
+
+      <div class="callout warn">
+        <b>版本族插入是硬约束</b>：环境子流程有 v1–v5 与 hotfix / redeploy 多个文件，只改 v3 会静默漏掉 v4（<code>TestNodeOrderV4</code> 只含 retag/cd/apply_transfer/test_verification，<code>model/workitem/code_branch.go:343-348</code>）与各 <code>*-redeploy-workflow.yaml</code>。验收时必须逐文件核对插入点清单。
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>排障手册 <em>按症状查：先分清是「起不来」「判不对」还是「看不到」</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>症状</th><th>最可能原因</th><th>定位命令</th><th>处置</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>TestRun 停在 <code>created</code>，runner 不启动</td>
+              <td>starter 镜像内无 <code>curl</code>（官方 k6 镜像即如此）</td>
+              <td><code>kubectl -n observability describe testrun &lt;name&gt;</code>；看 starter Pod 退出原因</td>
+              <td>给 <code>spec.starter.image</code> 设置带 curl 的镜像</td>
+            </tr>
+            <tr>
+              <td>runner 启动即失败，报 trend stat 相关错误</td>
+              <td><code>spec.arguments</code> 里塞了带引号的参数</td>
+              <td>看 runner 首个日志行；对照 <code>cart-list-test.js</code> 顶部注释</td>
+              <td>把 <code>summaryTrendStats</code> 等写进脚本 <code>options</code>；环境值走 <code>env</code>/<code>envFrom</code></td>
+            </tr>
+            <tr>
+              <td>TestRun <code>error</code></td>
+              <td>operator 层失败：脚本 ConfigMap 不存在、RBAC 不足、CRD 未装</td>
+              <td><code>kubectl -n observability logs deploy/k6-operator-controller-manager</code></td>
+              <td>补 ConfigMap / RBAC；确认 <code>k6.io</code> CRD 与 operator 版本匹配</td>
+            </tr>
+            <tr>
+              <td>节点报 <code>configmaps is forbidden</code></td>
+              <td><code>argo-cluster-role</code> 的 <code>configmaps</code> 只有 <code>get/list/watch</code></td>
+              <td><code>kubectl auth can-i create configmaps -n observability --as=system:serviceaccount:argo-workflows:argo</code></td>
+              <td>落 §4 第 1 项 RBAC</td>
+            </tr>
+            <tr>
+              <td>节点拿到 <code>context_missing</code></td>
+              <td>Rollout 未就绪、镜像 tag 不含 40 位 sha、注解缺失</td>
+              <td><code>kubectl -n $NS get rollout $SVC -o jsonpath='{.spec.template.spec.containers[0].image}'</code></td>
+              <td>先确认上游 <code>cd</code> 是否真的完成；这类情况不重试</td>
+            </tr>
+            <tr>
+              <td><code>finished</code> 但结果说不清通过与否</td>
+              <td>只看终态，没读 runner 退出码</td>
+              <td>取 runner Pod <code>containerStatuses[*].exitCode</code></td>
+              <td>按 §5 三信号判定；<code>finished</code> 不构成 pass</td>
+            </tr>
+            <tr>
+              <td><code>count({__name__=~"k6_.*"})</code> 为空集</td>
+              <td>remote-write 未配/未验通（<b>当前实测为空</b>）</td>
+              <td>PromQL 直查；看 runner 是否有 <code>--out experimental-prometheus-rw</code> 与远端地址</td>
+              <td>验通前，「空数据判红」不要作为唯一信号；先修通道</td>
+            </tr>
+            <tr>
+              <td>ConfigMap 同名但内容不同</td>
+              <td>有人手工覆盖过 sha 命名的对象</td>
+              <td><code>kubectl -n observability get configmap k6-scripts-&lt;svc&gt;-&lt;sha8&gt; -o yaml</code></td>
+              <td>判红并按 §5 幂等口径处理；不要静默覆盖</td>
+            </tr>
+            <tr>
+              <td>同环境两个套件互相干扰</td>
+              <td>缺少环境级互斥</td>
+              <td>看并发节点/锁对象</td>
+              <td>按 §5 并发口径加 Lease；写路径套件串行</td>
+            </tr>
+            <tr>
+              <td>报告打不开 / 只有本机文件</td>
+              <td><code>handleSummary</code> 写到本机被 gitignore 的 <code>reports/</code></td>
+              <td>看节点中 summary 归档步骤的日志</td>
+              <td>归档到对象存储并把 URL 写进 <code>node/complete</code> 的 <code>outputData</code></td>
+            </tr>
+            <tr>
+              <td>门禁说「通过」但发布后出事</td>
+              <td>结果陈旧：结论早于该迭代分支最近一次 <code>cd</code> 成功</td>
+              <td>对比结果时间与最近一次 <code>cd</code> 成功时间</td>
+              <td>按 §1 口径 3 的时效口径判红；发布单快照本身默认次日 06:00 失效</td>
+            </tr>
+            <tr>
+              <td>线上一片绿，问题没被拦住</td>
+              <td>断言只判 HTTP 200，没判业务语义</td>
+              <td>看脚本 <code>check()</code> 与 <code>thresholds</code></td>
+              <td>按 §2 结论 8 的断言口径补业务码/字段/状态机/幂等断言</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>风险与红线 <em>最可能的失败不是技术，而是门禁被噪声淹没</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>风险</th><th>机理</th><th>处置</th></tr></thead>
+          <tbody>
+            <tr><td>冒烟噪声化（最可能失败的模式）</td><td>环境不稳/数据缺失导致频繁误红，团队开始忽略门禁</td><td>一次重试 + 隔离清单 + 先跑 <code>env-gate</code>；门禁先告警期 2 个迭代再硬阻断</td></tr>
+            <tr><td>写脏数据</td><td>冒烟真实写入并触发下游 MQ 与风控</td><td>专用账号 + 幂等键 + <code>teardown</code> 清理；prod 只跑只读探活</td></tr>
+            <tr><td>共享环境互扰</td><td>test/staging 多需求共用，冒烟与被测部署互相影响</td><td>环境级互斥锁；同环境同时间只跑一个套件</td></tr>
+            <tr><td>门禁 fail-open</td><td>portal 异常兜底 <code>passed=true</code>；阈值未配置＝不检查</td><td>「配置了但无结果＝失败」独立分支；定期核对「通过但无明细」</td></tr>
+            <tr><td>误把冒烟当回归</td><td>套件膨胀到几百条，部署被拖住</td><td>硬性时长预算 + 集分层（service-smoke / env-gate / 回归集分离）</td></tr>
+            <tr><td>版本族漏插</td><td>v1–v5 + hotfix + redeploy 共存，只改一个</td><td>插入点清单化，验收逐文件核对</td></tr>
+            <tr><td>凭据散落</td><td>冒烟账号/Token 被写进 300 个服务仓</td><td>只走集群 Secret + <code>envFrom</code>；脚本只读 <code>__ENV</code></td></tr>
+            <tr><td>镜像与 operator 版本漂移</td><td><code>k6:latest</code>（现状）、operator 内联写死</td><td>登记进 <code>versions.libsonnet</code> 并 pin 到具体 tag，记录 digest</td></tr>
+            <tr><td>共享库漂移</td><td>k6 v2 不做包解析，依赖必须 vendored ⇒ 各仓各抄一版</td><td>模板仓 + <code>templateVersion</code> + 同步 bot 开 PR；禁用 npm 分发</td></tr>
+            <tr><td>越权放行企图</td><td>想用公开无鉴权的 <code>/workflow/node/complete</code> 自动放行审批节点</td><td>明确禁止：审批保持人工语义；自动判定只走自建 <code>smoke-run</code> 节点</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <b>工程红线（本仓约定，不可协商）</b>：① 云与生产环境<b>只读</b>——本文所有命令都是「交人执行」的形态，未取得单次授权不得自行运行；② GitOps 工作副本<b>可改不可提交推送</b>，真实变更走 artifacts-webhook 或发布 MR，发布一律交人；③ <code>repos/</code> 下的 CodeUp 工作副本<b>只读</b>——不修改、不 commit、不装依赖、不跑构建；④ 文档与脚本中<b>不出现</b>任何密码、Token、AK/SK、Cookie；只描述「存在该凭据」；⑤ 图 1 里「报告归档」用的对象存储桶属于新增资源，需走申请与评审。
+      </div>
+    </section>
+
+    <section class="card" id="s10">
+      <h2><span class="num">10</span>待决事项与文档关系 <em>8 项需人拍板；本文与 25/26/27 是「结论 → 动作」的关系</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>待决</th><th>为什么必须由人决定</th><th>建议默认</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>试点服务与链路清单、责任人</td><td>只有业务 owner 知道「哪几条必须走通」</td><td>先 1–2 个服务、每服务 2–3 条核心链路</td></tr>
+            <tr><td>2</td><td>硬阻断还是先告警期</td><td>组织流程选择</td><td>告警期 2 个迭代后转硬阻断</td></tr>
+            <tr><td>3</td><td>报告归档桶与保留期</td><td>存储与权限审批</td><td>沿用 jmeter 的 OSS 内网端点模式，TestRun 保留 7 天</td></tr>
+            <tr><td>4</td><td>巡检窗口与告警落点</td><td>影响值班与噪声</td><td>test 每小时、staging 每天 2 次，失败进值班群</td></tr>
+            <tr><td>5</td><td>是否扩装 operator 到 staging</td><td>集群变更需评审（守卫改一行，但要确认资源与网络）</td><td>先只上 test</td></tr>
+            <tr><td>6</td><td>压测目标 RPS 与容量承诺负责人</td><td>涉及容量承诺</td><td>线上实测峰值 × 1.5 起步</td></tr>
+            <tr><td>7</td><td>是否把 <code>perf/</code> 纳入服务上线准入</td><td>流程准入</td><td>纳入服务模板与上线 checklist</td></tr>
+            <tr><td>8</td><td>发布单是否必须引用冒烟记录</td><td>决定要不要做路线 P（唯一拿不到的能力）</td><td>一期不做，列为 M5 增项</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>四篇文档的分工</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>文档</th><th>回答什么</th><th>本手册如何使用它</th></tr></thead>
+          <tbody>
+            <tr><td><a href="25-k6-cicd-integration.html">25 号 · k6 冒烟与性能门禁</a></td><td>「要不要做、插在哪、判定口径与风险」——发布链路与门禁体系的完整论证</td><td>提供 §1 口径 1/4、§2 结论 1/6/7/8、§5 判红口径、§9 风险的依据</td></tr>
+            <tr><td><a href="26-rerail-test-code-analysis.html">26 号 · rerail-test-code 实验室</a></td><td>「用例工程长什么样」——k6 v2 TS、<code>seed → run → verify</code>、三处可运行性坑</td><td>提供 §2 结论 10/11 与 §4 第 4 项的模板来源</td></tr>
+            <tr><td><a href="27-k6-repo-local-cases.html">27 号 · k6 用例归仓与统一执行</a></td><td>「用例放哪、谁来编排、怎么判红」——三条路线对比与 <code>perf/</code> 契约</td><td>提供 §2 结论 4/5/9/13、§3 分工、§5 的 S0–S7</td></tr>
+            <tr><td><b>31 号 · 本文</b></td><td>「现在具体做什么」——四件套清单、Runbook、阶段验收、排障表</td><td>执行入口；细节争议一律回到 25/26/27 的证据</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <b>最小可行起点（本周就能开工）</b>：<b>M1 迁孤岛 + M2 修模板</b>——把 <code>cart-*</code> 脚本迁进服务仓 <code>perf/</code>、把 <code>loader-test</code> 的三处坑修掉、把 runner 镜像与 remote-write 打通。这步不碰集群权限、不碰平台、不需要任何评审，做完就能在集群里按 sha 手工跑通一轮；随后 M3 的四件套才有东西可跑。
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文为落地手册（结论汇总自 25/26/27 号文档，命令与清单基于源码与 GitOps 清单静态分析），仅供工程参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

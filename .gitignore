@@ -9,3 +9,10 @@ __pycache__/
 *.pyc
 .qoder/scheduled_tasks.lock
 .qoder/skills/daily-inspection/scripts/state/
+
+# Cloudflare 文档站点：docs/ 的暂存副本与 wrangler 本地状态，不入库
+skills/cloudflare-docs-deploy/worker/public/
+skills/cloudflare-docs-deploy/worker/.wrangler/
+skills/cloudflare-docs-deploy/worker/.dev.vars
+# wrangler 本地状态（根目录误跑时产生），不入库
+.wrangler/

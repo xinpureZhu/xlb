@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>京东秒送回调 500 事故复盘 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>京东秒送回调 500 事故复盘</h1>
+    <p class="subtitle">retail-thirdpart-gateway 上的 <code>/callbacks/jd_miaosong/djsw/*</code> 回调 100% 返回 500：链路指向了 <code>oms-adapter</code>（prod）—— 该实例没有这些回调的 Controller，Spring 抛 <code>NoResourceFoundException</code>，又被全局异常处理器包装成「系统繁忙」500。</p>
+    <p class="meta">最后更新：2026-10-16 · 数据来源：生产 VictoriaLogs（访问日志 + 应用日志）、VictoriaMetrics（Pod 起始时间 / ALERTS）、oms-plateform 源码</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html" class="active">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <strong>分析基准</strong>
+      事件数据来自生产观测面（老 <code>prod</code> 集群；Pod / IP / Node 与效能平台 <code>retail-thirdpart-gateway</code> 的 prod 条目逐条一致），与代码分支无关。
+      代码侧：<code>repos/oms-plateform</code> 为 <strong><code>prod</code> 分支 <code>d6bc4c2b2</code></strong>（最后一次提交 <strong>2026-08-06</strong>，<strong>早于事故约 2 个月，不排除滞后</strong>），仅用于说明回调 Controller 的组织方式，不作为「当前分支是否已有该实现」的结论；
+      <code>repos/retail-thirdpart-gateway</code> 中检索 <code>jdmiaosong</code> / <code>djsw</code> <strong>无任何命中</strong> —— 回调路由是<strong>运行时配置</strong>（管理接口写入），不在该仓内，故本次判断不依赖它。
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论摘要 <em>不是网关、不是网络、不是京东侧：是回调被转发到了一个没有该接口的实例上</em></h2>
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#s1">结论摘要</a></li>
+          <li><a href="#s2">请求链路与故障点</a></li>
+          <li><a href="#s3">时间线与量级</a></li>
+          <li><a href="#s4">证据链：日志原文</a></li>
+          <li><a href="#s5">根因：目标实例缺少该回调入口</a></li>
+          <li><a href="#s6">影响面与恢复</a></li>
+          <li><a href="#s7">排除项：为什么不是网关 / 网络 / 签名校验</a></li>
+          <li><a href="#s8">修复建议与遗留问题</a></li>
+        </ol>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">118</div><div class="l">实际失败的京东秒送回调请求</div></div>
+        <div class="stat"><div class="n">236</div><div class="l">Grafana 中可见的 5xx 访问日志行（每请求 2 条：waypoint + ingressgateway）</div></div>
+        <div class="stat"><div class="n">15</div><div class="l">受影响的回调子类型（订单/状态/取消/售后/配送）</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">该窗口触发的 5xx 相关告警</div></div>
+      </div>
+
+      <div class="callout danger">
+        <strong>一句话归因</strong>
+        <code>retail-thirdpart-gateway</code> 把 <code>/callbacks/jd_miaosong/djsw/*</code> 转发到
+        <code>http://oms-adapter.oms-platform/adapter/callback/jdmiaosong/djsw/…</code>，
+        而 <strong>prod 的 <code>oms-adapter</code> 没有这套回调入口</strong>：Spring 落到静态资源处理器并抛
+        <code>NoResourceFoundException</code>，全局异常处理器把它当成系统异常，返回
+        <code>{"code":500,"msg":"系统繁忙，请稍后重试"}</code>（<strong>本应是 404 类配置错误，却表现成 500</strong>），
+        网关原样把 500 交给京东。
+      </div>
+
+      <div class="callout ok">
+        <strong>当前状态：已恢复</strong>
+        链路已改投 <code>oms-adapter-gray</code>（返回 <code>{"msg":"success","code":"0"}</code>，<code>dispatch_status=200</code>），
+        自 <strong>2026-10-15 10:40 CST</strong> 起再无该 500（10-16 全天正常）。但这是<strong>指向灰度实例的过渡态</strong>，
+        详见 <a href="#s8">修复建议与遗留问题</a>。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>请求链路与故障点 <em>唯一失败边：网关 → oms-adapter（prod 实例）</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  JD["京东秒送 · JD Jos 推送<br/>Apache-HttpClient 1.8"] --> ING["istio ingressgateway"]
+  ING --> WP["waypoint · retail-thirdpart-gateway 域名"]
+  WP --> GW["retail-thirdpart-gateway · Rust :3000"]
+  GW -->|"旧配置：oms-adapter.oms-platform"| PROD["oms-adapter · prod 实例<br/>无 jdmiaosong 回调入口"]
+  GW -->|"现配置：oms-adapter-gray.oms-platform"| GRAY["oms-adapter-gray · 灰度实例<br/>有 jdmiaosong 回调入口"]
+  PROD -.->|"500 URX-less · 14-28ms<br/>NoResourceFoundException"| GW
+  GRAY -.->|'200 · code 0 success'| GW
+        </pre>
+        <p class="arch-title">图 1 · 回调链路与两条目标分支</p>
+      </div>
+      <p>关键点：<strong>同一个网关、同一批回调路径，差别只在 <code>forward_url</code> 指向哪个实例</strong>。这与「网关自身故障」的典型表现（连接失败、
+    <code>UF</code>/<code>UH</code>、超时）完全不同 —— 本次是下游应用<strong>快速返回 500</strong>。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant J as 京东秒送
+  participant G as retail-thirdpart-gateway
+  participant A as oms-adapter · prod
+  J->>G: POST /callbacks/jd_miaosong/djsw/newOrder
+  Note over G: 路由 jd_miaosong__djsw_neworder<br/>forward_url = http://oms-adapter.oms-platform/…
+  G->>A: POST /adapter/callback/jdmiaosong/djsw/newOrder
+  A-->>G: 500 系统繁忙 请稍后重试 · 6ms
+  Note over A: NoResourceFoundException<br/>No static resource callback/jdmiaosong/djsw/newOrder
+  G-->>J: 500 · callback delivery returned non-success status
+        </pre>
+        <p class="arch-title">图 2 · 单次失败回调的时序</p>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>时间线与量级 <em>两个窗口：10-14 15:20–20:40（113 次）与 10-15 10:30–10:40（5 次）</em></h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  T0["10-13 起 · 部分 djsw 路由已指向 oms-adapter-gray · 正常"] --> T1["10-14 15:20 · 仍指向 prod 的路由开始 100% 500"]
+  T1 --> T2["10-14 22:03 · oms-adapter-gray 重建新版本"]
+  T2 --> T3["10-15 10:30–10:40 · 最后一次 5 次失败"]
+  T3 --> T4["10-15 10:40 起 · 路由全部改投 gray · 再无 500"]
+  T4 --> T5["10-15 20:42 · prod oms-adapter 重建（路由未回切）"]
+        </pre>
+        <p class="arch-title">图 3 · 故障与两次实例重建的时间关系</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间（CST）</th><th>事件</th><th>证据</th></tr></thead>
+          <tbody>
+            <tr><td>10-13 18:00 前后</td><td>已有 djsw 回调走 <code>oms-adapter-gray</code> 且成功</td><td>网关日志 <code>oms-adapter-gray.oms-platform</code> 计数</td></tr>
+            <tr><td>10-14 15:20</td><td>首个 <code>oms-adapter.oms-platform</code> 目标失败（<code>NoResourceFoundException</code>）</td><td>oms-adapter ERROR 日志首个时间桶 <code>07:20Z</code></td></tr>
+            <tr><td>10-14 22:03</td><td><code>oms-adapter-gray</code> 当前 RS 重建（<code>7cf9cd98b5</code>）</td><td><code>kube_pod_start_time</code>（age ≈ 41 h @10-16 15:00）</td></tr>
+            <tr><td>10-15 10:30–10:40</td><td>最后 5 次失败（仍由旧 RS <code>68cd584d56</code> 产生）</td><td>失败按 pod 聚合</td></tr>
+            <tr><td>10-15 10:40 之后</td><td>prod 目标彻底停用；djsw 回调全部成功</td><td>prod 目标日志最后桶 <code>10-15T02:00Z</code></td></tr>
+            <tr><td>10-15 20:42</td><td><code>oms-adapter</code>（prod）当前 RS 重建（<code>6bd978dbc4</code>）</td><td><code>kube_pod_start_time</code>（age ≈ 18.3 h @10-16 15:00）</td></tr>
+            <tr><td>10-16 全天</td><td>回调稳定成功（<code>dispatch_status=200</code>）</td><td>网关 <code>callback handled successfully</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>量级口径</strong>：Grafana 里 <code>{namespace='retail-gateway', container='istio-proxy'}</code> 的 5xx 共 236 行，
+      其中 <strong>全部是 500</strong>（另有 4 条与本事件无关的 502）；因为同一请求在 <strong>waypoint Pod 与 ingressgateway Pod 各记一条</strong>，
+      真实失败请求数为 <strong>118</strong>。按路径分布（waypoint 侧）：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>回调子类型（路径后缀）</th><th>失败次数</th><th>回调子类型</th><th>失败次数</th></tr></thead>
+          <tbody>
+            <tr><td><code>afterSaleBillStatus</code></td><td>22</td><td><code>orderCancelApplyStatusChange</code></td><td>8</td></tr>
+            <tr><td><code>pushDeliveryStatus</code></td><td>17</td><td><code>newApplyAfterSaleBill</code></td><td>7</td></tr>
+            <tr><td><code>newOrder</code></td><td>11</td><td><code>pickFinishOrder</code></td><td>7</td></tr>
+            <tr><td><code>orderWaitOutStore</code></td><td>11</td><td><code>venderAuditApplyCancelOrder</code></td><td>5</td></tr>
+            <tr><td><code>userCancelOrder</code></td><td>9</td><td><code>applyCancelOrder</code></td><td>5</td></tr>
+            <tr><td><code>orderFinish</code> · <code>lockOrder</code> · <code>unlockOrder</code></td><td>4 · 4 · 4</td><td><code>deliveryOrder</code> · <code>orderAdjust</code></td><td>3 · 1</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>证据链：日志原文 <em>500 由应用生成，且在 oms-adapter 侧有明确的「找不到资源」异常</em></h2>
+
+      <p><strong>① 网关侧访问日志</strong>（waypoint，关键字段）：</p>
+      <pre><code>{
+  "authority": "retail-thirdpart-gateway--retail-gateway.ali-prod.xlbsoft.com",
+  "downstream_peer": "ingressgateway-istio.istio-system",
+  "path": "/callbacks/jd_miaosong/djsw/lockOrder",
+  "method": "POST",
+  "response_code": 500,
+  "response_flags": "-",
+  "route_name": "default",
+  "upstream_host": "envoy://connect_originate/172.16.55.18:3000",
+  "upstream_service_time": "24",
+  "duration": 25,
+  "user_agent": "Apache-HttpClient/4.5.14 (Java/1.8.0_452)",
+  "x_forwarded_for": "111.202.11.62,100.127.131.136"
+}</code></pre>
+      <p><code>response_flags="-"</code> + <code>upstream_host</code> 已建立到应用 Pod（<code>:3000</code>）+ 24ms 返回 = <strong>应用自己回的 500</strong>，与 mesh/网络无关。</p>
+
+      <p><strong>② 网关回调日志</strong>（<code>retail-thirdpart-gateway</code>，WARN；已脱敏 token / sign / cookie / app_key）：</p>
+      <pre><code>{
+  "level": "WARN",
+  "message": "callback delivery returned non-success status",
+  "route_id": "jd_miaosong__djsw_applycancelorder",
+  "channel_id": "jd_miaosong",
+  "request_path": "/callbacks/jd_miaosong/djsw/applyCancelOrder",
+  "dispatch_status": 500,
+  "response_status": 500,
+  "forward_url": "http://oms-adapter.oms-platform/adapter/callback/jdmiaosong/djsw/applyCancelOrder",
+  "response_body": "{\"code\":500,\"msg\":\"系统繁忙，请稍后重试 [traceId: 8d085520ad7e549d885c069728ecaca4]\",\"success\":false}",
+  "duration_ms": 29
+}</code></pre>
+
+      <p><strong>③ oms-adapter 侧异常</strong>（同一条 trace，落到 <code>GlobalExceptionHandler</code>）：</p>
+      <pre><code>ERROR 1 --- [oms-adapter] [handler-1636911] [8d085520ad7e549d885c069728ecaca4,…]
+c.r.o.s.e.GlobalExceptionHandler : 系统异常, uri=/adapter/callback/jdmiaosong/djsw/applyCancelOrder,
+  traceId=8d085520ad7e549d885c069728ecaca4,
+  error=No static resource callback/jdmiaosong/djsw/applyCancelOrder for request '/adapter/callback/jdmiaosong/djsw/applyCancelOrder'.
+stackTrace=org.springframework.web.servlet.resource.NoResourceFoundException:
+  No static resource callback/jdmiaosong/djsw/applyCancelOrder …
+    at …ResourceHttpRequestHandler.handleRequest(ResourceHttpRequestHandler.java:527)
+    at …DispatcherServlet.doDispatch(DispatcherServlet.java:963)</code></pre>
+      <p>同 trace 的 HTTP 日志：<code>[HTTP] POST /adapter/callback/jdmiaosong/djsw/applyCancelOrder | status=500 duration=6ms</code>
+      —— <strong>6ms</strong> 说明请求根本没进入任何业务逻辑，直接停在「找不到 handler」。</p>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>根因：目标实例缺少该回调入口 <em>prod 实例 8 天窗口内 0 次成功；gray 实例 100% 成功</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>核查项</th><th>结果</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>prod <code>oms-adapter</code> 是否成功处理过该路径</td><td><strong>0 次</strong>（10-08 → 10-16）</td><td>检索 <code>"/adapter/callback/jdmiaosong"</code> + <code>"status=200"</code> 无命中 ⇒ 该实例从未提供这套入口</td></tr>
+            <tr><td><code>oms-adapter-gray</code> 是否成功</td><td><strong>全部成功</strong></td><td>返回 <code>{"msg":"success","data":"","code":"0"}</code></td></tr>
+            <tr><td>是否由 prod 应用发版引入</td><td>否</td><td>事故期间 prod 实例一直是同一 RS <code>68cd584d56</code>（起始时间 ≈ 2026-08-19），期间无重建</td></tr>
+            <tr><td>是否所有子类型都坏</td><td>是（15/15）</td><td>按路径聚合全部为 500，定向到「整套 <code>jdmiaosong/djsw</code> 前缀缺失」而非个别接口</td></tr>
+            <tr><td>回调 Controller 组织方式（代码）</td><td><code>@RequestMapping("/callback/meituan")</code> 等</td><td><code>oms-plateform/oms-adapter</code> 现有 美团闪购 / 淘宝闪购 / 美团 MOP 控制器；本机 <code>prod</code> 分支（2026-08-06）中<strong>检索不到 jd_miaosong / djsw</strong>（<span class="badge warn">该克隆可能滞后，仅作旁证</span>）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn">
+        <strong>两个独立缺陷叠加</strong>
+        <ol>
+          <li><strong>路由目标错误</strong>：回调路由（运行时配置，非 gitops）指向了没有该入口的 prod 实例。既有部分路由已指向 <code>-gray</code>，
+            说明这是<strong>一次「迁移/灰度」过程中的不一致</strong>，而不是灰度开关整体误开。</li>
+          <li><strong>错误语义被吞掉</strong>：<code>NoResourceFoundException</code>（配置类错误，语义接近 404）被全局异常处理器统一包装为
+            <strong>500 「系统繁忙，请稍后重试」</strong>。结果是：京东侧看到的是 500（会按 5xx 策略重试/告警），
+            排障人看到的是「系统繁忙」这种无信息量的文案，<strong>而真正的信息（路径不存在）只在 ERROR 栈里</strong>。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>影响面与恢复 <em>京东秒送订单全生命周期回调：建单/锁单/拣货完成/出库/配送/取消/售后</em></h2>
+      <ul>
+        <li><strong>业务对象</strong>：<code>channel_id=jd_miaosong</code>、<code>x-jos-vender-id=174994658</code>、<code>x-company-id=66666</code>，
+          涉及门店（storeId）<code>24591798</code>、<code>24522427</code> 等；消息类型含 <code>orderCreated</code>、<code>orderAdjust</code>、
+          <code>o2o_afs_state_change</code>、<code>waitProcessCancelRequest</code>。</li>
+        <li><strong>失败语义</strong>：京东推送被网关 100% 拒绝（500），该批订单的状态变更<strong>没有进入 OMS</strong>，需要京东重推或人工补单。</li>
+        <li><strong>失败规模</strong>：118 次请求 / 15 类回调 / 2 个时间窗；单笔订单生命周期中若 <code>newOrder</code>、<code>lockOrder</code> 同时失败，
+          会直接影响接单与履约时点。</li>
+        <li><strong>恢复路径</strong>：路由改投 <code>oms-adapter-gray</code> 后回调恢复 200；<strong>对失败窗口内的历史消息是否全部补投</strong>，
+          本次仅抽检了 1 个 <code>delivery_id</code>（<code>1c7cf564-…</code>），在网关日志中<strong>未再出现</strong>，说明网关层没有自动重投记录
+          —— 该结论<strong>不足以证明业务已补齐</strong>，需要与京东侧/业务侧核对未落单订单（见 <a href="#s8">§8</a>）。</li>
+      </ul>
+      <div class="callout warn">
+        <strong>告警缺失（本次最值得优先补的一环）</strong>
+        故障持续 5 小时 20 分钟、118 次失败，期间该命名空间触发的告警只有 <code>HpaMaxedOut</code>（warning，与本次无关）。
+        也就是说：<strong>同样的事故再来一次，仍然依赖人工翻 Grafana 才能发现</strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>排除项：为什么不是网关 / 网络 / 签名校验 <em>500 是应用语义错误，不是基础设施错误</em></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>怀疑项</th><th>核查结果</th></tr></thead>
+          <tbody>
+            <tr><td>mesh / 网络</td><td><code>response_flags="-"</code>、<code>upstream_host</code> 已连通应用 <code>:3000</code>、24ms 完成 —— 无 <code>UF/UH/URX/DC</code></td></tr>
+            <tr><td>网关进程健康</td><td>同期其它通道（如 <code>meituan_shangou_*</code>）回调正常 200/ack；<code>retail-thirdpart-gateway</code> 未重启</td></tr>
+            <tr><td>签名/参数校验</td><td>若签名校验失败会走业务校验分支（通常 4xx 或业务 code），本例连 handler 都未进入（6ms <code>NoResourceFoundException</code>）</td></tr>
+            <tr><td>京东侧问题</td><td>请求体、<code>sign</code>、<code>token</code>、<code>x-jos-msg-type</code> 均完整；同一批路径改投 gray 后全部成功</td></tr>
+            <tr><td>限流 / 网关过载</td><td>失败与 QPS 无关，两个窗口内按分钟均匀分布；无 429 记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>修复建议与遗留问题 <em>先让语义正确、再让配置防错、最后让告警能看见</em></h2>
+
+      <div class="callout danger">
+        <strong>P0 · 消除过渡态：prod 实例补齐入口 + 路由回切</strong>
+        <ul>
+          <li>当前所有 <code>jd_miaosong</code> 回调都依赖 <code>oms-adapter-gray</code> 这一<strong>灰度实例</strong>。
+            一旦 gray 缩容/重新发版/被清理，回调会立刻退回 500（因为 prod 实例仍没有入口）。</li>
+          <li>prod <code>oms-adapter</code> 已于 10-15 20:42 重建（新 RS <code>6bd978dbc4</code>），<strong>需确认该版本是否已包含
+            <code>/callback/jdmiaosong</code> 入口</strong>；确认后把路由回切到 prod 实例并复验，再回收这条过渡配置。</li>
+        </ul>
+      </div>
+
+      <div class="callout danger">
+        <strong>P0 · 修正异常语义（低风险高收益）</strong>
+        <ul>
+          <li>把 <code>NoResourceFoundException</code>（以及同类「无匹配 handler」异常）从 <code>GlobalExceptionHandler</code> 的
+            500 分支里摘出来，映射为 <strong>404 / 400</strong>，并保留原始 URI。</li>
+          <li>理由：这类错误本质是<strong>调用方与提供方的路径契约不一致</strong>，用 500「系统繁忙」掩盖会同时误导两侧：
+            调用方按 5xx 重试（无意义重试），提供方按「系统故障」排查（其实没有故障）。</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <strong>P1 · 配置防错：路由目标与实例能力必须绑定</strong>
+        <ul>
+          <li>回调路由（<code>channel_id</code> + <code>route_id</code> + <code>forward_url</code>）由运行时配置写入，
+            <strong>没有任何「目标实例是否实现该路径」的校验</strong>。建议在 <code>retail-thirdpart-gateway-admin</code> 保存/发布路由时做一次
+            目标探测（对目标实例发一次探活或读取其路由清单），不一致就拒绝发布。</li>
+          <li>发布/迁移类变更应支持<strong>试运行</strong>：先按 1 条路由灰度到新目标，观察真实流量成功率，再批量切换。</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <strong>P1 · 告警与可观测性</strong>
+        <ul>
+          <li>新增按「通道 + 路由」维度的回调失败告警（网关 <code>callback delivery returned non-success status</code> 日志计数，
+            或 <code>dispatch_status != 200</code> 比率），阈值取「>3 次/5 分钟」即可覆盖本次场景。</li>
+          <li>接入侧观测建议：<code>response_code</code> 是字符串字段，<strong><code>response_code :&gt; 500</code> 在该 LogsQL 版本返回 0 行</strong>
+            （已实测），请改用 <code>response_code:~"5[0-9][0-9]"</code> 或显式枚举 —— 否则会出现「面板无数据 = 没有问题」的错觉。</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <strong>本次排查的可复用要点</strong>
+        <ol>
+          <li>寻找 5xx 时先看 <code>response_flags</code>：<code>"-"</code> + 有 <code>upstream_host</code> + 毫秒级 <code>duration</code> ⇒ 应用自己返回，别在 mesh 上耗时间。</li>
+          <li>网关类服务会把「下游状态码」原样透传并落一条带 <code>forward_url</code> 的日志 —— 这条日志直接给出<strong>下一跳是谁</strong>，是跨服务定位的最短路径。</li>
+          <li><code>No static resource …</code> 是 Spring Boot 3 的「没有匹配 handler」信号：<strong>对比 <code>-gray</code> 与 prod 实例的同一路径</strong>，能一次区分「能力没发布」与「路由指错」。</li>
+        </ol>
+      </div>
+    </section>
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档基于生产观测数据与源码静态分析生成，仅供故障复盘与架构参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

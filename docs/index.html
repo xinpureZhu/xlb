@@ -45,6 +45,12 @@
     <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
     <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
     <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
   </nav>
   </div>
 
@@ -149,6 +155,30 @@
         <a class="tile" href="18-agent-square-analysis.html">
           <h3>Agent Square <span class="badge infra">Go</span> <span class="badge node">React</span></h3>
           <p>多 Runtime Agent 托管平台：Go 控制面经 gRPC / CRD / pod-exec 三条通道驱动 ATE 调度面与 gVisor 沙箱。五个子模块已于 08-18 全部解锁，调度、沙箱、netns-socket 均源码验证。</p>
+        </a>
+        <a class="tile" href="31-k6-landing-playbook.html">
+          <h3>k6 落地手册 <span class="badge new">新增</span> <span class="badge infra">k6</span></h3>
+          <p>把 25/26/27 三篇调研收敛成可执行清单：四件套（节点模板 / runner 镜像 / RBAC / 服务仓 <code>perf/</code> 契约）、S0–S7 执行与判红口径、集群首轮跑通 Runbook、M1–M5 阶段验收与 13 条排障对照表。含 2026-10-17 复核：k6 指标仍为空集、镜像 tag 仍未 pin。</p>
+        </a>
+        <a class="tile" href="30-502-504-issue-analysis.html">
+          <h3>502 / 504 问题分析 <span class="badge new">新增</span> <span class="badge warn">定位</span></h3>
+          <p>两类故障分开归因：<strong>502</strong> 全部收敛在效能平台一接口——后端 <code>agent-square</code> 在 prod 根本没部署（前端代理立即失败）；<strong>504</strong> 全部落在 <code>external-split</code> 跨集群边（prod→136 固定 10s 超时、13 个域名）。含指纹判读（24/67 字节）、证据与修复建议。</p>
+        </a>
+        <a class="tile" href="29-jd-miaosong-callback-500-incident.html">
+          <h3>京东秒送回调 500 复盘 <span class="badge new">新增</span> <span class="badge danger">事故</span></h3>
+          <p>回调被转发到缺少该入口的 <code>oms-adapter</code>（prod）实例：Spring <code>NoResourceFoundException</code> 被包装成「系统繁忙」500，15 类京东秒送回调全量失败 118 次、5 小时 20 分钟无告警。含链路定位法、语义修正与配置防错建议。</p>
+        </a>
+        <a class="tile" href="28-wms-cross-cluster-503-incident.html">
+          <h3>wms.wms 跨集群 503 复盘 <span class="badge new">新增</span> <span class="badge danger">事故</span></h3>
+          <p>一次 <code>routeToGray</code> 灰度变更 + 100% 灰度切流权重 + 过宽的 <code>baggage-to-remote</code>：142 万次请求在新集群侧按 503 全量失败约 39 分钟，而本地 wms 全程健康。含日志证据链、可观测性标签陷阱与修复建议。</p>
+        </a>
+        <a class="tile" href="27-k6-repo-local-cases.html">
+          <h3>k6 用例归仓与统一执行 <span class="badge new">新增</span> <span class="badge infra">k6</span></h3>
+          <p>用例下沉到各服务仓 <code>perf/</code> 作为唯一 source of truth，k6 侧只负责按 sha 取脚本 → 拉 TestRun → 判定 → 入账。含三种取脚本方式选型、服务仓契约、治理三件套与迁移路径。</p>
+        </a>
+        <a class="tile" href="26-rerail-test-code-analysis.html">
+          <h3>rerail-test-code 实验室 <span class="badge new">新增</span> <span class="badge node">FastAPI</span> <span class="badge infra">k6</span></h3>
+          <p>AI 编码试验台：FastAPI 会员后端（16 路由 / 13 表）+ k6 v2 压测冒烟工程 + 独立模型对抗评审闭环。幂等与行锁防线扎实，但全站无鉴权、二级审批是纸面规则、资产变动场景面过宽。</p>
         </a>
         <a class="tile" href="25-k6-cicd-integration.html">
           <h3>k6 冒烟与性能门禁 <span class="badge new">新增</span> <span class="badge infra">CI/CD</span></h3>
