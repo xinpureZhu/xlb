@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>k6 落地排期表：五条轨道与闸门 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <div class="doc-top">
+  <header class="doc-header">
+    <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+    <h1>k6 落地排期表：五条轨道与闸门</h1>
+    <p class="subtitle">把 <b>31 号落地手册</b>的 M1–M5 拆成<b>可认领、可验收、带日期窗口</b>的排期：A 用例与模板 / B 集群与地基 / C 覆盖与常态三条并行轨道，<b>G1–G5 五个里程碑</b>，<b>8 项待决的最晚决策日</b>，以及必须<b>交人执行</b>的集群与平台动作清单。含两项 2026-10-19 实测复核。</p>
+    <p class="meta">最后更新：2026-10-19 · 数据来源：本工作区只读工作副本的 git 与源码静态核对 + <code>k6_*</code> 指标只读查询（核对时间 2026-10-19）· 内容收敛自 31 号落地手册</p>
+  </header>
+
+  <nav class="doc-nav">
+    <a href="index.html">首页</a>
+    <a href="01-architecture-overview.html">架构总览</a>
+    <a href="02-service-catalog.html">服务清单</a>
+    <a href="03-business-capabilities.html">业务能力</a>
+    <a href="04-tech-stack.html">技术栈</a>
+    <a href="05-infrastructure-deployment.html">部署拓扑</a>
+    <a href="06-integrations-messaging.html">集成与消息</a>
+    <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+    <a href="08-retail-new-analysis.html">retail-new</a>
+    <a href="09-retail-monolith-analysis.html">retail 单体</a>
+    <a href="10-marketing-center-analysis.html">营销活动中心</a>
+    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+    <a href="12-rust-services-analysis.html">Rust 服务群</a>
+    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+    <a href="15-platform-ops-analysis.html">平台运维</a>
+    <a href="16-review-center-analysis.html">评价中心</a>
+    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+    <a href="18-agent-square-analysis.html">Agent Square</a>
+    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+    <a href="22-worktool-analysis.html">worktool 机器人</a>
+    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+    <a href="32-k6-rollout-schedule.html" class="active">k6 落地排期</a>
+  </nav>
+  </div>
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <b>分析基准</b>（本工作区只读工作副本，采集于 <b>2026-10-19</b>）：
+      <code>repos/gitops/apps</code> <code>test</code>·<code>0b869eaebc37</code>·2026-10-16·与 <code>origin/test</code> <b>0/0</b>（<b>非 prod 分支</b>，结论以该快照为准，工作区当前无改动）；
+      <code>repos/efficiency</code> <code>prod</code>·<code>84ef8f0c</code>·2026-09-17·0/0（工作区 1 个未跟踪文件，与本次排期无关）；
+      <code>repos/rerail-test-code</code> <code>master</code>·<code>6cf2c5b</code>·2026-10-13（无 <code>prod</code> 分支，浅克隆 depth=1）；
+      <code>repos/goods_cart</code>（= <code>bff/goods_cart</code>，cart-wanquan 的代码仓）<code>prod</code>·<code>8715ea6</code>·2026-01-19·浅克隆 depth=1，<b>工作区存在 4 处既有未提交改动</b>（与本排期无关，未触碰）。
+      本文只做<b>排期与分工</b>，不新增技术结论；判定口径、S0–S7、Runbook、排障表一律回到 <a href="31-k6-landing-playbook.html">31 号手册</a>与 25/26/27 号调研。<b>集群与云侧写操作本文不执行</b>，所有命令均为「交人执行」（AGENTS.md 第 4 条）。
+    </div>
+
+    <div class="toc">
+      <b>目录</b>
+      <ol>
+        <li><a href="#s1">排期口径与开工前提</a></li>
+        <li><a href="#s2">轨道与关键路径</a></li>
+        <li><a href="#s3">日历排期与里程碑</a></li>
+        <li><a href="#s4">任务明细（可认领）</a></li>
+        <li><a href="#s5">交人执行清单</a></li>
+        <li><a href="#s6">待决项与最晚决策日</a></li>
+        <li><a href="#s7">风险、回滚与穿透点</a></li>
+        <li><a href="#s8">检查点口径与文档关系</a></li>
+      </ol>
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>排期口径与开工前提 <em>5 个日期窗口 · 3 条并行轨道 · 闸门只有 G3；两类任务必须先分开</em></h2>
+
+      <div class="callout ok">
+        <b>口径</b>：本表按 <b>「能自己开工的」</b>与<b>「必须交人 / 需评审的」</b>两类分开排。前者（A1–A2、B1 文档改动、A5）<b>2026-10-20 即可并行开工</b>，不碰集群权限、不碰平台、无需评审；后者按批次给出窗口与前置，避免「等人」阻塞掉整条链。整条链的关键路径是 <b>A2 → A3 → B2 → B4 → G3</b>，其余轨道都能与它并行。
+      </div>
+
+      <div class="grid cols-3">
+        <div class="stat"><span class="n">5</span><span class="l">周窗口（2026-10-20 → 2026-11-27），M5 含平台排期顺延至 12-04</span></div>
+        <div class="stat"><span class="n">3</span><span class="l">并行轨道：A 用例与模板 / B 集群与地基 / C 覆盖与常态</span></div>
+        <div class="stat"><span class="n">8</span><span class="l">待决项，各有最晚决策日——逾期即对应任务顺延，不顺延则降级为「先告警期」</span></div>
+      </div>
+
+      <h3>开工前提（2026-10-19 实测，与 31 号手册的差异只有两项）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>前提</th><th>手册口径</th><th>2026-10-19 实测</th><th>对排期的影响</th></tr></thead>
+          <tbody>
+            <tr><td>RBAC 缺口</td><td><code>configmaps</code> 只有 <code>get/watch/list</code>，无 <code>k6.io</code></td><td><b>未变</b>：<code>argo-workflows/deployment.jsonnet:194-196</code>，且全文件无 <code>k6.io</code> 规则</td><td>B1 仍是 B2 的硬前置</td></tr>
+            <tr><td>镜像 tag</td><td><code>:latest</code> / <code>:v1</code> 未 pin</td><td><b>未变</b>：<code>grafana-k6.jsonnet:31</code>、<code>k6-Deployment.jsonnet:35</code>；<code>versions.libsonnet</code> 无 k6 条目</td><td>A3 与 B1 可合并进同一批发布</td></tr>
+            <tr><td>结果通道</td><td><code>count({__name__=~"k6_.*"})</code> 空集</td><td><b>未变</b>：prod / staging 两套后端均 <code>seriesFetched=0</code></td><td>A4 必须排进 M2，否则 G3 的「空数据判红」无数据源</td></tr>
+            <tr><td>用例归仓</td><td>未落地</td><td><b>未变</b>：<code>repos/</code> 全量（depth≤3）<b>零个 <code>perf/</code> 目录</b></td><td>A1/A2 是纯绿地，无迁移冲突</td></tr>
+            <tr><td>节点模板</td><td><code>smoke-run.yaml</code> 待建</td><td><b>未变</b>：<code>deploy/argo-workflows/templates/</code> 10 个模板中无它</td><td>B2 从零写，形状抄 <code>quality-gate-polling.yaml</code></td></tr>
+            <tr><td>插入点</td><td>v1–v5 多版本族共存</td><td><b>已核对逐文件清单</b>：31 个环境工作流，<code>smoke-test</code> 仅存在于 v1/dev、v2/test、v3/test，且都是审批轮询；<b>v3/v4/v5 的 <code>*-redeploy</code> 与 <code>*-quality</code> 族全无冒烟节点</b></td><td>B4 按清单逐文件插入，见 §8</td></tr>
+            <tr><td>本机集群通道</td><td>未提及</td><td><b>新事实</b>：<code>~/.kube/config</code> 只有 <code>orbstack</code> 本地 context</td><td>集群侧验证（<code>auth can-i</code>、手工 <code>argo submit</code>）本工作区做不到，全部进 §5 交人清单</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>轨道与关键路径 <em>关键路径 A2→A3→B2→B4→G3；A1/A5 与 C 轨道全部可并行</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  subgraph A["轨道 A · 用例与模板（无需审批）"]
+    A1["A1 迁孤岛<br/>10-20→10-22"]
+    A2["A2 模板仓三坑+契约<br/>10-20→10-23"]
+    A3["A3 runner 镜像<br/>10-23→10-26"]
+    A4["A4 结果通道<br/>10-24→10-28"]
+    A5["A5 T1a 生成器<br/>10-27→11-03"]
+  end
+  subgraph B["轨道 B · 集群与地基（交人执行）"]
+    B1["B1 RBAC<br/>10-20→10-22"]
+    B2["B2 smoke-run 模板<br/>10-23→10-29"]
+    B3["B3 开关 ConfigMap<br/>10-27→10-28"]
+    B4["B4 平台接入+流程插入<br/>10-29→11-06"]
+  end
+  subgraph C["轨道 C · 覆盖与常态（依赖 G3）"]
+    C1["C1 试点验收<br/>11-06→11-10"]
+    C2["C2 覆盖率台账<br/>11-03→11-13"]
+    C3["C3 T1b 资损服务<br/>11-09→11-27"]
+    C4["C4 load 基线<br/>11-09→11-20"]
+    C5["C5 巡检 CronWorkflow<br/>11-13→11-20"]
+    C6["C6 路线 P 发布单引用<br/>11-20→12-04"]
+  end
+  A2 --> A3 --> B2
+  A2 --> A5
+  A4 --> G3
+  B1 --> B2 --> B3 --> B4 --> G3
+  G3{{"G3 闸门 11-06<br/>部署后自动冒烟 + 失败阻断"}}
+  G3 --> C1
+  G3 --> C2
+  G3 --> C3
+  G3 --> C4
+  G3 --> C5
+  C5 --> C6
+  D1["D1 试点清单"] -.-> B4
+  D2["D2 告警期/硬阻断"] -.-> B4
+  D3["D3 报告桶审批"] -.-> A4
+        </pre>
+        <p class="arch-title">图 1 · 三条轨道与唯一闸门：虚线为待决项，逾期则对应任务顺延（B3/B4 可先按「告警期」放行）</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>里程碑</th><th>日期</th><th>判定物（可观察）</th><th>逾期处置</th></tr></thead>
+          <tbody>
+            <tr><td><b>G1 地基生效</b></td><td>2026-10-22</td><td><code>kubectl auth can-i create configmaps -n observability --as=system:serviceaccount:argo-workflows:argo</code> 返回 <code>yes</code>；gitops 里不再有 k6 脚本正文</td><td>B2 顺延，其余轨道不受影响</td></tr>
+            <tr><td><b>G2 通道验通</b></td><td>2026-10-28</td><td><code>count({__name__=~"k6_.*"})</code> 非空；报告 URL 可打开；镜像 tag 非 <code>latest</code> 且已登记</td><td>A4 顺延则 G3 的「空数据判红」降级为「仅退出码判红」并登记为技术债</td></tr>
+            <tr><td><b>G3 闸门 · 链路成立</b></td><td>2026-11-06</td><td>test 环境造功能回归（改错业务码）：<code>cd</code> 成功后 <code>smoke-run</code> 失败、后续人工审批节点不可达；还原后同 sha 重跑转绿</td><td>唯一不可降级项；逾期即整体顺延，C 轨道全部后移</td></tr>
+            <tr><td><b>G4 覆盖成型</b></td><td>2026-11-27</td><td>台账可见「服务 × 环境 × 套件 × 最近结果 × 缺口」；T1b 覆盖 5–8 个资损服务；一次性能劣化被 load 基线拦下</td><td>C1–C4 可分批交付，但台账先于 T1b</td></tr>
+            <tr><td><b>G5 常态运行</b></td><td>2026-12-04</td><td>连续 3 天有巡检记录；依赖不可用时下一周期报红并出飞书告警；（可选）发布单对未通过冒烟的需求给出阻断与明细</td><td>C6 属增项，可整体推迟</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>日历排期与里程碑 <em>10-20 开工，11-06 是唯一硬闸门，12-04 收口</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+gantt
+  title 图 2 · k6 落地日历排期（2026-10-20 → 2026-12-04）
+  dateFormat YYYY-MM-DD
+  axisFormat %m-%d
+  excludes weekends
+  section A 用例与模板
+  A1 迁孤岛 cart 脚本离仓          :a1, 2026-10-20, 3d
+  A2 模板仓三坑修复 契约定版        :a2, 2026-10-20, 4d
+  A3 runner 镜像 build push 登记   :a3, after a2, 2d
+  A4 结果通道 remote-write 归档     :a4, 2026-10-24, 3d
+  A5 T1a 生成器 探活层量产          :a5, after a2, 6d
+  section B 集群与地基
+  B1 RBAC Role RoleBinding        :b1, 2026-10-20, 3d
+  B2 smoke-run 节点模板 手工跑通    :b2, after a3, 5d
+  B3 开关 ConfigMap 默认关         :b3, after b2, 2d
+  B4 平台接入 环境流程逐文件插入    :b4, after b3, 6d
+  section C 覆盖与常态
+  C1 试点验收 造回归拦截           :c1, after b4, 3d
+  C2 覆盖率台账                    :c2, 2026-11-03, 9d
+  C3 T1b 资损服务手写              :c3, 2026-11-09, 15d
+  C4 load 基线                    :c4, 2026-11-09, 10d
+  C5 巡检 CronWorkflow            :c5, 2026-11-13, 6d
+  C6 路线 P 发布单引用 可选         :c6, 2026-11-20, 11d
+  section 里程碑
+  G1 地基生效                     :milestone, m1, 2026-10-22, 0d
+  G2 通道验通                     :milestone, m2, 2026-10-28, 0d
+  G3 闸门 链路成立                 :milestone, m3, 2026-11-06, 0d
+  G4 覆盖成型                     :milestone, m4, 2026-11-27, 0d
+  G5 常态运行                     :milestone, m5, 2026-12-04, 0d
+        </pre>
+        <p class="arch-title">图 2 · 日历排期（周末已排除）：B 轨道的每次交人执行都是窗口起点，而非终点——批批交付、批批验证</p>
+      </div>
+
+      <div class="callout">
+        <b>窗口的用法</b>：每个窗口是<b>「该批次的交人执行窗口」</b>，不是「只干这一件事」。交人执行（发布 MR、集群 apply、平台 API）按 <b>周二 / 周四两个批次</b> 归并，避免天天开变更；每周五只做验收与台账更新，不做变更。
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>任务明细（可认领） <em>12 项任务：6 项自开工 · 6 项含交人执行</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>任务</th><th>起止</th><th>责任人（角色）</th><th>依赖</th><th>交付物 / 落点</th><th>验收</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>A1</b></td>
+              <td>迁孤岛：<code>cart-list-test.js</code> / <code>cart-update-test.js</code> 移出 gitops</td>
+              <td>10-20 → 10-22</td>
+              <td>用例 owner（购物车）+ GitOps owner</td>
+              <td>无</td>
+              <td><code>bff/goods_cart</code> 仓新增 <code>perf/load/</code>（写接口 → <code>writePath: true</code>，prod 禁跑）；gitops <code>observability/grafana-k6/cart-wanquan-test.jsonnet</code> 删 ConfigMap，只留开关</td>
+              <td>脚本正文不再出现在 gitops；该服务能在集群内按 sha 手工跑通一轮</td>
+            </tr>
+            <tr>
+              <td><b>A2</b></td>
+              <td>模板仓：<code>loader-test</code> 提升 + 三坑修复 + <code>k6.config.json</code> 定版</td>
+              <td>10-20 → 10-23</td>
+              <td>用例 owner</td>
+              <td>无</td>
+              <td>修 fixture 改 <code>env/setup()</code> 注入、解释器收敛、密码来源改环境变量；<code>perf/</code> 契约（<code>suites</code>/<code>envs</code>/<code>thresholds</code>/<code>templateVersion</code>）</td>
+              <td>新服务「复制模板 → 填 config → 本地跑通」≤ 0.5 天；<code>k6 deps</code> 门禁生效</td>
+            </tr>
+            <tr>
+              <td><b>A3</b></td>
+              <td>smoke-runner 镜像 build / push / 版本登记</td>
+              <td>10-23 → 10-26</td>
+              <td>集群 / 镜像 owner <span class="badge warn">交人</span></td>
+              <td>A2</td>
+              <td><code>efficiency/deploy/images/smoke-runner/</code>（基底 <code>grafana/k6:2.3.0</code> + git/curl/jq/kubectl）；版本登记进 <code>observability/versions.libsonnet</code></td>
+              <td>镜像内 <code>k6 version</code>/<code>git --version</code>/<code>kubectl version --client</code>/<code>jq --version</code> 全通；tag 非 <code>latest</code></td>
+            </tr>
+            <tr>
+              <td><b>A4</b></td>
+              <td>结果通道：remote-write + 报告归档 + 告警规则</td>
+              <td>10-24 → 10-28</td>
+              <td>观测 owner <span class="badge warn">交人</span></td>
+              <td>D3（桶审批）</td>
+              <td>runner 参数 <code>--out experimental-prometheus-rw</code> + <code>handleSummary</code> 归档到对象存储；告警进 <code>observability/victoria-metrics-alert/rules/</code> + <code>alert-webhook</code></td>
+              <td><code>count({__name__=~"k6_.*"})</code> 非空；报告 URL 可打开</td>
+            </tr>
+            <tr>
+              <td><b>A5</b></td>
+              <td>T1a 只读探活层生成器（先 P0 ~30 服务）</td>
+              <td>10-27 → 11-03</td>
+              <td>用例 owner</td>
+              <td>A2</td>
+              <td>生成器脚本 + 探活模板，产出各服务 <code>perf/</code> 骨架（代码生成，不手写）</td>
+              <td>一次生成覆盖 P0 服务清单，且每仓 <code>k6 deps</code> 通过</td>
+            </tr>
+            <tr>
+              <td><b>B1</b></td>
+              <td>RBAC：<code>configmaps</code> 写 + <code>k6.io/testruns</code> + <code>rollouts</code> 读</td>
+              <td>10-20 → 10-22</td>
+              <td>集群 owner <span class="badge warn">交人</span></td>
+              <td>无（先行项）</td>
+              <td><code>repos/gitops/apps/argo-workflows/deployment.jsonnet</code> 新增 Role/RoleBinding（<code>argo-smoke-role</code>）</td>
+              <td><code>kubectl auth can-i create configmaps … --as=…:argo</code> → <code>yes</code></td>
+            </tr>
+            <tr>
+              <td><b>B2</b></td>
+              <td>smoke-run 节点模板（S0–S7 自包含）</td>
+              <td>10-23 → 10-29</td>
+              <td>集群 owner <span class="badge warn">交人</span></td>
+              <td>A3、B1</td>
+              <td><code>efficiency/deploy/argo-workflows/templates/smoke-run.yaml</code>（形状抄 <code>quality-gate-polling.yaml</code>；<code>pool=gitops</code>、<code>imagePullSecrets: acr-image-user</code>）</td>
+              <td>集群内手工 <code>argo submit</code> 该模板能跑完并成功回调 <code>/node/start</code>、<code>/node/complete</code></td>
+            </tr>
+            <tr>
+              <td><b>B3</b></td>
+              <td>开关清单：<code>k6-smoke-switch</code> ConfigMap（默认 <code>enabled=false</code>）</td>
+              <td>10-27 → 10-28</td>
+              <td>GitOps owner</td>
+              <td>B2</td>
+              <td>gitops 渲染到 <code>observability</code> ns：「服务 × 环境 × 套件 + 开关」</td>
+              <td>改开关重新渲染后，节点读到的套件清单随之变化（无需重建镜像）</td>
+            </tr>
+            <tr>
+              <td><b>B4</b></td>
+              <td>平台接入 + 环境子流程插入冒烟节点</td>
+              <td>10-29 → 11-06</td>
+              <td>平台 owner <span class="badge warn">交人</span></td>
+              <td>B2、B3、D1、D2</td>
+              <td><code>import-yaml</code> → <code>publish</code> → <code>node-capabilities/refresh</code>；test 族流程 <code>draft</code> → <code>publish</code>，插入点 <code>cd</code> 之后（<code>depends: cd.Succeeded</code>）</td>
+              <td>G3：坏版本被拦在 <code>cd</code> 之后；好版本推进到人工审批</td>
+            </tr>
+            <tr>
+              <td><b>C1</b></td>
+              <td>试点验收（造功能回归 → 阻断 → 修复转绿）</td>
+              <td>11-06 → 11-10</td>
+              <td>用例 owner + 平台 owner</td>
+              <td>G3、D1</td>
+              <td>验收记录（坏 sha / 好 sha 两次 run 的节点状态与报告链接）</td>
+              <td>两次 run 的结论可追溯到 sha，且重跑不改写旧结果</td>
+            </tr>
+            <tr>
+              <td><b>C2</b></td>
+              <td>覆盖率台账 + 通过率趋势</td>
+              <td>11-03 → 11-13</td>
+              <td>观测 owner</td>
+              <td>A5</td>
+              <td>台账视图（服务 × 环境 × 套件 × 最近结果 × 缺口）</td>
+              <td>能按服务查出缺口；未接入服务不被误判为通过</td>
+            </tr>
+            <tr>
+              <td><b>C3</b></td>
+              <td>T1b 业务语义断言（5–8 个资损相关服务手写）</td>
+              <td>11-09 → 11-27</td>
+              <td>用例 owner + 业务 owner</td>
+              <td>G3</td>
+              <td>各服务 <code>perf/smoke/</code> 的正向 + 关键异常断言（业务码/字段/状态机/幂等）</td>
+              <td>断言不只看 HTTP 200；能挡住至少一类业务回归</td>
+            </tr>
+            <tr>
+              <td><b>C4</b></td>
+              <td>load 基线（P0 读场景，<code>constant-arrival-rate</code>）</td>
+              <td>11-09 → 11-20</td>
+              <td>性能 owner</td>
+              <td>D6</td>
+              <td><code>perf/load/</code> + 基线登记（仅 test/staging）</td>
+              <td>制造一次性能劣化能被基线拦下</td>
+            </tr>
+            <tr>
+              <td><b>C5</b></td>
+              <td>定时巡检 Argo <code>CronWorkflow</code>（test 每小时 / staging 每天 2 次）</td>
+              <td>11-13 → 11-20</td>
+              <td>集群 owner <span class="badge warn">交人</span></td>
+              <td>B2、D4</td>
+              <td>CronWorkflow（复用节点模板，<b>不阻断发布</b>）</td>
+              <td>连续 3 天有巡检记录；依赖不可用时下一周期报红并出飞书告警</td>
+            </tr>
+            <tr>
+              <td><b>C6</b></td>
+              <td>路线 P 增项：发布单引用冒烟记录（可选）</td>
+              <td>11-20 → 12-04</td>
+              <td>平台 owner <span class="badge warn">交人</span></td>
+              <td>D8、平台排期</td>
+              <td>新增 <code>job_type=smoke</code> 与就绪判定新来源</td>
+              <td>发布单提交对未通过冒烟的需求给出阻断与明细</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>交人执行清单 <em>6 类动作、按周二/周四两批归并；本文不代为执行</em></h2>
+
+      <div class="callout danger">
+        <b>执行约束</b>：以下动作包含镜像推送、集群写操作、平台配置 API 与资源申请，按 AGENTS.md 一律<b>由人执行</b>（提示用 <code>!</code> 前缀）。命令中出现账号、Token、桶名等一律以环境变量或 Secret 引用，<b>不落盘、不进文档</b>。本工作区的 kubeconfig 只有 <code>orbstack</code> 本地 context，集群验证必须在有对应集群访问的环境执行。
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>批次</th><th>动作</th><th>命令（摘 31 号 §6）</th><th>影响 / 回滚</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>批 1 · 10-20 / 10-22</b></td>
+              <td>B1 RBAC 渲染与发布</td>
+              <td><code>repos/gitops/preview.sh</code> 预检 → 走 <code>artifacts-&lt;group&gt; → prod</code> 发布 MR</td>
+              <td>仅新增 Role/RoleBinding，不改变既有 <code>argo-cluster-role</code>；回滚=撤销 MR</td>
+            </tr>
+            <tr>
+              <td><b>批 2 · 10-23 / 10-27</b></td>
+              <td>A3 镜像构建推送；tag pin 与登记</td>
+              <td><code>docker build -t &lt;acr&gt;/gitops-tools/smoke-runner:1.0.0 -f efficiency/deploy/images/smoke-runner/Dockerfile …</code> → <code>docker push</code>；随后 pin <code>grafana-k6.jsonnet:31</code> 与 <code>k6-Deployment.jsonnet:35</code>、登记 <code>versions.libsonnet</code></td>
+              <td>新镜像不影响现网；tag 收敛会重启 k6 压测工作负载，需在无压测窗口执行</td>
+            </tr>
+            <tr>
+              <td><b>批 3 · 10-27 / 10-29</b></td>
+              <td>B2 集群手工跑通一轮 TestRun</td>
+              <td>S1 取脚本 → <code>kubectl -n observability create configmap k6-scripts-&lt;svc&gt;-&lt;sha8&gt; --from-file=…/perf</code> → <code>kubectl apply -f testrun.yaml</code> → 轮询 <code>.status.stage</code> → 读 runner 退出码</td>
+              <td>只在 <code>observability</code> ns 建对象；失败即删 TestRun 与 ConfigMap 复位</td>
+            </tr>
+            <tr>
+              <td><b>批 4 · 10-29 / 11-06</b></td>
+              <td>B4 平台接入（模板 + 能力刷新 + 流程 draft/publish）</td>
+              <td><code>POST /api/v1/workflow/templates/import-yaml</code> → <code>…/publish</code> → <code>POST /api/v1/workflow/node-capabilities/refresh</code> → <code>POST /api/v1/workflow/flows/{id}/draft</code> → <code>…/publish</code></td>
+              <td>影响面 = 被接入的环境子流程；开关默认关 ⇒ 回滚只需把开关置 <code>false</code> 或回退流程版本</td>
+            </tr>
+            <tr>
+              <td><b>批 5 · 11-13 / 11-20</b></td>
+              <td>C5 巡检 CronWorkflow</td>
+              <td><code>kubectl apply -f cronworkflow.yaml</code>（仅 test/staging）</td>
+              <td>不阻断发布，但会产生周期负载与告警噪声；回滚=<code>kubectl delete cronworkflow</code></td>
+            </tr>
+            <tr>
+              <td><b>随时 · 提申请</b></td>
+              <td>A4 报告归档桶 + 告警规则评审；D5 operator 扩 staging 评审</td>
+              <td>按 31 号 §4 第 6 项沿用 <code>jmeter</code> 的 OSS 内网端点模式；operator 扩装需集群变更评审</td>
+              <td>桶与保留期属新增资源；扩装 staging 会新增控制器与 CRD 实例</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>待决项与最晚决策日 <em>8 项由人拍板；D1/D3 逾期直接推后闸门</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>待决</th><th>为什么必须由人决定</th><th>建议默认</th><th>最晚决策日</th><th>逾期影响</th></tr></thead>
+          <tbody>
+            <tr><td><b>D1</b></td><td>试点服务与核心链路清单、责任人</td><td>只有业务 owner 知道「哪几条必须走通」</td><td>先 1–2 个服务、每服务 2–3 条核心链路</td><td><b>2026-10-24</b></td><td>B4 无对象可插，G3 顺延一周</td></tr>
+            <tr><td><b>D2</b></td><td>硬阻断还是先告警期</td><td>组织流程选择</td><td>告警期 2 个迭代后转硬阻断</td><td><b>2026-10-29</b></td><td>按「告警期」先行，闸门语义暂不生效</td></tr>
+            <tr><td><b>D3</b></td><td>报告归档桶与保留期</td><td>存储与权限审批</td><td>沿用 <code>jmeter</code> 的 OSS 内网端点模式；TestRun 保留 7 天</td><td><b>2026-10-24</b></td><td>A4 顺延，G2 只保指标通道</td></tr>
+            <tr><td><b>D4</b></td><td>巡检窗口与告警落点</td><td>影响值班与噪声</td><td>test 每小时、staging 每天 2 次，失败进值班群</td><td>2026-11-06</td><td>C5 顺延</td></tr>
+            <tr><td><b>D5</b></td><td>是否扩装 operator 到 staging</td><td>集群变更需评审</td><td>先只上 test</td><td>2026-11-13</td><td>staging 冒烟退化为「经 test 代理」，覆盖率口径需注明</td></tr>
+            <tr><td><b>D6</b></td><td>压测目标 RPS 与容量承诺负责人</td><td>涉及容量承诺</td><td>线上实测峰值 × 1.5 起步</td><td>2026-11-13</td><td>C4 只出趋势不出承诺</td></tr>
+            <tr><td><b>D7</b></td><td>是否把 <code>perf/</code> 纳入服务上线准入</td><td>流程准入</td><td>纳入服务模板与上线 checklist</td><td>2026-11-06</td><td>A5 生成结果无人消费，覆盖率台账只做可视</td></tr>
+            <tr><td><b>D8</b></td><td>发布单是否必须引用冒烟记录</td><td>决定要不要做路线 P（唯一拿不到的能力）</td><td>一期不做，列为 M5 增项</td><td>2026-11-20</td><td>C6 取消，不影响其余交付</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>风险、回滚与穿透点 <em>排期本身的风险是「批次被打散」与「漏插版本族」</em></h2>
+
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">1</span>交人批次被打散</h4>
+          <p>集群/平台动作若逐项临时插队，会反复冻结环境。<b>对策</b>：归并到周二 / 周四两批，周五只验收不改动；每批前先跑一次 <code>preview.sh</code> / <code>replay</code> 预检。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">2</span>版本族漏插</h4>
+          <p>B4 只改一个流程会静默漏掉 redeploy / quality / hotfix 族。<b>对策</b>：按 §8 的插入点清单逐文件核对，验收时逐文件确认节点已出现。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">3</span>门禁噪声化</h4>
+          <p>环境不稳导致频繁误红，团队开始忽略门禁——这是最可能的失败模式。<b>对策</b>：D2 先告警期 2 个迭代；一次重试 + 隔离清单 + 先跑 <code>env-gate</code>。</p>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>风险的穿透点</th><th>会被哪一步击穿</th><th>逐项回滚动作</th></tr></thead>
+          <tbody>
+            <tr><td>把门禁开放给集群内任意进程（误借审批节点做自动通过）</td><td>B4 试图改审批节点语义</td><td>不采用；自动判定只走自建 <code>smoke-run</code> 节点，审批保持人工</td></tr>
+            <tr><td>写脏数据 / 触发下游 MQ 与风控</td><td>A1 写接口脚本在 prod 被误跑</td><td><code>writePath: true</code> 的套件 <code>envs</code> 不含 prod；prod 只跑只读探活</td></tr>
+            <tr><td>共享环境互扰</td><td>B3 开关一次性全开</td><td>逐服务灰度；同环境同时间只跑一个套件（Lease 串行）</td></tr>
+            <tr><td>假绿（脚本跑通但什么都没测）</td><td>A4 通道未验通却依赖「空数据判红」</td><td>通道未通前以退出码为主信号，并把该降级登记为技术债</td></tr>
+            <tr><td>凭据散落</td><td>A2 模板把账号写进 300 个服务仓</td><td>只走集群 Secret + <code>envFrom</code>；脚本只读 <code>__ENV</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <b>工程红线（本仓约定）</b>：① 云与生产环境<b>只读</b>，本表所有命令行均为「交人执行」；② GitOps 工作副本<b>可改不可提交推送</b>，真实变更走 artifacts-webhook 或发布 MR；③ <code>repos/</code> 下 CodeUp 工作副本<b>只读</b>（<code>goods_cart</code> 的既有未提交改动不得清理或覆盖）；④ 文档与脚本<b>不出现</b>任何密码、Token、AK/SK、Cookie。
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>检查点口径与文档关系 <em>插入点逐文件清单 + 与 31 号手册的分工</em></h2>
+
+      <h3>B4 插入点清单（2026-10-19 已逐文件核对 DAG 节点序）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>版本族</th><th>文件（<code>deploy/argo-workflows/environments/</code>）</th><th>当前节点序</th><th>冒烟插入位置</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="8"><b>v1</b></td><td><code>v1/test-workflow.yaml</code></td><td>cd → test-verification → create-merge → execute-merge</td><td>cd 之后</td></tr>
+            <tr><td><code>v1/staging-workflow.yaml</code></td><td>ci → cd → product-verification → …</td><td>cd 之后</td></tr>
+            <tr><td><code>v1/dev-workflow.yaml</code></td><td>… → cd → <b>smoke-test（审批轮询）</b> → apply-transfer → release-test</td><td>cd 之后、审批之前</td></tr>
+            <tr><td><code>v1/prod-workflow.yaml</code></td><td>ci → create-plan → release-to-prod → cd → product-verification → completed</td><td>cd 之后（只读探活）</td></tr>
+            <tr><td><code>v1/prod-gray-workflow.yaml</code></td><td>… cd → product-verification → create-merge → execute-merge</td><td>cd 之后</td></tr>
+            <tr><td><code>v1/hotfix-staging-workflow.yaml</code></td><td>init-environment-lock → ci → retag-image → cd → product-verification</td><td>cd 之后</td></tr>
+            <tr><td><code>v1/hotfix-prod-workflow.yaml</code></td><td>… release-to-prod → cd → product-verification → sync-prod-to-iteration</td><td>cd 之后</td></tr>
+            <tr><td><code>v1/hotfix-prod-gray-workflow.yaml</code></td><td>… release-to-prod-gray → cd → product-verification</td><td>cd 之后</td></tr>
+            <tr><td rowspan="5"><b>v2</b></td><td><code>v2/test-workflow.yaml</code></td><td>cd → <b>smoke-test（审批轮询）</b> → apply-transfer → test-verification → …</td><td>cd 之后、审批之前</td></tr>
+            <tr><td><code>v2/dev-workflow.yaml</code></td><td>… cd → release-test</td><td>cd 之后</td></tr>
+            <tr><td><code>v2/staging-workflow.yaml</code></td><td>ci → cd → product-verification → …</td><td>cd 之后</td></tr>
+            <tr><td><code>v2/prod-workflow.yaml</code></td><td>ci → create-plan → release-to-prod → cd → product-verification → completed</td><td>cd 之后</td></tr>
+            <tr><td><code>v2/prod-gray-workflow.yaml</code></td><td>… cd → product-verification → create-merge → execute-merge</td><td>cd 之后</td></tr>
+            <tr><td rowspan="12"><b>v3</b></td><td><code>v3/test-workflow.yaml</code></td><td>ci → retag-image → cd → <b>smoke-test（审批轮询）</b> → apply-transfer → test-verification</td><td>cd 之后、审批之前</td></tr>
+            <tr><td><code>v3/test-redeploy-workflow.yaml</code></td><td>ci → retag-image → cd</td><td>cd 之后</td></tr>
+            <tr><td><code>v3/staging-workflow.yaml</code> / <code>v3/staging-redeploy-workflow.yaml</code></td><td>… cd → product-verification（redeploy 版止于 cd）</td><td>cd 之后</td></tr>
+            <tr><td><code>v3/dev-workflow.yaml</code> / <code>v3/dev-redeploy-workflow.yaml</code></td><td>… ci → retag-image → cd → release-test</td><td>cd 之后</td></tr>
+            <tr><td><code>v3/prod-workflow.yaml</code> / <code>v3/prod-redeploy-workflow.yaml</code></td><td>… wait-workload-ready → cd → product-verification → merge-to-prod</td><td>cd 之后（只读探活）</td></tr>
+            <tr><td><code>v3/prod-gray-workflow.yaml</code> / <code>v3/prod-gray-redeploy-workflow.yaml</code></td><td>… wait-release-approval → cd</td><td>cd 之后</td></tr>
+            <tr><td><code>v3/hotfix-staging-workflow.yaml</code></td><td>init-environment-lock → check-promotion-gate → ci → retag-image → cd → product-verification</td><td>cd 之后</td></tr>
+            <tr><td><code>v3/hotfix-prod-workflow.yaml</code></td><td>… cd → product-verification → merge-to-prod → sync-prod-to-iteration</td><td>cd 之后</td></tr>
+            <tr><td rowspan="3"><b>v4</b></td><td><code>v4/test-quality-workflow.yaml</code></td><td>ci → retag-image → cd → apply-transfer → test-verification</td><td>cd 之后</td></tr>
+            <tr><td><code>v4/staging-quality-workflow.yaml</code></td><td>init-environment-lock → ci → retag-image → cd → quality-exit → product-verification</td><td>cd 之后</td></tr>
+            <tr><td><code>v4/prod-gray-quality-workflow.yaml</code></td><td>… wait-workload-ready → cd → product-verification</td><td>cd 之后（只读探活）</td></tr>
+            <tr><td rowspan="2"><b>v5</b></td><td><code>v5/prod-workflow.yaml</code></td><td>… cd → merge-to-prod → product-verification → completed</td><td>cd 之后（只读探活）</td></tr>
+            <tr><td><code>v5/hotfix-prod-workflow.yaml</code></td><td>… cd → merge-to-prod → product-verification → sync-prod-to-iteration</td><td>cd 之后（只读探活）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">共 31 个环境工作流文件；上表按族归并展示（同族同名模式合并为一行）。B4 验收必须逐文件确认节点已出现——「只改指定流程」是静默漏插的根因。</div>
+
+      <h3>与 31 号手册的分工</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>文档</th><th>回答什么</th><th>本表如何使用它</th></tr></thead>
+          <tbody>
+            <tr><td><a href="31-k6-landing-playbook.html">31 号 · k6 落地手册</a></td><td>「具体做什么」：四件套、S0–S7、Runbook、13 条排障</td><td>提供本文全部任务的落点、验收与命令来源</td></tr>
+            <tr><td><a href="27-k6-repo-local-cases.html">27 号 · 用例归仓与统一执行</a></td><td>「用例放哪、谁编排、怎么判红」</td><td>A1/A2 的契约与治理依据</td></tr>
+            <tr><td><a href="25-k6-cicd-integration.html">25 号 · k6 冒烟与性能门禁</a></td><td>「要不要做、插在哪、判定口径」</td><td>G3 闸门语义与风险清单依据</td></tr>
+            <tr><td><a href="26-rerail-test-code-analysis.html">26 号 · rerail-test-code 实验室</a></td><td>「用例工程长什么样」</td><td>A2 模板来源与三处可运行性坑依据</td></tr>
+            <tr><td><b>32 号 · 本表</b></td><td>「谁、什么时候、做完算完」</td><td>认领入口；技术争议一律回到 31/25/26/27</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文为 k6 落地排期（收敛自 31 号落地手册，日期窗口为建议值，须与技术负责人确认后生效），仅供工程参考。
+  </footer>
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

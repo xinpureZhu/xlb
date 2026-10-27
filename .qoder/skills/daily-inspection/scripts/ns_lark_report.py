@@ -65,6 +65,39 @@ def cst(ts):
 # healthy "无数据" — the same trap as printing a failed query as 0.
 CRED_BROKEN = []
 
+# Set when cloud calls fail for network/TLS reasons rather than credentials.
+# Kept apart from CRED_BROKEN: "凭据失效" sends people to re-run `aliyun
+# configure`, which cannot fix a blocked endpoint (2026-10-27: the global
+# sts.aliyuncs.com gateway reset the TLS handshake while every product
+# endpoint and the regional STS endpoint were reachable).
+CLOUD_UNREACHABLE = []
+
+REGIONAL_STS_ENDPOINT = "sts.%s.aliyuncs.com" % REGION
+
+# The CLI echoes the signed request URL in some errors, and that URL carries the
+# live STS token; warnings end up in Lark cards and log files.
+_SECRET_PARAM_RE = re.compile(
+    r'(?i)\b(access_key_id|accesskeyid|access_key_secret|accesskeysecret|'
+    r'sts_token|securitytoken|signature|oauth_access_token|'
+    r'oauth_refresh_token|access_token|refresh_token)"?\s*[=:]\s*"?[^&"\s,}]*')
+
+
+def _redact(text):
+    """Remove credentials from CLI output before it is logged or surfaced."""
+    return _SECRET_PARAM_RE.sub(r"\1=***", text or "")
+
+
+# Errors that mean the credential itself is unusable, not the network.
+_CRED_ERR_HINTS = ("refresh token", "invalidcredential", "invalidaccesskeyid",
+                   "invalidsecuritytoken", "securitytokenexpired",
+                   "unauthorized", "forbidden", "no credential",
+                   "init client failed", "init openapi client failed")
+
+# Errors that mean the request never reached the service.
+_NET_ERR_HINTS = ("ssl", "eof", "connection reset", "connection refused",
+                  "connection aborted", "timeout", "timed out",
+                  "no such host", "dial tcp")
+
 
 def aliyun(args, timeout=120):
     try:
@@ -72,33 +105,59 @@ def aliyun(args, timeout=120):
                            capture_output=True, text=True, timeout=timeout)
     except Exception:
         return None
-    err = (r.stderr or "")
-    if r.returncode != 0 and not CRED_BROKEN:
+    err = _redact(r.stderr or "")
+    if r.returncode != 0 and not CRED_BROKEN and not CLOUD_UNREACHABLE:
         low = err.lower()
-        if ("refresh token" in low or "invalidcredential" in low
-                or "unauthorized" in low or "forbidden" in low
-                or "no credential" in low or "init client failed" in low
-                or "init openapi client failed" in low):
+        if any(h in low for h in _CRED_ERR_HINTS):
             CRED_BROKEN.append(err.strip()[:120])
             di._warn.append("阿里云凭据失效，云侧检查全部跳过（MongoDB/Redis/MQ 显示「无数据」"
                             "不代表健康）：%s" % err.strip()[:90])
+        elif any(h in low for h in _NET_ERR_HINTS):
+            CLOUD_UNREACHABLE.append(err.strip()[:120])
+            di._warn.append("阿里云接口不可达（网络/TLS，非凭据问题；相应云检查未完成，"
+                            "「无数据」不代表健康）：%s" % err.strip()[:90])
     try:
         return json.loads(r.stdout)
     except Exception:
         return None
 
 
+def sts_identity(endpoint=None, timeout=60):
+    """(ok, error). Verifies the credential with one STS call."""
+    args = ["aliyun", "sts", "GetCallerIdentity", "--region", REGION]
+    if endpoint:
+        args += ["--endpoint", endpoint]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except Exception as e:                      # timeout / CLI missing
+        return False, _redact(str(e))[:160]
+    if r.returncode == 0:
+        return True, ""
+    return False, _redact((r.stderr or r.stdout or "").strip()[:400])[:160]
+
+
 def preflight_cloud():
     """Cheap credential check before running ~5 minutes of cloud queries.
-    Returns True when the aliyun CLI can authenticate."""
-    r = subprocess.run(["aliyun", "sts", "GetCallerIdentity", "--region", REGION],
-                       capture_output=True, text=True, timeout=60)
-    if r.returncode == 0:
-        return True
-    err = (r.stderr or r.stdout or "").strip()[:160]
-    CRED_BROKEN.append(err)
-    di._warn.append("阿里云凭据失效（aliyun sts GetCallerIdentity 失败），云侧检查全部跳过："
-                    "%s" % err[:90])
+    Returns True when the aliyun CLI can authenticate.
+
+    The CLI defaults to the global sts.aliyuncs.com gateway; when that is
+    unreachable the regional endpoint is tried before blaming the credential.
+    Both endpoints serve the same identity, so a success on either means the
+    product calls below (which use their own endpoints) will work."""
+    err = ""
+    for endpoint in (None, REGIONAL_STS_ENDPOINT):
+        ok, err = sts_identity(endpoint)
+        if ok:
+            return True
+    low = err.lower()
+    if any(h in low for h in _CRED_ERR_HINTS):
+        CRED_BROKEN.append(err)
+        di._warn.append("阿里云凭据失效（aliyun sts GetCallerIdentity 失败），"
+                        "云侧检查全部跳过：%s" % err[:90])
+    else:
+        CLOUD_UNREACHABLE.append(err)
+        di._warn.append("阿里云 STS 端点不可达（网络/TLS 阻断，非凭据失效；已试 %s），"
+                        "云侧检查全部跳过：%s" % (REGIONAL_STS_ENDPOINT, err[:90]))
     return False
 
 
@@ -892,8 +951,12 @@ def _fields(d):
 
 
 def _no_cloud():
-    """Label for cloud sections when the aliyun CLI cannot authenticate."""
-    return "⚠️ 凭据失效未检查" if CRED_BROKEN else "无数据"
+    """Label for cloud sections when the aliyun CLI could not be queried."""
+    if CRED_BROKEN:
+        return "⚠️ 凭据失效未检查"
+    if CLOUD_UNREACHABLE:
+        return "⚠️ 云端未检查"
+    return "无数据"
 
 
 def _backlog_field(d):

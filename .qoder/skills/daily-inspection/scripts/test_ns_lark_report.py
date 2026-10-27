@@ -521,6 +521,100 @@ def test_credential_guard():
     di._warn.clear()
 
 
+def test_sts_endpoint_fallback():
+    """REGRESSION (2026-10-27): the global sts.aliyuncs.com gateway reset the TLS
+    handshake while the regional endpoint and every product endpoint worked.
+    That was reported as 凭据失效 and disabled all cloud checks, sending people
+    to re-run `aliyun configure` for nothing."""
+    nr.CRED_BROKEN.clear()
+    nr.CLOUD_UNREACHABLE.clear()
+    di._warn.clear()
+
+    def stub(global_err=None, regional_ok=True):
+        seen = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            seen.append(list(cmd))
+            regional = any("--endpoint" in c for c in cmd)
+            class R:
+                returncode, stdout, stderr = 0, "{}", ""
+            if not regional and global_err:
+                R.returncode, R.stdout, R.stderr = 1, "", global_err
+            elif regional and not regional_ok:
+                R.returncode, R.stdout, R.stderr = 1, "", global_err
+            return R()
+        return fake_run, seen
+
+    orig_run = nr.subprocess.run
+    tls_reset = ("ERROR: Post \"https://sts.aliyuncs.com/?Action=GetCallerIdentity\": "
+                 "EOF")
+    # the CLI echoes the signed URL, token included; it must never reach a card
+    leaky = ('ERROR: Post "https://sts.aliyuncs.com/?AccessKeyId=STS.9j2CUNsg8eH9'
+             'KLzkeX7nKgEbdoUd33NPNp&Action=GetCallerIdentity&SecurityToken=CAIS9AJ1'
+             'q6Ft5DqyfSjI2KmHCO%2F6nrgZ0orSSWrLj2UNO": EOF')
+    try:
+        nr.subprocess.run, seen = stub(tls_reset)
+        ok = nr.preflight_cloud()
+        check("net: global gateway down falls back to regional STS", ok is True)
+        check("net: fallback really used --endpoint",
+              any("--endpoint" in c for c in seen[1]), str(seen[-1])[:80])
+        check("net: reachable credential raises no warning", not di._warn,
+              str(di._warn)[:60])
+        check("net: identity still considered healthy",
+              not nr.CRED_BROKEN and not nr.CLOUD_UNREACHABLE)
+
+        # both endpoints blocked -> skip cloud, but never call it 凭据失效
+        nr.subprocess.run, _ = stub(tls_reset, regional_ok=False)
+        ok = nr.preflight_cloud()
+        check("net: both endpoints down skips cloud", ok is False)
+        check("net: network failure is not a credential failure",
+              not nr.CRED_BROKEN and nr.CLOUD_UNREACHABLE)
+        check("net: warning blames the endpoint, not the credential",
+              any("不可达" in w and "非凭据" in w for w in di._warn),
+              str(di._warn)[:80])
+        d = {"backlog": [], "mongo": [], "redis": []}
+        check("net: cloud fields say 云端未检查",
+              nr._mw_field(d) == "⚠️ 云端未检查"
+              and nr._backlog_field(d) == "⚠️ 云端未检查",
+              "%r" % nr._mw_field(d))
+
+        # a product call that never reaches the service must not read as 无数据
+        nr.CRED_BROKEN.clear()
+        nr.CLOUD_UNREACHABLE.clear()
+        di._warn.clear()
+        nr.subprocess.run, _ = stub(tls_reset, regional_ok=False)
+        check("net: unparseable product call returns None",
+              nr.aliyun(["dds", "DescribeDBInstances"]) is None)
+        check("net: product-call network failure is classified",
+              nr.CLOUD_UNREACHABLE and not nr.CRED_BROKEN, str(nr.CLOUD_UNREACHABLE)[:60])
+        check("net: product-call failure downgrades the 无数据 label",
+              nr._mw_field(d) == "⚠️ 云端未检查")
+
+        # credentials echoed by the CLI must not be surfaced or logged
+        nr.CRED_BROKEN.clear()
+        nr.CLOUD_UNREACHABLE.clear()
+        di._warn.clear()
+        nr.subprocess.run, _ = stub(leaky, regional_ok=False)
+        ok, err = nr.sts_identity(None)
+        check("secret: STS error keeps its shape", ok is False and "EOF" in err)
+        check("secret: AccessKeyId/SecurityToken redacted from the error",
+              "STS.9j2CUNsg8eH9" not in err and "CAIS9AJ1" not in err
+              and "AccessKeyId=***" in err, err[:80])
+        nr.preflight_cloud()
+        check("secret: warnings carry no token",
+              di._warn and not any("STS.9j2CUN" in w or "CAIS9AJ1" in w
+                                   for w in di._warn), str(di._warn)[:80])
+        check("secret: JSON-style profile dumps are redacted too",
+              nr._redact('"access_key_secret":"8CBkGM"') == '"access_key_secret=***"'
+              and nr._redact("RegionId=cn-hangzhou") == "RegionId=cn-hangzhou",
+              nr._redact('"access_key_secret":"8CBkGM"'))
+    finally:
+        nr.subprocess.run = orig_run
+    nr.CRED_BROKEN.clear()
+    nr.CLOUD_UNREACHABLE.clear()
+    di._warn.clear()
+
+
 for fn in (test_redis_pagination, test_alert_failure_protection,
            test_cronjob_health, test_build_red_on_dead_cron,
            test_mark_recurrence, test_recurrence_persist_isolation,
@@ -528,7 +622,8 @@ for fn in (test_redis_pagination, test_alert_failure_protection,
            test_card_never_false_green,
            test_pods_without_ip,
            test_mq_truncation_warning,
-           test_retry_on_transient_failure, test_credential_guard):
+           test_retry_on_transient_failure, test_credential_guard,
+           test_sts_endpoint_fallback):
     fn()
 
 fails = [n for n, ok, _ in PASS if not ok]

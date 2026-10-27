@@ -244,6 +244,16 @@ preserve them in any ad-hoc query.
   凭据刷新属认证操作，需人工执行 `aliyun configure --profile xlb-prod`，不要代劳。
   **排查时同理**：`aliyun ... 2>/dev/null` 会把凭据失效伪装成「没有数据」，
   导致得出错误结论（2026-09-07 的一次误判正源于此）。查询失败务必保留 stderr。
+- **「连不上」不等于「凭据失效」。** CLI 默认走全球网关 `sts.aliyuncs.com`，该网关
+  可能在本机网络被 TLS 重置（2026-10-27 实测：握手 `unexpected eof`，而
+  `sts.cn-hangzhou.aliyuncs.com` 与 dds/r-kvstore/rocketmq/alikafka 各产品端点全部正常）。
+  因此 `preflight_cloud()` 先用默认端点、失败再带 `--endpoint sts.cn-hangzhou.aliyuncs.com`
+  重试；两个端点都失败时按错误文本区分——凭据类报 `⚠️ 凭据失效未检查`，
+  网络/TLS 类报 `⚠️ 云端未检查`。误判成凭据失效会让人去重跑 `aliyun configure`，
+  而真正的修法是换端点。`aliyun()` 中途的网络失败同样归入 `CLOUD_UNREACHABLE`，
+  不再渲染成「无数据」。
+- **报错里会带 token。** CLI 回显签名 URL（`AccessKeyId=STS.…`、`SecurityToken=…`），
+  这些文本会进飞书卡片和日志；所有告警文本都过 `_redact()`，排查时也不要手抄原始 URL。
 
 ## Escalation
 
