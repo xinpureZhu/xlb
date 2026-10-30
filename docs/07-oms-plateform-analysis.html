@@ -1,4 +1,14 @@
 <!DOCTYPE html>
+<!--DOC_META
+{
+  "eyebrow": "XLB 零售平台 · 专题分析",
+  "title": "oms-plateform 订单中台 · 代码深度分析",
+  "subtitle": "21 个 Maven 模块、1304 个 Java 文件的 DDD 订单中台。本篇已基于最新 <code>prod</code> 完全重写——此前基于个人分支的结论多数已失效。",
+  "meta": "最后更新：2026-08-01 · 基准：分支 <code>prod</code> <code>de2e6a506</code>（2026-07-15，落后 0） · 数据来源：<code>oms-plateform/**</code> 源码静态分析",
+  "footer": "XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。",
+  "navLabel": "oms-plateform"
+}
+-->
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -7,50 +17,53 @@
   <link rel="stylesheet" href="assets/style.css" />
 </head>
 <body>
+  <!-- DOC_HEADER_START -->
   <div class="doc-top">
-  <header class="doc-header">
-    <p class="eyebrow">XLB 零售平台 · 专题分析</p>
-    <h1>oms-plateform 订单中台 · 代码深度分析</h1>
-    <p class="subtitle">21 个 Maven 模块、1304 个 Java 文件的 DDD 订单中台。本篇已基于最新 <code>prod</code> 完全重写——此前基于个人分支的结论多数已失效。</p>
-    <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>prod</code> <code>de2e6a506</code>（2026-07-15，落后 0） · 数据来源：<code>oms-plateform/**</code> 源码静态分析</p>
-  </header>
+    <header class="doc-header">
+      <p class="eyebrow">XLB 零售平台 · 专题分析</p>
+      <h1>oms-plateform 订单中台 · 代码深度分析</h1>
+      <p class="subtitle">21 个 Maven 模块、1304 个 Java 文件的 DDD 订单中台。本篇已基于最新 <code>prod</code> 完全重写——此前基于个人分支的结论多数已失效。</p>
+      <p class="meta">最后更新：2026-08-01 · 基准：分支 <code>prod</code> <code>de2e6a506</code>（2026-07-15，落后 0） · 数据来源：<code>oms-plateform/**</code> 源码静态分析</p>
+    </header>
 
-  <nav class="doc-nav">
-    <a href="index.html">首页</a>
-    <a href="01-architecture-overview.html">架构总览</a>
-    <a href="02-service-catalog.html">服务清单</a>
-    <a href="03-business-capabilities.html">业务能力</a>
-    <a href="04-tech-stack.html">技术栈</a>
-    <a href="05-infrastructure-deployment.html">部署拓扑</a>
-    <a href="06-integrations-messaging.html">集成与消息</a>
-    <a href="07-oms-plateform-analysis.html" class="active">oms-plateform</a>
-    <a href="08-retail-new-analysis.html">retail-new</a>
-    <a href="09-retail-monolith-analysis.html">retail 单体</a>
-    <a href="10-marketing-center-analysis.html">营销活动中心</a>
-    <a href="11-goods-inventory-analysis.html">门店商品库存</a>
-    <a href="12-rust-services-analysis.html">Rust 服务群</a>
-    <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
-    <a href="14-frontend-apps-analysis.html">前端与端应用</a>
-    <a href="15-platform-ops-analysis.html">平台运维</a>
-    <a href="16-review-center-analysis.html">评价中心</a>
-    <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
-    <a href="18-agent-square-analysis.html">Agent Square</a>
-    <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
-    <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
-    <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
-    <a href="22-worktool-analysis.html">worktool 机器人</a>
-    <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
-    <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
-    <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
-    <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
-    <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
-    <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
-    <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
-    <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
-    <a href="31-k6-landing-playbook.html">k6 落地手册</a>
-    <a href="32-k6-rollout-schedule.html">k6 落地排期</a>
-  </nav>
+    <nav class="doc-nav">
+      <a href="index.html">首页</a>
+      <a href="01-architecture-overview.html">架构总览</a>
+      <a href="02-service-catalog.html">服务清单</a>
+      <a href="03-business-capabilities.html">业务能力</a>
+      <a href="04-tech-stack.html">技术栈</a>
+      <a href="05-infrastructure-deployment.html">部署拓扑</a>
+      <a href="06-integrations-messaging.html">集成与消息</a>
+      <a href="07-oms-plateform-analysis.html" class="active">oms-plateform</a>
+      <a href="08-retail-new-analysis.html">retail-new</a>
+      <a href="09-retail-monolith-analysis.html">retail 单体</a>
+      <a href="10-marketing-center-analysis.html">营销活动中心</a>
+      <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+      <a href="12-rust-services-analysis.html">Rust 服务群</a>
+      <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+      <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+      <a href="15-platform-ops-analysis.html">平台运维</a>
+      <a href="16-review-center-analysis.html">评价中心</a>
+      <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+      <a href="18-agent-square-analysis.html">Agent Square</a>
+      <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+      <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+      <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+      <a href="22-worktool-analysis.html">worktool 机器人</a>
+      <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+      <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+      <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+      <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+      <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+      <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+      <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+      <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+      <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+      <a href="32-k6-rollout-schedule.html">k6 落地排期</a>
+      <a href="33-wms-analysis.html">WMS 业务与技术架构</a>
+    </nav>
   </div>
+  <!-- DOC_HEADER_END -->
 
   <main class="doc-body">
     <div class="callout ok" id="provenance">
@@ -265,9 +278,11 @@ flowchart LR
     </section>
   </main>
 
+  <!-- DOC_FOOTER_START -->
   <footer class="doc-footer">
     XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
   </footer>
+  <!-- DOC_FOOTER_END -->
   <script src="assets/mermaid.min.js"></script>
   <script src="assets/diagram-init.js"></script>
 </body>

@@ -315,4 +315,6 @@ tbody tr:last-child td { border-bottom: none; }
   .doc-header h1 { font-size: 24px; }
   section.card { padding: 20px 18px; }
   .toc ol { columns: 1; }
+  .table-wrap table { min-width: 640px; }
+  .diagram pre.mermaid svg { max-width: none; min-width: 640px; }
 }

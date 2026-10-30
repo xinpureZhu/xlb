@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<!--DOC_META
+{
+  "eyebrow": "XLB 零售平台 · 文档中心",
+  "title": "WMS 仓储管理 · 业务与技术架构分析",
+  "subtitle": "同一套仓储域里并行着两代实现：3020 个 Java 文件的 <code>wms</code> 单体，与 6 个 Java 21 的 DDD 新服务共享 <code>new_wms</code> 库；再叠加 WCS、预约与三端前端。",
+  "meta": "最后更新：2026-10-29 · 数据来源：13 个 CodeUp 仓库 <code>prod</code> 分支静态分析 + GitOps <code>origin/prod</code> 部署清单",
+  "footer": "XLB 零售平台文档中心 · 本文档由 13 个仓库 prod 分支与 GitOps origin/prod 静态分析生成，仅供架构参考；部署变更请以实际流水线为准。",
+  "navLabel": "WMS 业务与技术架构"
+}
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WMS 仓储管理 · 业务与技术架构分析 · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <!-- DOC_HEADER_START -->
+  <div class="doc-top">
+    <header class="doc-header">
+      <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+      <h1>WMS 仓储管理 · 业务与技术架构分析</h1>
+      <p class="subtitle">同一套仓储域里并行着两代实现：3020 个 Java 文件的 <code>wms</code> 单体，与 6 个 Java 21 的 DDD 新服务共享 <code>new_wms</code> 库；再叠加 WCS、预约与三端前端。</p>
+      <p class="meta">最后更新：2026-10-29 · 数据来源：13 个 CodeUp 仓库 <code>prod</code> 分支静态分析 + GitOps <code>origin/prod</code> 部署清单</p>
+    </header>
+
+    <nav class="doc-nav">
+      <a href="index.html">首页</a>
+      <a href="01-architecture-overview.html">架构总览</a>
+      <a href="02-service-catalog.html">服务清单</a>
+      <a href="03-business-capabilities.html">业务能力</a>
+      <a href="04-tech-stack.html">技术栈</a>
+      <a href="05-infrastructure-deployment.html">部署拓扑</a>
+      <a href="06-integrations-messaging.html">集成与消息</a>
+      <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+      <a href="08-retail-new-analysis.html">retail-new</a>
+      <a href="09-retail-monolith-analysis.html">retail 单体</a>
+      <a href="10-marketing-center-analysis.html">营销活动中心</a>
+      <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+      <a href="12-rust-services-analysis.html">Rust 服务群</a>
+      <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+      <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+      <a href="15-platform-ops-analysis.html">平台运维</a>
+      <a href="16-review-center-analysis.html">评价中心</a>
+      <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+      <a href="18-agent-square-analysis.html">Agent Square</a>
+      <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+      <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+      <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+      <a href="22-worktool-analysis.html">worktool 机器人</a>
+      <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+      <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+      <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+      <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+      <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+      <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+      <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+      <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+      <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+      <a href="32-k6-rollout-schedule.html">k6 落地排期</a>
+      <a href="33-wms-analysis.html" class="active">WMS 业务与技术架构</a>
+    </nav>
+  </div>
+  <!-- DOC_HEADER_END -->
+
+  <main class="doc-body">
+
+    <div class="callout warn">
+      <strong>分析基准</strong>
+      本文以 13 个仓库的 <code>prod</code> 分支与 GitOps <code>origin/prod</code> 为准：<code>wms</code> <code>f31254b</code> · 2026-10-29，<code>wms-basic</code> <code>6d7a23c</code> · 2026-10-27，<code>wms-outbound</code> <code>f55b6b2</code> · 2026-09-11，<code>wms-inventory</code> <code>f70c9db</code> · 2026-09-11，<code>wms-bounding</code> <code>bcfab8d</code> · 2026-10-29，<code>wms-inbound</code> <code>100e3a5</code> · 2026-10-10，<code>xlb-wms</code> <code>becc656</code> · 2026-10-13，<code>wmshandle</code> <code>672a28d</code> · 2026-10-27，<code>wcs</code> <code>9526707</code> · 2026-06-23，<code>sc-wcs</code> <code>c3acb31</code> · 2026-08-26，<code>sc-appointment</code> <code>56ddf7d</code> · 2026-10-27，<code>xlb_wms_web</code> <code>f6bc063</code> · 2026-10-14，<code>wms-xlb-base</code> <code>e60773a</code> · 2026-10-16。
+      均为浅克隆、与远端 <code>0/0</code>。
+      <br/>
+      <strong>部署与路由结论只采用 GitOps <code>origin/prod</code>（<code>37586603a94e</code> · 2026-10-29）。</strong>
+      本机 <code>repos/gitops/apps</code> 工作副本当前为 <code>test</code> 分支（<code>93e29eac8f8</code> · 2026-10-28 · 落后 <code>origin/prod</code> 2658 个提交），
+      <code>wms-inbound.app.yaml</code>、<code>sc-wcs.app.yaml</code> 只存在于 <code>test</code>，<strong>未进入生产部署</strong>；凡生产结论均以 <code>origin/prod</code> 内容为准。
+    </div>
+
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>结论摘要 <em>WMS 的执行内核仍是一个 Java 8 单体；新服务是共享库上的绞杀者切片，不是独立数据面</em></h2>
+
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#s1">结论摘要</a></li>
+          <li><a href="#s2">系统定位与全景</a></li>
+          <li><a href="#s3">服务拓扑与演进路径</a></li>
+          <li><a href="#s4">业务架构：作业域与能力地图</a></li>
+          <li><a href="#s5">核心单据与状态流转</a></li>
+          <li><a href="#s6">技术架构 A：遗留单体 wms</a></li>
+          <li><a href="#s7">技术架构 B：DDD 新服务群</a></li>
+          <li><a href="#s8">数据、缓存与消息</a></li>
+          <li><a href="#s9">集成边界与开放 API</a></li>
+          <li><a href="#s10">部署、灰度与可观测</a></li>
+          <li><a href="#s11">风险清单</a></li>
+          <li><a href="#s12">结论与建议</a></li>
+          <li><a href="#s13">附录：分析基准与代码索引</a></li>
+        </ol>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">13</div><div class="l">纳入分析的代码仓</div></div>
+        <div class="stat"><div class="n">10</div><div class="l">CMDB WMS 应用（含 wms-web）</div></div>
+        <div class="stat"><div class="n">3020</div><div class="l">单体 wms Java 文件</div></div>
+        <div class="stat"><div class="n">101</div><div class="l">单体 Controller</div></div>
+        <div class="stat"><div class="n">213</div><div class="l">单体 JPA Entity</div></div>
+        <div class="stat"><div class="n">6</div><div class="l">已抽出的 DDD 后端服务</div></div>
+        <div class="stat"><div class="n">20–40</div><div class="l">wms 生产 Pod 副本</div></div>
+        <div class="stat"><div class="n">1</div><div class="l">生产共享库 new_wms</div></div>
+      </div>
+
+      <div class="grid cols-2">
+        <div class="mech m1">
+          <h4><span class="num">A</span>业务上：以「单据 + 任务 + 库存」为主线</h4>
+          <p>入库、出库、库存、基础资料、策略、自动化、预约、逆向、计费报表九大能力域，全部围绕仓储作业单据与作业任务展开。核心单据链是 <code>入库申请 → 收货 → 质检 → 上架</code> 与 <code>出库申请 → 波次 → 拣货 → 分播/播种 → 复核 → 发运</code>。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>技术上：两代实现并行，共享一个库</h4>
+          <p><code>wms</code> 单体仍是主力：Spring Boot 2.7 + Java 8 + JPA/QueryDSL，动态多数据源按公司路由。新服务 <code>wms-basic / wms-outbound / wms-inventory / wms-bounding / xlb-wms / wms-inbound</code> 用 Java 21 + Spring Boot 3 + MyBatis-Plus，但全部指向同一个 <code>new_wms</code> 库。</p>
+        </div>
+      </div>
+
+      <div class="callout">
+        <strong>一句话判断</strong>
+        WMS 当前不是「微服务架构」，而是<strong>单体为核心、按子域逐步外剥的绞杀者架构</strong>。新服务已经承担基础资料、出库、库存查询、库存调整等读写，但数据所有权、事务边界和多租户路由尚未随服务边界一起切开，这是理解 WMS 一切技术取舍的前提。
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>系统定位与全景 <em>供应链与履约产品线下的仓储执行系统，向上接 ERP/SCM/OMS/TMS，向下接 AGV/输送线/电子标签</em></h2>
+
+      <p>CMDB 服务树把 WMS 归在<strong>供应链与履约 / WMS仓储管理</strong>，下挂 <code>wms-web</code>、<code>wms</code>、<code>wms-outbound</code>、<code>wms-basic</code>、<code>wms-bounding</code>、<code>wms-export</code>、<code>wms-inbound</code>、<code>wms-inventory</code>、<code>wmshandle</code>、<code>xlb-wms</code> 十个应用；<code>wcs</code>、<code>sc-wcs</code>、<code>sc-appointment</code> 作为仓储自动化与预约能力独立部署在 <code>wms</code> 命名空间。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  C["作业端<br/>wms-web · wms-rn / PDA · xlb-wms-qt"]
+  G["接入层<br/>Gateway / Ingress<br/>鉴权 · 灰度 · 限流"]
+  W["WMS 仓储域<br/>wms 单体 · DDD 新服务<br/>WCS · 预约 · wmshandle"]
+  E["外部系统<br/>ERP · SCM · TMS · OMS<br/>BI · IDaaS · 承运商"]
+  D["仓内设备<br/>AGV · 输送线 · 电子标签 · 提升机"]
+
+  C --> G --> W
+  W --> E
+  W --> D
+
+  classDef client fill:#fff7ed,stroke:#f59e0b,color:#0f172a
+  classDef new fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+  classDef ext fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
+  class C,G client
+  class W new
+  class E,D ext
+        </pre>
+        <p class="arch-title">图 1 · WMS 系统上下文：前端与设备经网关进入仓储域，仓储域再与 ERP/SCM/TMS/OMS/BI 及承运商协作</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>层次</th><th>对象</th><th>职责</th><th>代码/部署证据</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>作业端</td><td><code>wms-web</code></td><td>PC 控制台：看板、档案、入库、出库、作业中心、库存、数据、配送</td><td><code>xlb_wms_web</code> · Umi Max 4 · 95 条路由 · 191 个页面入口</td></tr>
+            <tr><td>作业端</td><td><code>wms-rn</code> / <code>wms-xlb-base</code></td><td>PDA/移动仓内作业；扫码、收货、上架、拣货、复核</td><td>GitOps <code>react-web/wms-rn.app.yaml</code>；<code>wms-xlb-base</code> 为 React Native 工程</td></tr>
+            <tr><td>作业端</td><td><code>xlb-wms-qt</code></td><td>Windows 桌面客户端，面向仓内固定工位</td><td>CodeUp <code>desktop/xlb-wms-qt</code>（本机无读权限，未纳入源码级分析）</td></tr>
+            <tr><td>接入</td><td>Gateway / Ingress</td><td>统一域名、灰度路由、鉴权、限流</td><td><code>repos/gitops/apps/wms/*.app.yaml</code> 的 <code>routeToGray</code> · <code>ratelimit</code></td></tr>
+            <tr><td>执行</td><td><code>wms</code> 单体</td><td>入库、出库、库存、基础、策略、预约、报表的核心实现</td><td>Spring Boot 2.7.18 · Java 8 · 101 Controller · 213 Entity</td></tr>
+            <tr><td>执行</td><td>6 个 DDD 新服务</td><td>基础资料、出库、库存查询、库存调整、容器/越库、入库迁移</td><td>Java 21 · Spring Boot 3.3.x · MyBatis-Plus</td></tr>
+            <tr><td>集成</td><td><code>wmshandle</code></td><td>外部渠道开放 API、顺丰/茗星配/乐檬单据同步</td><td>12 个 Controller · DocSync 五类操作</td></tr>
+            <tr><td>自动化</td><td><code>wcs</code> / <code>sc-wcs</code></td><td>AGV/机器人任务、提升机、电子标签、格口复核、月台</td><td>旧 <code>wcs</code> 生产；新 <code>sc-wcs</code> 仅在 test 部署定义中</td></tr>
+            <tr><td>预约</td><td><code>sc-appointment</code></td><td>预约 → 确认 → 签到 → 叫号 → 卸货 → 完结</td><td>独立限界上下文 · Java 21 · MySQL/Redis</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>服务拓扑与演进路径 <em>同一张 new_wms 表被两代服务同时读写；抽出的只是「代码边界」，不是「数据边界」</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  LEG["遗留核心<br/>wms 单体 + wms-export<br/>Boot 2.7 / Java 8"]
+  NEW["DDD 新服务群<br/>wms-basic · wms-outbound · wms-inventory<br/>wms-bounding · xlb-wms · wms-inbound"]
+  DB[("new_wms<br/>共享 MySQL")]
+  APPT["sc-appointment<br/>预约"]
+
+  LEG --> DB
+  NEW --> DB
+  APPT --> DB
+  NEW -.->|Feign| LEG
+
+  HANDLE["wmshandle<br/>开放 API / DocSync"] --> HDB[("wmshandle 库")]
+  WCS["wcs / sc-wcs<br/>设备调度"] --> WDB[("wcs 库")]
+  HANDLE --> LEG
+  WCS --> LEG
+
+  classDef legacy fill:#f8fafc,stroke:#94a3b8,color:#0f172a
+  classDef new fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+  classDef data fill:#ecfdf5,stroke:#10b981,color:#0f172a
+  class LEG legacy
+  class NEW,HANDLE,WCS,APPT new
+  class DB,HDB,WDB data
+        </pre>
+        <p class="arch-title">图 2 · 绞杀者拓扑：新服务与单体共享 new_wms，跨服务通过 Feign/HTTP/Engine 任务协作</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>服务</th><th>业务职责</th><th>代码规模</th><th>技术代际</th><th>生产副本</th><th>数据库</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>wms</code></td><td>仓储核心：入库、出库、库存、基础、策略、预约、报表、逆向</td><td>3020 Java · 101 Ctrl · 213 Entity</td><td>Boot 2.7 / Java 8 / JPA</td><td>20–40</td><td><code>new_wms</code>，可按公司动态路由</td></tr>
+            <tr><td><code>wms-export</code></td><td>导出与大报表专用实例，<strong>不是独立代码仓</strong>；同一 <code>wms</code> 镜像跑 <code>export</code> profile</td><td>同 <code>wms</code></td><td>同上</td><td>2–40</td><td><code>new_wms</code></td></tr>
+            <tr><td><code>wms-basic</code></td><td>仓库/库区/库位/容器/托盘/车辆/员工/货主/客户/商品属性/参数/告警/字典</td><td>659 Java · 37 Ctrl</td><td>Boot 3 / Java 21 / MyBatis-Plus</td><td>4–8</td><td><code>new_wms</code> 单库</td></tr>
+            <tr><td><code>wms-outbound</code></td><td>出库申请、出库单、波次、拣货、分播、播种、复核、发运、WCS 派工</td><td>876 Java · 16 Ctrl</td><td>同上</td><td>4–8</td><td><code>new_wms</code> 单库</td></tr>
+            <tr><td><code>wms-inventory</code></td><td>库存明细、库存流水、快照、效期策略、库存对比</td><td>197 Java · 5 Ctrl</td><td>同上</td><td>4–8</td><td><code>new_wms</code> 单库</td></tr>
+            <tr><td><code>wms-bounding</code></td><td>盘点、库存调整、移库、移储、货主转移、报损、理赔、仓报</td><td>735 Java · 14 Ctrl</td><td>同上</td><td>4–8</td><td><code>new_wms</code> 单库</td></tr>
+            <tr><td><code>xlb-wms</code></td><td>容器单、容器库存、包装任务、越库/跨仓</td><td>365 Java · 6 Ctrl</td><td>同上</td><td>8–10</td><td><code>new_wms</code> 单库</td></tr>
+            <tr><td><code>wms-inbound</code></td><td>入库迁移目标服务；当前仅枚举/常量/健康检查与 ERP Feign 骨架</td><td>20 Java · 0 Ctrl</td><td>supply-chain-framework 骨架</td><td><strong>未进入 prod</strong></td><td>test 指向 <code>new_wms</code></td></tr>
+            <tr><td><code>wmshandle</code></td><td>开放 API、顺丰/茗星配/乐檬渠道、DocSync 单据同步</td><td>842 Java · 12 Ctrl</td><td>Boot 2.7 / Java 8</td><td>2–10</td><td><code>wmshandle</code> 独立库</td></tr>
+            <tr><td><code>wcs</code></td><td>旧 AGV/机器人任务、回调、点位</td><td>142 Java · 4 Ctrl</td><td>Boot 2.7 / Java 8 / JPA</td><td>2–4</td><td><code>wcs</code> 独立库</td></tr>
+            <tr><td><code>sc-wcs</code></td><td>新 WCS：调度、提升机、电子标签、格口、工作台、码货员</td><td>380 Java · 23 Ctrl</td><td>Boot 3 / Java 21 / DDD</td><td><strong>未进入 prod</strong></td><td>test 指向 <code>wcs</code></td></tr>
+            <tr><td><code>sc-appointment</code></td><td>预约任务、预约单、签到、叫号、产能、时段、限界规则</td><td>438 Java · 13 Ctrl</td><td>Boot 3 / Java 21 / DDD</td><td>4–8</td><td><code>new_wms</code></td></tr>
+            <tr><td><code>wms-web</code></td><td>PC 控制台静态站与 BFF 代理</td><td>Umi Max 4 · 191 页面</td><td>React 18 / Ant Design</td><td>2–5</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <strong>关键事实：共享库，不是共享服务</strong>
+        生产环境 <code>wms-basic</code>、<code>wms-outbound</code>、<code>wms-inventory</code>、<code>wms-bounding</code>、<code>xlb-wms</code>、<code>sc-appointment</code> 的 <code>DB_NAME</code> 全部是 <code>new_wms</code>，与单体 <code>wms</code> 相同。
+        表名也直接复用：<code>@TableName("in_check_order")</code>、<code>@TableName("pallet")</code> 等出现在 <code>wms-basic</code> 中。服务拆分目前主要解决<strong>代码耦合与发布节奏</strong>，没有解决<strong>数据所有权与事务一致性</strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>业务架构：作业域与能力地图 <em>九大能力域，核心是「单据驱动任务、任务驱动库存」</em></h2>
+
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">01</span>入库域</h4>
+          <p>入库申请、预约/月台、收货、质检、上架、卸货、退货入库、越库。强调「到货前预约、到货后收货、质检后上架」。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">02</span>出库域</h4>
+          <p>出库申请、出库单、波次、拣货、分播、播种、复核、发运、装车、配送交接。策略与任务编排最密集。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">03</span>库存域</h4>
+          <p>库存主档、批次/效期、锁定、流水、快照；盘点、调整、移库、移储、货主转移、冻结、报损。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">04</span>基础资料域</h4>
+          <p>仓库、库区、库位、容器、托盘、月台、车辆、员工、货主、客户、商品、批次、参数、告警、字典。</p>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">05</span>策略域</h4>
+          <p>上架、拣货、分播、播种、波次、补货、AGV 点位、效期控制、自动关单、扫码规则。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">06</span>自动化域</h4>
+          <p>AGV/机器人任务、提升机、电子标签、格口复核、工作台、码货员、月台格口、库位坐标。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">07</span>预约域</h4>
+          <p>预约任务、预约单、时段产能、签到、叫号、卸货、简写号、限制规则、开关配置。</p>
+        </div>
+        <div class="mech m4">
+          <h4><span class="num">08</span>逆向域</h4>
+          <p>退货入库、退货复核、出库冲销、理赔/认领、报损、异常订单监控。</p>
+        </div>
+        <div class="mech m1">
+          <h4><span class="num">09</span>计费与报表</h4>
+          <p>仓储费用、配送费用、经营报表、人效、库存分析、出入库差异、效期监控、BI。</p>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>能力域</th><th>核心对象</th><th>主要入口</th><th>承载服务</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>入库</td><td><code>InApplicationOrder</code>、<code>InOrder</code>、<code>InCheckOrder</code>、<code>ReturnOrder</code>、<code>ShelfTask</code></td><td><code>inboundManage</code>、<code>inStorageManage</code> 页面</td><td><code>wms</code>、<code>wms-inbound</code>（骨架）、<code>sc-appointment</code>、<code>xlb-wms</code></td></tr>
+            <tr><td>出库</td><td><code>OutApplicationOrder</code>、<code>OutOrder</code>、<code>WaveTask</code>、<code>PickOrder</code>、<code>PickingTask</code>、<code>SeedingTask</code>、<code>SortingTask</code>、<code>OutCheckOrder</code>、<code>DepartOrder</code></td><td><code>outboundManage</code>、<code>storeOutManage/workCenter</code></td><td><code>wms</code>、<code>wms-outbound</code>、<code>xlb-wms</code>、<code>wcs/sc-wcs</code></td></tr>
+            <tr><td>库存</td><td><code>Stock</code>、<code>ItemStockDetail</code>、<code>ItemStockLog</code>、<code>StockCheckPlan/Order</code>、<code>StockAdjustOrder</code>、<code>MoveStockOrder</code>、<code>MoveStorageOrder</code>、<code>StockTransferOwnerOrder</code>、<code>StockFrozenOrder</code>、<code>LossOrder</code></td><td><code>storageManage</code>、<code>statistics</code></td><td><code>wms</code>、<code>wms-inventory</code>、<code>wms-bounding</code></td></tr>
+            <tr><td>基础资料</td><td><code>Storehouse</code>、<code>Storage</code>、<code>StorageArea</code>、<code>Container</code>、<code>Pallet</code>、<code>Car</code>、<code>Employee</code>、<code>CargoOwner</code>、<code>Client</code>、<code>Item</code>、<code>Param</code>、<code>AlarmConfig</code></td><td><code>basicConfig</code></td><td><code>wms-basic</code>、<code>wms</code></td></tr>
+            <tr><td>策略</td><td><code>PickStrategy</code>、<code>SeedingStrategy</code>、<code>LocationStrategy</code>、<code>LoopSet</code>、<code>SampleConfig</code>、<code>WmsQuartzConfig</code></td><td><code>strategy</code>、<code>basicConfig/newParamsSet</code></td><td><code>wms</code>、<code>wms-outbound</code>、<code>wms-basic</code></td></tr>
+            <tr><td>自动化</td><td><code>DispatchTask</code>、<code>InboundTask</code>、<code>OutboundTask</code>、<code>SeedingTask</code>、<code>Elevator</code>、<code>DockSlot</code>、<code>ElectronicTag</code>、<code>Coordinate</code></td><td>作业中心、WCS 控制台</td><td><code>wcs</code>、<code>sc-wcs</code></td></tr>
+            <tr><td>预约</td><td><code>AppointmentTask</code>、<code>AppointmentOrder</code>、<code>BookResource</code>、<code>TimeIntervalConfig</code>、<code>Dock</code></td><td>预约管理、司机签到</td><td><code>sc-appointment</code>、<code>wms</code></td></tr>
+            <tr><td>逆向</td><td><code>ReturnOrder</code>、<code>ReturnCheckOrder</code>、<code>OutReverseRecord</code>、<code>InReverseRecord</code>、<code>ClaimApplicationOrder</code></td><td>退货、冲销、认领</td><td><code>wms</code>、<code>wms-bounding</code></td></tr>
+            <tr><td>计费与报表</td><td>仓储费用、配送费用、人效、库存差异、效期、经营看板</td><td><code>freight</code>、<code>statistics</code>、<code>board</code></td><td><code>wms</code>、BI/StarRocks</td></tr>
+            <tr><td>渠道与开放</td><td>顺丰订单/签收、茗星配、乐檬采购/调拨/盘点</td><td><code>wmshandle</code> 开放 API</td><td><code>wmshandle</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <strong>多货主是贯穿全域的约束</strong>
+        <code>CargoOwner</code>、<code>CargoOwnerConfRelation</code>、<code>StockCargoOwnerShare</code>、<code>StockTransferOwnerOrder</code> 等对象说明 WMS 不是单货主系统：库存、单据、策略都需要带 <code>company_id</code> 与 <code>cargo_owner_id</code> 维度。理解这一点比记住表名更重要。
+      </div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>核心单据与状态流转 <em>入库看「预约—收货—质检—上架」，出库看「申请—波次—拣选—复核—发运」</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  SRC["ERP / SCM<br/>采购、调拨、退供"] --> AP["InApplicationOrder<br/>入库申请"]
+  AP --> APPT["AppointmentOrder<br/>预约/签到"]
+  APPT --> INO["InOrder<br/>收货单"]
+  INO --> CHK["InCheckOrder<br/>质检"]
+  CHK --> SHELF["ShelfTask<br/>上架任务"]
+  SHELF --> STK[("Stock<br/>库存")]
+
+  classDef doc fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+  classDef data fill:#ecfdf5,stroke:#10b981,color:#0f172a
+  class SRC,AP,APPT,INO,CHK,SHELF doc
+  class STK data
+        </pre>
+        <p class="arch-title">图 3 · 入库单据链：采购/调拨/退供 → 入库申请 → 预约 → 收货 → 质检 → 上架 → 库存</p>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  NEED["ERP / OMS / SCM<br/>出库需求"] --> OAP["OutApplicationOrder<br/>出库申请"]
+  OAP --> OO["OutOrder<br/>出库单"]
+  OO --> WAVE["WaveTask<br/>波次"]
+  WAVE --> PICK["PickOrder / PickingTask<br/>拣货"]
+  PICK --> SEED["SortingTask / SeedingTask<br/>分播/播种"]
+  SEED --> OCHK["OutCheckOrder<br/>复核"]
+  OCHK --> DEP["DepartOrder<br/>发运"]
+  DEP --> TMS["TMS / 装车交接"]
+
+  STK[("Stock<br/>库存")] --> PICK
+  PICK --> STK
+
+  classDef doc fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+  classDef data fill:#ecfdf5,stroke:#10b981,color:#0f172a
+  class NEED,OAP,OO,WAVE,PICK,SEED,OCHK,DEP,TMS doc
+  class STK data
+        </pre>
+        <p class="arch-title">图 4 · 出库单据链：出库申请 → 出库单 → 波次 → 拣货 → 分播/播种 → 复核 → 发运 → TMS</p>
+      </div>
+
+      <p>逆向与库存修正不单独画链路：退货入库走 <code>ReturnOrder / ReturnCheckOrder</code> 回到库存；盘点、调整、移库、移储分别由 <code>StockCheckPlan/Order</code>、<code>StockAdjustOrder</code>、<code>MoveStockOrder</code>、<code>MoveStorageOrder</code> 写入库存流水与快照。</p>
+
+      <h3>关键状态机</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>对象</th><th>状态</th><th>语义</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>AppointmentOrder</code></td><td><code>INIT</code> → <code>CONFIRMED</code> → 签到/叫号/卸货 → 完结；<code>APPLICATION_CANCEL</code> / <code>TERMINATION</code></td><td>预约待确认、已确认、申请取消、预约终止；仓侧履约由 <code>sc-appointment</code> 的预约单边界承接</td></tr>
+            <tr><td>SCM 发货单</td><td><code>INIT</code> / <code>AUDIT</code> / <code>PASS</code> / <code>DENY</code> / <code>APPROVE</code> / <code>REFUSE</code> / <code>INVALID</code></td><td>制单、审核、处理通过/拒绝、批复通过/拒绝、作废</td></tr>
+            <tr><td>盘点</td><td>计划 → 盘点单 → 盘点明细 → 差异 → 审批/上传</td><td><code>StockCheckPlan</code> + <code>StockCheckOrder</code>；盘点范围支持商品分类、低库存、库位、库位变更等策略</td></tr>
+            <tr><td>出库/入库</td><td>申请 → 审核 → 作业任务 → 复核 → 完成/冲销</td><td>不同单据类型有各自的 <code>*StateEnum</code>；主流程由 <code>process/outorder</code>、<code>process/inorder</code> 的编排类推进</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>幂等与防重</h3>
+      <p>单体在 <code>ControllerAspect</code> 中对 <code>save</code> · <code>export</code> · <code>@Serial</code> 接口用 Redis <code>putIfAbsent</code> 做 60 秒并发互斥；单据层再用 <code>order_unique</code> 表对 <code>orderFid</code> 做 <code>INSERT IGNORE</code> 占坑。新服务把幂等下沉到应用服务与数据库唯一键，跨服务回调仍依赖业务单号。</p>
+      <div class="loc">repos/wms/src/main/java/com/hxl/wms/config/ControllerAspect.java · repos/wms/src/main/java/com/hxl/wms/dao/OrderUniqueDao.java</div>
+
+      <div class="callout warn">
+        <strong>状态机分散在两代代码里</strong>
+        预约状态在单体 <code>AppointmentOrderStateEnum</code> 与 <code>sc-appointment</code> 的独立限界上下文里各有一套表达；出库/入库状态则分散在单体、<code>wms-outbound</code>、<code>wms-bounding</code>。跨服务排障时不能只看一个服务的枚举，必须按单据号串起两代日志。
+      </div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>技术架构 A：遗留单体 wms <em>Spring Boot 2.7 + Java 8 + JPA/QueryDSL；动态多数据源是它最独特、也最难搬走的机制</em></h2>
+
+      <div class="grid cols-4">
+        <div class="stat"><div class="n">3020</div><div class="l">Java 文件</div></div>
+        <div class="stat"><div class="n">101</div><div class="l">Controller</div></div>
+        <div class="stat"><div class="n">199</div><div class="l">Service</div></div>
+        <div class="stat"><div class="n">213</div><div class="l">JPA Entity</div></div>
+        <div class="stat"><div class="n">78</div><div class="l">Process 编排类</div></div>
+        <div class="stat"><div class="n">202</div><div class="l">Connector 外部适配</div></div>
+        <div class="stat"><div class="n">71</div><div class="l">EngineTask</div></div>
+        <div class="stat"><div class="n">20</div><div class="l">Quartz 调度类</div></div>
+      </div>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph IF["接口层"]
+    CTRL["Controller · 101 个<br/>POST /hxl.wms.域名.动作"]
+    JOB["XXL-Job / Quartz / EngineTask"]
+    MQIN["RabbitMQ / RocketMQ 消费者"]
+  end
+
+  subgraph APP["应用与编排层"]
+    SVC["Service · 199 个"]
+    PROC["Process · 78 个<br/>跨域流程编排"]
+    MGR["Manager · 11 个"]
+  end
+
+  subgraph DOMAIN["领域与持久化"]
+    DAO["DAO / Repository · 186 个"]
+    ENT["JPA Entity · 213 个"]
+    QDSL["QueryDSL / 原生 SQL"]
+  end
+
+  subgraph INFRA["基础设施"]
+    DS["CustomRoutingDataSource<br/>按公司路由多库"]
+    REDIS["Redis · 业务缓存 + 登录态"]
+    MQ["RabbitMQ / RocketMQ"]
+    EXT["Connector · ERP/TMS/SCM/OMS/WCS/BI"]
+    OSS["阿里云 OSS"]
+  end
+
+  CTRL --> SVC
+  JOB --> PROC
+  MQIN --> SVC
+  SVC --> PROC
+  SVC --> MGR
+  PROC --> DAO
+  SVC --> DAO
+  DAO --> ENT
+  DAO --> QDSL
+  DAO --> DS
+  SVC --> EXT
+  PROC --> EXT
+  SVC --> REDIS
+  SVC --> MQ
+  SVC --> OSS
+
+  classDef legacy fill:#f8fafc,stroke:#94a3b8,color:#0f172a
+  classDef infra fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
+  class CTRL,JOB,MQIN,SVC,PROC,MGR,DAO,ENT,QDSL legacy
+  class DS,REDIS,MQ,EXT,OSS infra
+        </pre>
+        <p class="arch-title">图 5 · 单体 wms 的内部分层：Controller → Service/Process → DAO → JPA，外部系统统一收口到 Connector</p>
+      </div>
+
+      <h3>技术栈与工程约定</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>维度</th><th>实现</th><th>证据</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>运行时</td><td>Spring Boot 2.7.18 · Java 8 · Tomcat · 内嵌容器</td><td><code>repos/wms/pom.xml</code></td></tr>
+            <tr><td>持久化</td><td>Spring Data JPA / Hibernate + QueryDSL；少量原生 SQL；MySQL 5.1 驱动</td><td><code>pom.xml</code>、<code>dao/OrderUniqueDao.java</code></td></tr>
+            <tr><td>数据库路由</td><td>启动时从 Redis <code>CACHE_WMS_DATASOURCE</code> 读取数据源列表，按 <code>company_id</code> 从 <code>CACHE_WMS_COMPANY_DATASOURCE</code> 取 <code>dbname</code>，写入 <code>CurrentDb</code> ThreadLocal；<code>AbstractRoutingDataSource</code> 决定实际连接</td><td><code>datasource/MultiDataSourceConfig.java</code>、<code>CurrentDb.java</code>、<code>config/ControllerAspect.java</code></td></tr>
+            <tr><td>连接池</td><td>每个数据源独立 Hikari，最大 200、最小空闲 20</td><td><code>MultiDataSourceConfig.java</code></td></tr>
+            <tr><td>鉴权</td><td>自定义 <code>access_token</code>，登录态存 Redis；<code>SERVER_TOKEN</code> 允许服务端直通；请求 DTO 必须带 <code>company_id</code></td><td><code>ControllerAspect.java</code></td></tr>
+            <tr><td>接口风格</td><td>全部 POST，路径 <code>/hxl.wms.&lt;domain&gt;.&lt;action&gt;</code>，JSON <code>SNAKE_CASE</code></td><td><code>OutOrderController.java</code> 等 101 个 Controller</td></tr>
+            <tr><td>并发控制</td><td><code>save</code> · <code>export</code> · <code>@Serial</code> 接口用 Redis 互斥，默认 60 秒；单据唯一键 <code>order_unique</code></td><td><code>ControllerAspect.java</code>、<code>OrderUniqueDao.java</code></td></tr>
+            <tr><td>调度</td><td>Quartz 按库分片 + XXL-Job + 71 个 <code>@EngineTask</code> 流程任务</td><td><code>quartz/</code>、<code>process/</code></td></tr>
+            <tr><td>消息</td><td>RabbitMQ 手动 ack（异步发运、OMS 变更等）+ RocketMQ 5（主数据变更）</td><td><code>application.yml</code>、<code>mq/</code>、<code>service/mq/</code></td></tr>
+            <tr><td>可观测</td><td>Actuator + Prometheus + OpenTelemetry gRPC + ARMS SDK</td><td><code>pom.xml</code>、<code>PrometheusConf.java</code></td></tr>
+            <tr><td>文件/打印</td><td>阿里云 OSS；积木报表 JimuReport</td><td><code>ali.oss.*</code>、<code>JIMU_URL</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout danger">
+        <strong>动态多数据源是单体最重的隐式契约</strong>
+        <code>ControllerAspect.multiDatasource()</code> 在每个请求进入时决定库：登录态优先取 <code>company_id</code>，否则读请求头 <code>HEADER_DB</code>，再否则落到 <code>defaultDb</code>。MQ/定时任务没有登录态，需要显式设置 <code>CurrentDb</code> 或依赖 <code>ContextAwareTaskDecorator</code> 传递。新服务目前是单一 <code>${DB_URL}/${DB_NAME}</code>，<strong>不具备这套按公司切库的能力</strong>。
+      </div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>技术架构 B：DDD 新服务群 <em>Java 21 + Boot 3 + MyBatis-Plus；规则很严，但各服务的模型风格并不统一</em></h2>
+
+      <p>新服务由内部 <code>supply-chain-framework</code> BOM 统一约束，模块固定为 <code>*-client</code>（对外 Feign SDK）与 <code>*-server</code>（实现）。<code>wms-outbound</code> 的 <code>CLAUDE.md</code> 把分层规则写得最完整，可作为整套新服务的样板。</p>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph IF["interfaces"]
+    WEB["web · REST Controller"]
+    CLI["client · Feign 服务端实现"]
+    JOB["job · XXL-Job / EngineTask"]
+    MQ["mq · 消息监听"]
+  end
+
+  subgraph APP["application"]
+    CMD["service/cmd · 写用例"]
+    QRY["service/query · 读用例"]
+    CQE["cqe · Command / Query / Event"]
+    ASM["assembler · DTO 装配"]
+  end
+
+  subgraph DOM["domain"]
+    ENT["entity / model · 聚合与值对象"]
+    DSV["service · 领域服务"]
+    REPO["repository · 仓储接口"]
+    EVT["event / factory"]
+  end
+
+  subgraph INF["infrastructure"]
+    MP["persistence · MyBatis-Plus PO/Mapper/Convert"]
+    EXT["external · ERP/TMS/SCM/WMS 防腐层"]
+    CFG["config / enums / utils"]
+  end
+
+  WEB --> CMD
+  WEB --> QRY
+  CLI --> CMD
+  JOB --> CMD
+  MQ --> CMD
+  CMD --> DSV
+  QRY --> REPO
+  CMD --> REPO
+  DSV --> ENT
+  DSV --> REPO
+  REPO --> MP
+  CMD --> EXT
+  QRY --> EXT
+  MP --> DB[("MySQL new_wms")]
+  EXT --> OTHER["其他服务 / 外部系统"]
+
+  classDef new fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+  classDef data fill:#ecfdf5,stroke:#10b981,color:#0f172a
+  class WEB,CLI,JOB,MQ,CMD,QRY,CQE,ASM,ENT,DSV,REPO,EVT,MP,EXT,CFG new
+  class DB data
+        </pre>
+        <p class="arch-title">图 6 · DDD 新服务分层：接口层不写规则，应用层做编排，领域层收敛业务，基础设施层提供持久化与防腐</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>维度</th><th>实现</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>语言/框架</td><td>Java 21 · Spring Boot 3.3.x · <code>supply-chain-framework</code> BOM</td><td><code>xlb-wms/pom.xml</code> 显式 3.3.2；其余通过父 BOM 继承</td></tr>
+            <tr><td>持久化</td><td>MyBatis-Plus + <code>mapper/*.xml</code> + Hikari</td><td>PO 用 <code>@TableName</code>，不出 <code>persistence</code> 包</td></tr>
+            <tr><td>线程模型</td><td><code>spring.threads.virtual.enabled=on</code> + 懒加载</td><td>所有新服务 <code>application.yml</code> 一致</td></tr>
+            <tr><td>鉴权</td><td>OAuth2 Resource Server + IDaaS JWT</td><td><code>issuer-uri</code> 校验，JWK 走集群内 <code>idaas.idaas</code></td></tr>
+            <tr><td>服务间调用</td><td>Spring Cloud OpenFeign + client SDK</td><td><code>wms-basic-client</code>、<code>wms-inventory-client</code>、<code>wms-bounding-client</code> 等</td></tr>
+            <tr><td>定时任务</td><td><code>engine-client-spring-boot-starter</code> + XXL-Job</td><td><code>@EnableEngineTask</code>、<code>@EngineTask</code></td></tr>
+            <tr><td>可观测</td><td>Micrometer + OTel + Prometheus + SpringDoc</td><td><code>/actuator/prometheus</code>、<code>/doc.html</code></td></tr>
+            <tr><td>双命名空间 SDK</td><td><code>wms-inventory</code> 的 <code>client-common</code> / <code>client</code> 同时产出 <code>javax</code> 与 <code>jakarta</code> 视图</td><td>JDK 8 模块经 Eclipse Transformer 生成 JDK 21 视图</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>分层规则（以 wms-outbound 为例）</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>规则</th><th>目的</th><th>代码落点</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>接口必须经 application 层</td><td>禁止 Controller/Job 直接碰领域或外部接口</td><td><code>interfaces/</code> → <code>application/service</code></td></tr>
+            <tr><td>PO 不出 persistence 包</td><td>持久化模型与领域模型解耦</td><td><code>infrastructure/persistence/po</code></td></tr>
+            <tr><td>domain 不引用外部服务</td><td>领域层保持纯业务；外部数据由 application 查好再传入</td><td><code>domain/</code> 不 import <code>external</code></td></tr>
+            <tr><td>子域 DomainService 不互调</td><td>跨子域由 AppCmd/AppQuery 编排，避免领域网</td><td><code>application/service</code></td></tr>
+            <tr><td>禁止 <code>@Transactional</code></td><td>统一用 <code>TransactionTemplate</code>，显式控制事务边界</td><td><code>infrastructure/config/TransactionConfig.java</code></td></tr>
+            <tr><td>Repository 只做 Mapper + PO↔Entity</td><td>业务聚合写在 Entity/DomainService</td><td><code>infrastructure/persistence/repository</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <strong>规则与现实的两处偏差</strong>
+        ① <code>wms-outbound/CLAUDE.md</code> 明确“禁止 <code>@Transactional</code>”，但 <code>WaveStrategyAppCmdService</code> 仍有 4 个方法标注 <code>@Transactional(rollbackFor = Exception.class)</code>，与 <code>TransactionConfig</code> 的注释直接冲突。
+        ② <code>wms-inventory/CLAUDE.md</code> 自称“主数据管理（MDM）”，但该仓实际代码是 <strong>库存明细/流水/快照/效期策略</strong>，Controller 为 <code>StockController</code>、<code>StockSnapshotController</code>、<code>StockExpiryStrategyController</code>。以源码为准，文档需修正。
+      </div>
+
+      <div class="callout">
+        <strong>模型风格并不统一</strong>
+        <code>wms-outbound</code> · <code>wms-basic</code> 倾向充血领域对象；<code>sc-appointment</code> 明确采用<strong>贫血模型 + Mutator</strong>，并把它写成“刻意为之、不作为演进目标”；<code>wms-inventory</code> · <code>wms-bounding</code> 则是 <code>model</code> + <code>service</code> 的贫血风格。跨服务阅读代码时不能假设同一套领域建模习惯。
+      </div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>数据、缓存与消息 <em>一个共享 MySQL 主库 + 两套 Redis + 两套 MQ + 一个 StarRocks 报表面</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>存储</th><th>用途</th><th>关键约定</th><th>证据</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>MySQL <code>new_wms</code></td><td>仓储业务主库：单据、任务、库存、基础资料</td><td>生产 RDS；dev/test 为 OceanBase；单体与所有新服务共用</td><td>GitOps <code>origin/prod/wms/*.app.yaml</code></td></tr>
+            <tr><td>MySQL <code>wmshandle</code></td><td>渠道同步任务、游标、单据映射</td><td>独立库，不参与 core 事务</td><td><code>wmshandle.app.yaml</code></td></tr>
+            <tr><td>MySQL <code>wcs</code></td><td>WCS 任务、坐标、格口、电子标签</td><td>旧 <code>wcs</code> 与 test 的 <code>sc-wcs</code> 都指向 <code>wcs</code></td><td><code>wcs.app.yaml</code>、<code>sc-wcs.app.yaml</code></td></tr>
+            <tr><td>Redis（WMS）</td><td>业务缓存、并发锁、数据源映射、会话</td><td><code>CACHE_WMS_DATASOURCE</code> 存数据源；<code>CACHE_WMS_COMPANY_DATASOURCE</code> 存公司→库</td><td><code>Constants.java</code>、<code>MultiDataSourceConfig.java</code></td></tr>
+            <tr><td>Redis（ERP 登录）</td><td>旧 <code>access_token</code> 登录态</td><td><code>loginredis</code> 独立连接</td><td><code>application.yml</code>、<code>LoginRedisConfig.java</code></td></tr>
+            <tr><td>RabbitMQ</td><td>异步发运、OMS 订单变更、ERP 请求单</td><td>手动 ack；队列 <code>asyncDepart</code>、<code>omsChange</code> 等</td><td><code>mq/</code>、<code>application.yml</code></td></tr>
+            <tr><td>RocketMQ 5</td><td>MDM 商品/公司/组织变更同步</td><td>消费端做幂等与事务串行</td><td><code>service/mq/*MdmRocketMQConsumerService.java</code></td></tr>
+            <tr><td>StarRocks</td><td>BI/报表：<code>wms_report</code>、<code>wms_test</code></td><td>与业务库分离，承载分析与导出</td><td>GitOps <code>SR_*</code> · <code>BI_DB_*</code> 环境变量</td></tr>
+            <tr><td>OSS</td><td>附件、图片、导入模板、导出文件</td><td>按环境 bucket 区分</td><td><code>ali.oss.*</code></td></tr>
+            <tr><td>XXL-Job / Engine</td><td>定时任务与流程任务调度</td><td>Quartz 负责按库分片；Engine 负责跨服务流程</td><td><code>@EngineTask</code>、<code>XXLJOB_APPNAME</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>数据模型的重心</h3>
+      <p>单体 213 个 JPA Entity，按包可分为 <code>entity/base</code>、<code>entity/stock</code>、<code>entity/storehouse</code>、<code>entity/item</code>、<code>entity/sorting</code>、<code>entity/pallet</code>、<code>entity/loss</code>、<code>entity/returncheck</code>、<code>entity/thirdpart</code>。真正需要先理解的是四组聚合：</p>
+      <div class="grid cols-4">
+        <div class="mech m1"><h4><span class="num">01</span>单据聚合</h4><p><code>InOrder</code> · <code>OutOrder</code> · <code>OutApplicationOrder</code> · <code>DepartOrder</code> 及其 Detail、Mapping 表；单据号 <code>fid</code> 由自定义生成器产出，<code>order_unique</code> 保证唯一。</p></div>
+        <div class="mech m2"><h4><span class="num">02</span>任务聚合</h4><p><code>PickOrder</code> · <code>PickingTask</code> · <code>SeedingTask</code> · <code>SortingTask</code> · <code>ShelfTask</code> · <code>WaveTask</code>；任务状态与作业人员、容器、库位绑定。</p></div>
+        <div class="mech m3"><h4><span class="num">03</span>库存聚合</h4><p><code>Stock</code> · <code>ItemStockDetail</code> · <code>ItemStockLog</code> · <code>ItemStockLockDetail</code> · <code>ContainerStock</code>；按批次、效期、货主、库位展开。</p></div>
+        <div class="mech m4"><h4><span class="num">04</span>基础聚合</h4><p><code>Storehouse</code> · <code>Storage</code> · <code>StorageArea</code> · <code>Container</code> · <code>Pallet</code> · <code>Car</code> · <code>Employee</code> · <code>CargoOwner</code> · <code>Client</code> · <code>Item</code>。</p></div>
+      </div>
+
+      <div class="callout danger">
+        <strong>一致性边界没有随服务切开</strong>
+        新服务共享 <code>new_wms</code>，但各自使用独立连接与独立事务；跨服务写同一批表时没有 XA/TCC，靠 Engine 任务、MQ、唯一键和补偿逻辑收敛。单体内可以用一个本地事务完成的「扣库存 + 改单据 + 写流水」，跨到 <code>wms-outbound</code> · <code>wms-inventory</code> 后必须显式设计幂等与补偿。
+      </div>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>集成边界与开放 API <em>对内靠 Connector/Feign，对外靠 wmshandle 的渠道适配与 DocSync</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>外部系统</th><th>方向</th><th>协议/方式</th><th>用途</th><th>代码证据</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>ERP 套件</td><td>双向</td><td>HTTP/Feign</td><td>库存同步、采购入库、配送、批发、主数据、导出</td><td><code>connector/erp</code>、<code>ERP_*_URL</code> 环境变量</td></tr>
+            <tr><td>SCM / sc-mdm</td><td>双向</td><td>HTTP/Feign</td><td>发货单、调拨、商品/门店/货主/仓库主数据</td><td><code>connector/scm</code>、<code>sc-mdm-client</code></td></tr>
+            <tr><td>TMS / xlb-tms</td><td>双向</td><td>HTTP/Feign</td><td>运输单、集货区、预约、发运交接</td><td><code>connector/tms</code>、<code>connector/thirdtms</code></td></tr>
+            <tr><td>OMS</td><td>双向</td><td>HTTP + RabbitMQ</td><td>订单变更、出库申请回写、履约状态</td><td><code>oms/</code>、<code>mq/consumer</code></td></tr>
+            <tr><td>WCS</td><td>双向</td><td>HTTP/Feign</td><td>AGV/机器人任务派发、回调、设备状态</td><td><code>connector/wcs</code>、<code>WcsDispatchTask*</code></td></tr>
+            <tr><td>FSMS / FSS / BMS / OA / purchase</td><td>双向</td><td>HTTP</td><td>售后、结算、预算、审批、采购</td><td><code>connector/fsms</code>、<code>fss</code>、<code>oa</code>、<code>purchase</code></td></tr>
+            <tr><td>BI / StarRocks</td><td>出站</td><td>JDBC/HTTP</td><td>经营报表、库存分析、人效</td><td><code>connector/bi</code>、<code>BI_DB_*</code></td></tr>
+            <tr><td>IDaaS / IAuth</td><td>入站</td><td>OIDC/JWT</td><td>用户身份与权限</td><td><code>idaas</code>、<code>iauth</code> 配置</td></tr>
+            <tr><td>顺丰 / 茗星配 / 乐檬</td><td>双向</td><td>HTTP/OpenAPI</td><td>渠道下单、签收、采购/调拨/盘点单据同步</td><td><code>wmshandle/channel</code>、<code>docsync</code></td></tr>
+            <tr><td>积木报表</td><td>出站</td><td>HTTP</td><td>打印模板</td><td><code>JIMU_URL</code>、<code>LabelPrintService</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>wmshandle：开放接口与渠道同步的单一出口</h3>
+      <p><code>wmshandle</code> 把外部渠道差异收在一个 Java 8 服务里：顺丰回调、茗星配回调、乐檬（LEMON/AMA）采购与调拨、淘宝相关接口，以及 DocSync 的统一单据同步模型。</p>
+      <div class="diagram">
+        <pre class="mermaid">
+sequenceDiagram
+  participant EXT as 外部渠道 · 顺丰/茗星配/乐檬
+  participant H as wmshandle
+  participant ERP as ERP / SCM
+  participant WMS as wms 单体
+  participant DB as wmshandle DB
+
+  EXT->>H: 下单/回调/拉取
+  H->>DB: 写 pull cursor / task / mapping
+  H->>ERP: 查询或创建 ERP 单据
+  ERP-->>H: 单号/状态
+  H->>WMS: 入库/出库/库存动作
+  WMS-->>H: 处理结果
+  H-->>EXT: 回执/状态
+        </pre>
+        <p class="arch-title">图 7 · wmshandle 的 DocSync 协作：外部渠道、ERP、WMS 三方通过游标、任务表、映射表解耦</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>DocSync 能力</th><th>语义</th><th>落地</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>DISPATCH</code></td><td>把 ERP 单据推送到外部系统</td><td>游标 + 任务表 + 映射表，唯一键幂等</td></tr>
+            <tr><td><code>PULL</code></td><td>从外部系统增量拉取单据</td><td><code>docsync_pull_cursor</code> 按公司/门店/仓库/系统/单据类型隔离</td></tr>
+            <tr><td><code>VOID</code></td><td>作废外部单据</td><td>单次执行，不推进游标</td></tr>
+            <tr><td><code>PULL_RESULT</code></td><td>拉取处理结果</td><td>可循环，按协议校验 <code>fetchedCount</code> · <code>nextCursorTime</code></td></tr>
+            <tr><td><code>RECEIVE_RESULT</code></td><td>接收回执</td><td>写回任务与映射状态</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="loc">repos/wmshandle/docs/docsync/docsync-technical-design.md · repos/wmshandle/src/main/java/com/hxl/wmshandle/docsync/</div>
+
+      <div class="callout warn">
+        <strong>两套鉴权并存</strong>
+        单体 <code>wms</code> 走 Redis <code>access_token</code>，新服务走 IDaaS JWT；<code>wmshandle</code> 又对顺丰/茗星配回调配置了按 <code>client_id</code> 的路径白名单与静态 token。
+        三套入口的安全模型不同，新增开放接口时必须同时检查网关、服务内拦截器和 GitOps 的 <code>publicJWTAuth</code> 配置。
+      </div>
+    </section>
+
+    <section class="card" id="s10">
+      <h2><span class="num">10</span>部署、灰度与可观测 <em>K8s + ArgoCD + Jsonnet；生产按公司/用户/仓库三个 Header 灰度</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  REPO["gitops/apps<br/>Jsonnet + *.app.yaml"] --> BUILD["CodeUp Pipeline<br/>构建镜像"]
+  BUILD --> ACR["ACR 镜像仓库"]
+  ACR --> ARGO["ArgoCD<br/>apps-* / artifacts-*"]
+  ARGO --> K8S["Kubernetes · namespace wms"]
+  K8S --> DEV["dev"]
+  K8S --> TEST["test"]
+  K8S --> STG["staging"]
+  K8S --> GRAY["prod-gray"]
+  K8S --> PROD["prod"]
+  PROD --> SVC["Service DNS<br/>wms.wms / wms-basic.wms ..."]
+  GRAY --> SVC
+  SVC --> OBS["Prometheus + OTel + 飞书告警"]
+        </pre>
+        <p class="arch-title">图 8 · WMS 的 GitOps 发布链路：镜像构建 → ArgoCD → 多环境，生产与 prod-gray 通过网关 Header 分流</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>服务</th><th>生产副本</th><th>资源上限</th><th>端口 / 健康检查</th><th>备注</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>wms</code></td><td>20–40</td><td>4C / 15Gi</td><td>8081 · <code>/wms/actuator/health</code></td><td>JVM <code>-Xms9500m -Xmx9500m</code>，G1，Tomcat 1000 线程</td></tr>
+            <tr><td><code>wms-export</code></td><td>2–40</td><td>同 <code>wms</code></td><td>8081 · <code>/wms/actuator/health</code></td><td>镜像 <code>wms</code>，profile <code>export</code></td></tr>
+            <tr><td><code>wms-basic</code></td><td>4–8</td><td>4C / 15Gi</td><td>8080 · <code>/wms-basic/actuator/health</code></td><td>Java 21 虚拟线程</td></tr>
+            <tr><td><code>wms-outbound</code></td><td>4–8</td><td>2C / 4–12Gi</td><td>8080 · <code>/wms-outbound/actuator/health</code></td><td>生产内存上限高于测试</td></tr>
+            <tr><td><code>wms-inventory</code></td><td>4–8</td><td>—</td><td>8080 · <code>/wms-inventory/actuator/health</code></td><td>—</td></tr>
+            <tr><td><code>wms-bounding</code></td><td>4–8</td><td>—</td><td>8080 · <code>/wms-bounding/actuator/health</code></td><td>—</td></tr>
+            <tr><td><code>xlb-wms</code></td><td>8–10</td><td>2C / 8Gi</td><td>8081 · <code>/xlb-wms/actuator/health</code></td><td>按 <code>company-id</code> 灰度</td></tr>
+            <tr><td><code>wmshandle</code></td><td>2–10</td><td>2C / 8Gi</td><td>55130 · <code>/wmshandle/actuator/health</code></td><td>开放 API，按路径限流</td></tr>
+            <tr><td><code>wcs</code></td><td>2–4</td><td>2C / 8Gi</td><td>8081 · <code>/wcs/actuator/health</code></td><td>旧设备调度</td></tr>
+            <tr><td><code>sc-appointment</code></td><td>4–8</td><td>4C / 15Gi</td><td>8080 · <code>/sc-appointment/actuator/health</code></td><td>共享 <code>new_wms</code></td></tr>
+            <tr><td><code>wms-web</code></td><td>2–5</td><td>—</td><td>域名 <code>wms.xlbsoft.com</code></td><td>HPA CPU 0.3；按 cookie/User-Id 灰度</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>灰度与流量</h3>
+      <ul>
+        <li><strong>wms</strong>：生产按 <code>company-id</code> 精确匹配、<code>user-id</code> 正则、<code>warehouse-id</code> 正则三条 Header 规则把请求导向 <code>prod-gray</code>；<code>prod-gray</code> 独立 10–40 副本。</li>
+        <li><strong>wms-web</strong>：按 cookie <code>company_id</code> 与 <code>User-Id</code> 灰度；静态资源路径前缀包含 <code>/xlb_wms</code>、<code>/new_wms/wmsBoard</code>、<code>/erp</code>。</li>
+        <li><strong>xlb-wms</strong>：仅按 <code>company-id=1001</code> 灰度。</li>
+        <li><strong>限流</strong>：<code>wms</code> 对 <code>/wms/hxl.wms.waithandle.find</code> 配置 2 req/s，避免外部轮询打穿。</li>
+      </ul>
+
+      <div class="callout">
+        <strong>环境与数据分离</strong>
+        dev/test 走 OceanBase；staging/prod 走 RDS；Redis、RabbitMQ、RocketMQ、StarRocks 均按环境独立配置。
+        所有密钥由 GitOps 的环境变量/密钥管理注入，本文不展开具体值。
+      </div>
+    </section>
+
+    <section class="card" id="s11">
+      <h2><span class="num">11</span>风险清单 <em>按「会导致数据错误或切流失败」优先，而不是按代码新旧排序</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>级别</th><th>风险</th><th>证据</th><th>影响</th><th>建议</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="badge danger">P0</span></td><td><strong>共享库没有共享事务</strong>：单体与 6 个新服务同时写 <code>new_wms</code>，跨服务无 XA/TCC</td><td>所有生产 <code>DB_NAME=new_wms</code>；新服务各自 Hikari/事务；跨服务靠 Engine 任务与 MQ</td><td>扣库存、改单据、写流水可能部分成功；重试放大不一致</td><td>按聚合明确单一写者；引入 outbox/事件表 + 消费幂等；关键链路补对账任务</td></tr>
+            <tr><td><span class="badge danger">P0</span></td><td><strong>多租户路由能力不对称</strong>：单体按 <code>company_id</code> 动态切库，新服务只有单一 <code>${DB_URL}/${DB_NAME}</code></td><td><code>MultiDataSourceConfig</code> + <code>CurrentDb</code> vs 新服务 <code>spring.datasource.url</code></td><td>新服务切到其他公司库时无法工作；灰度/迁移只能覆盖 <code>new_wms</code> 租户</td><td>把租户路由下沉到数据访问层或按租户独立部署；在服务契约中显式声明支持的租户范围</td></tr>
+            <tr><td><span class="badge warn">P1</span></td><td><strong>wms-inbound 是未完成骨架</strong>：20 个 Java 文件、0 Controller；<code>application.name</code> 仍为 <code>sc-appointment</code>，日志包名 <code>com.hxl.appointment</code>，XXL-Job 名称指向 <code>wms-bounding-job-*</code></td><td><code>wms-inbound-server/src/main/resources/application.yml</code>、<code>src/main/java</code></td><td>误上线会注册错误的 Job/服务名；排障时日志归属混乱</td><td>在 test 完成入库用例与注册信息修正前，不要加入生产部署；CI 增加“骨架服务禁止发布”检查</td></tr>
+            <tr><td><span class="badge warn">P1</span></td><td><strong>鉴权三轨并行</strong>：Redis token、IDaaS JWT、wmshandle 静态 client token</td><td><code>ControllerAspect</code>、新服务 <code>security.oauth2</code>、GitOps <code>publicJWTAuth</code></td><td>同一请求在不同入口权限语义不同；开放接口白名单易扩散</td><td>网关统一鉴权，服务内只做授权；逐步下线 Redis token；白名单纳入配置审计</td></tr>
+            <tr><td><span class="badge warn">P1</span></td><td><strong>文档与代码漂移</strong>：<code>wms-inventory</code> 文档写 MDM，代码是库存；<code>wms-outbound</code> 禁止 <code>@Transactional</code>，但 <code>WaveStrategyAppCmdService</code> 有 4 处</td><td><code>wms-inventory/CLAUDE.md</code>、<code>wms-outbound/CLAUDE.md</code>、<code>WaveStrategyAppCmdService.java</code></td><td>新人和 AI 依据文档改代码会走错层；事务边界不可预期</td><td>以源码为准修正文档；把分层/事务规则做成 ArchUnit 测试</td></tr>
+            <tr><td><span class="badge warn">P1</span></td><td><strong>领域模型风格分裂</strong>：充血、贫血+Mutator、贫血+Service 三种并存</td><td>outbound 充血；<code>sc-appointment/README.md</code> 明确贫血；inventory/bounding 为 model+service</td><td>跨服务复用代码与评审标准困难；同一业务概念出现多套写法</td><td>按限界上下文保留差异，但在平台规范中写明选择标准与边界，不强行统一</td></tr>
+            <tr><td><span class="badge warn">P1</span></td><td><strong>wms-export 与 wms 共镜像</strong>：只靠 <code>export</code> profile 区分，生产可扩到 40 副本</td><td><code>wms-export.app.yaml</code>：<code>image: wms</code>、<code>SPRING_PROFILES_ACTIVE=export</code></td><td>导出负载与在线交易争用同一代码/配置；profile 差异难审计</td><td>导出任务独立镜像或独立工作负载；对导出队列做限流与隔离</td></tr>
+            <tr><td><span class="badge warn">P1</span></td><td><strong>旧/新 WCS 共库</strong>：<code>wcs</code> 与 test 的 <code>sc-wcs</code> 都指向 <code>wcs</code> 库</td><td><code>wcs.app.yaml</code>、<code>sc-wcs.app.yaml</code></td><td>迁移期两套调度同时写任务/坐标/格口，状态互相覆盖</td><td>迁移期按设备/区域切分写者；新 WCS 使用独立 schema 或明确表级所有权</td></tr>
+            <tr><td><span class="badge legacy">P2</span></td><td><strong>遗留技术栈</strong>：Java 8、Boot 2.7、MySQL 5.1 驱动、fastjson 2.0.9</td><td><code>wms/pom.xml</code>、<code>wcs/pom.xml</code></td><td>无法使用新语言特性；安全补丁与依赖升级受限</td><td>按服务制定升级路线；优先升级外部暴露的 wmshandle/wcs</td></tr>
+            <tr><td><span class="badge legacy">P2</span></td><td><strong>代码基线时间差</strong>：<code>wms-outbound</code> · <code>wms-inventory</code> 停在 2026-09-11，单体已到 10-29</td><td>各仓 <code>prod</code> 最新提交日期</td><td>单体契约变更后新服务可能滞后；联调才发现不兼容</td><td>client SDK 语义化版本 + 契约测试；单体变更触发下游流水线</td></tr>
+            <tr><td><span class="badge legacy">P2</span></td><td><strong>单体复杂度高</strong>：3020 文件、101 Controller、213 Entity、78 Process、71 EngineTask</td><td>代码统计</td><td>变更影响面大；排障需要跨 Process/Connector/DAO 多层</td><td>继续按子域外剥，但先切数据所有权；为关键链路补时序与对账</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="s12">
+      <h2><span class="num">12</span>结论与建议 <em>下一步不是「再拆几个服务」，而是把数据所有权、租户路由和一致性补上</em></h2>
+
+      <ol>
+        <li><strong>先定数据所有权，再谈服务拆分。</strong> 对 <code>new_wms</code> 的核心表做「单写者」清单：单据、任务、库存、基础资料分别由哪个服务负责写，其他服务只能读或走 API。没有这张表，拆得越多，跨服务写冲突越多。</li>
+        <li><strong>把租户路由补进新服务。</strong> 单体的 <code>company_id → dbname</code> 是生产事实，新服务不能假设只有一个库。要么在数据访问层实现同样的路由，要么明确「一个租户一套部署」，并在网关注册时标注租户范围。</li>
+        <li><strong>跨服务一致性用 outbox/事件，而不是只靠 Engine 任务。</strong> Engine 任务适合编排，不适合作为唯一的一致性保障。关键链路（出库扣减、入库上架、库存调整）应有事件表、消费幂等和对账。</li>
+        <li><strong>完成或撤下 wms-inbound。</strong> 当前它不是可运行的入库服务：没有 Controller，配置名和 Job 名都指向别的服务。要么补齐用例与部署清单，要么从 CMDB/流水线中标记为「未就绪」，避免误发布。</li>
+        <li><strong>统一入口鉴权。</strong> 网关做身份，服务做授权；逐步淘汰 Redis <code>access_token</code> 与静态 client token。开放接口的白名单必须纳入 GitOps 审计。</li>
+        <li><strong>把架构规则变成测试。</strong> 至少覆盖：domain 不依赖 external、PO 不出 persistence、禁止 <code>@Transactional</code>、跨子域不互调。规则写在文档里会被绕过，写在 ArchUnit 里才会失败。</li>
+        <li><strong>修正文档漂移。</strong> 先改 <code>wms-inventory/CLAUDE.md</code> 的“MDM”描述，以及 <code>wms-outbound</code> 的事务规则与 <code>WaveStrategyAppCmdService</code> 的冲突；否则后续 AI/新人会持续按错误前提改代码。</li>
+        <li><strong>保留两代并行的现实。</strong> 短期不要追求「单体全部拆完」。更现实的路径是：单体继续承载复杂作业编排，新服务承接可独立闭环的基础资料、库存查询、库存调整、容器/越库；每抽一个域，先切数据所有权与租户路由。</li>
+      </ol>
+
+      <div class="callout ok">
+        <strong>值得肯定的部分</strong>
+        WMS 的新服务并不是“为了微服务而微服务”：<code>wms-outbound</code> 有明确的分层规则、client SDK、事务模板和防腐层；<code>sc-appointment</code> 把预约做成独立限界上下文并写清了贫血模型的选择；<code>sc-wcs</code> 把设备调度、格口、电子标签从旧 <code>wcs</code> 中拆出来。这些边界是对的，问题在于数据面还没有同步切开。
+      </div>
+    </section>
+
+    <section class="card" id="s13">
+      <h2><span class="num">13</span>附录：分析基准与代码索引 <em>所有结论可回溯到 <code>prod</code> 分支与 GitOps <code>origin/prod</code></em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>仓库</th><th>分支</th><th>短 SHA</th><th>提交日期</th><th>与远端</th><th>在本文中的用途</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>wms</code></td><td>prod</td><td>f31254b</td><td>2026-10-29</td><td>0/0</td><td>单体核心、动态数据源、调度、MQ、Connector</td></tr>
+            <tr><td><code>wms-basic</code></td><td>prod</td><td>6d7a23c</td><td>2026-10-27</td><td>0/0</td><td>基础资料 DDD 服务</td></tr>
+            <tr><td><code>wms-outbound</code></td><td>prod</td><td>f55b6b2</td><td>2026-09-11</td><td>0/0</td><td>出库 DDD 服务与分层规则</td></tr>
+            <tr><td><code>wms-inventory</code></td><td>prod</td><td>f70c9db</td><td>2026-09-11</td><td>0/0</td><td>库存明细/流水/快照/效期</td></tr>
+            <tr><td><code>wms-bounding</code></td><td>prod</td><td>bcfab8d</td><td>2026-10-29</td><td>0/0</td><td>盘点/调整/移库/移储/报损</td></tr>
+            <tr><td><code>wms-inbound</code></td><td>prod</td><td>100e3a5</td><td>2026-10-10</td><td>0/0</td><td>入库骨架与配置偏差</td></tr>
+            <tr><td><code>xlb-wms</code></td><td>prod</td><td>becc656</td><td>2026-10-13</td><td>0/0</td><td>容器/越库/包装任务</td></tr>
+            <tr><td><code>wmshandle</code></td><td>prod</td><td>672a28d</td><td>2026-10-27</td><td>0/0</td><td>开放 API、渠道、DocSync</td></tr>
+            <tr><td><code>wcs</code></td><td>prod</td><td>9526707</td><td>2026-06-23</td><td>0/0</td><td>旧 AGV/WCS</td></tr>
+            <tr><td><code>sc-wcs</code></td><td>prod</td><td>c3acb31</td><td>2026-08-26</td><td>0/0</td><td>新 WCS 调度/提升机/电子标签</td></tr>
+            <tr><td><code>sc-appointment</code></td><td>prod</td><td>56ddf7d</td><td>2026-10-27</td><td>0/0</td><td>预约限界上下文</td></tr>
+            <tr><td><code>xlb_wms_web</code></td><td>prod</td><td>f6bc063</td><td>2026-10-14</td><td>0/0</td><td>PC 控制台、菜单与页面</td></tr>
+            <tr><td><code>wms-xlb-base</code></td><td>prod</td><td>e60773a</td><td>2026-10-16</td><td>0/0</td><td>React Native 移动基座</td></tr>
+            <tr><td>GitOps <code>apps</code></td><td><code>origin/prod</code></td><td>37586603a94e</td><td>2026-10-29</td><td>—</td><td>生产副本、数据库、灰度、资源</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <strong>GitOps 工作副本说明</strong>
+        本机 <code>repos/gitops/apps</code> 签出的是 <code>test</code> 分支（<code>93e29eac8f8</code> · 2026-10-28 · 落后 <code>origin/prod</code> 2658 个提交）。
+        因此 <code>wms-inbound.app.yaml</code>、<code>sc-wcs.app.yaml</code> 等 test 分支新增文件<strong>不代表生产已部署</strong>；本文所有生产副本、数据库、灰度结论均取 <code>origin/prod</code>。
+      </div>
+
+      <h3>关键代码索引</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>主题</th><th>路径</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>单体依赖与版本</td><td><code>repos/wms/pom.xml</code></td></tr>
+            <tr><td>动态多数据源</td><td><code>repos/wms/src/main/java/com/hxl/wms/datasource/MultiDataSourceConfig.java</code>、<code>CurrentDb.java</code>、<code>CustomRoutingDataSource.java</code></td></tr>
+            <tr><td>鉴权/并发/数据源切换</td><td><code>repos/wms/src/main/java/com/hxl/wms/config/ControllerAspect.java</code></td></tr>
+            <tr><td>事务模板</td><td><code>repos/wms/src/main/java/com/hxl/wms/config/JpaTransactionConfig.java</code></td></tr>
+            <tr><td>手动 SQL 与幂等</td><td><code>repos/wms/src/main/java/com/hxl/wms/dao/OrderUniqueDao.java</code></td></tr>
+            <tr><td>出库 DDD 规则</td><td><code>repos/wms-outbound/CLAUDE.md</code>、<code>wms-outbound-server/src/main/java/.../infrastructure/config/TransactionConfig.java</code></td></tr>
+            <tr><td>事务规则偏差</td><td><code>repos/wms-outbound/wms-outbound-server/src/main/java/.../application/service/cmd/WaveStrategyAppCmdService.java</code></td></tr>
+            <tr><td>库存服务能力</td><td><code>repos/wms-inventory/wms-inventory-server/src/main/java/.../domain/</code>、<code>interfaces/web/</code></td></tr>
+            <tr><td>入库骨架配置偏差</td><td><code>repos/wms-inbound/wms-inbound-server/src/main/resources/application.yml</code></td></tr>
+            <tr><td>预约领域说明</td><td><code>repos/sc-appointment/README.md</code></td></tr>
+            <tr><td>DocSync 设计</td><td><code>repos/wmshandle/docs/docsync/docsync-technical-design.md</code></td></tr>
+            <tr><td>WCS 接口与格口流程</td><td><code>repos/sc-wcs/sc-wcs-server/docs/API.md</code>、<code>格口复核流程.md</code></td></tr>
+            <tr><td>前端菜单与页面</td><td><code>repos/xlb_wms_web/src/data/main/data.ts</code>、<code>src/router/index.ts</code>、<code>src/pages/xlb_wms/</code></td></tr>
+            <tr><td>生产部署清单</td><td><code>repos/gitops/apps</code> 的 <code>origin/prod:wms/*.yaml</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- DOC_FOOTER_START -->
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由 13 个仓库 prod 分支与 GitOps origin/prod 静态分析生成，仅供架构参考；部署变更请以实际流水线为准。
+  </footer>
+  <!-- DOC_FOOTER_END -->
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>

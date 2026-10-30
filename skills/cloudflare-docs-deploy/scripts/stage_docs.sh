@@ -29,10 +29,19 @@ log() { [ "$QUIET" = "1" ] || echo "$@" >&2; }
 [ -d "$DOCS_DIR" ] || { echo "错误：找不到文档目录 $DOCS_DIR" >&2; exit 1; }
 [ -f "$DOCS_DIR/index.html" ] || { echo "错误：$DOCS_DIR/index.html 不存在，docs/ 不是可部署站点" >&2; exit 1; }
 
+# 部署前强制重新生成公共 header / footer / nav，避免新增文档后站点导航缺项。
+if [ "${DOCS_SKIP_BUILD:-0}" != "1" ] && [ -f "$DOCS_DIR/build.mjs" ]; then
+  command -v node >/dev/null 2>&1 || { echo "错误：需要 node 运行 docs/build.mjs 生成公共 shell" >&2; exit 1; }
+  node "$DOCS_DIR/build.mjs" --quiet || { echo "错误：docs shell 生成失败" >&2; exit 1; }
+fi
+
 mkdir -p "$STAGE_DIR"
 # --delete：docs/ 里删掉的文件必须在站点上消失，否则「同步部署」不成立。
 # version.json 不在 docs/ 中，会被自动清掉，随后重新生成为当前值。
-rsync -a --delete --exclude '.DS_Store' --exclude '._*' "$DOCS_DIR/" "$STAGE_DIR/"
+# 生成器与模板不进入站点产物。
+rsync -a --delete --exclude '.DS_Store' --exclude '._*' \
+  --exclude '_partials/' --exclude '_template.html' --exclude 'build.mjs' \
+  "$DOCS_DIR/" "$STAGE_DIR/"
 
 FILE_COUNT="$(cd "$STAGE_DIR" && find . -type f ! -name '.DS_Store' | wc -l | tr -d ' ')"
 CONTENT_HASH="$(

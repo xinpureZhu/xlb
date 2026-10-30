@@ -43,7 +43,7 @@ flowchart LR
 - **`compatibility_date` 必须 ≤ 本机 wrangler 自带 workerd 的上限**：wrangler 4.115.0 的上限是 `2026-07-29`。写成未来的 `2026-10-16` 时 `wrangler deploy --dry-run` 照样成功，但 `wrangler dev` 启动即失败（`This Worker requires compatibility date ... but the newest date supported by this server binary is ...`）。本 skill 钉在 `2026-07-29`，无需新特性。
 - **`version.json`（部署元数据，需口令）**：`{project, content_hash, files, git_commit, docs_dirty, built_at}`。`content_hash` 是暂存目录所有文件路径+SHA-256 的聚合值（前 16 位），用来回答“线上跑的是不是这份 docs”。
 - **`docs_dirty`**：`docs/` 相对 git HEAD 有改动时为 `true`（本工作区常态：文档常是未提交状态，不影响部署口径）。
-- **免费额度**：单文件 ≤ 25 MiB、文件数 ≤ 2 万；当前 docs 为 35 个文件 / 4.4 MB（含自托管 mermaid.min.js 3.4 MB）。
+- **免费额度**：单文件 ≤ 25 MiB、文件数 ≤ 2 万；当前暂存约 39 个文件 / 4.7 MB（含自托管 mermaid.min.js 3.4 MB；`_partials/`、`build.mjs`、`_template.html` 不进入站点）。
 - **首次使用 Workers**：账号若从未开过 workers.dev 子域，`wrangler deploy` 会引导注册一次（项目名 `xlb-docs` → `https://xlb-docs.<子域>.workers.dev`）。免费计划支持 Workers + 静态资源。
 
 ## 首次搭建（只做一次）
@@ -78,6 +78,7 @@ skills/cloudflare-docs-deploy/scripts/deploy_docs.sh
 ```
 
 - 脚本用 `rsync -a --delete`：**docs/ 里删掉的文件在站点上也会消失**，不会残留旧页面。
+- `stage_docs.sh` 会先执行 `node docs/build.mjs`，从 `docs/_partials/` 与各页 `DOC_META` 生成公共 header / footer / 导航；`_partials/`、`build.mjs`、`_template.html` 不进入站点产物。
 - 自带校验与凭据无关的部分（401 门禁）始终执行；若导出 `DOCS_PASSWORD`（`export DOCS_PASSWORD='<口令>'`）则额外做带凭据 200、`version.json` 哈希比对与 `index.html` 字节比对。
 - 本地预览（同款门禁，口令默认 `xlb-docs-dev`，端口 8787）：`skills/cloudflare-docs-deploy/scripts/serve_local.sh`。
 
