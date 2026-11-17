@@ -128,5 +128,5 @@ graph LR
 
 ## 关联
 
-- 镜像本身要先在 ACR 就位：见 `skills/acr-image-retag/SKILL.md`。
+- 镜像本身要先在 ACR 就位：见 `skills/acr-image-retag/SKILL.md`。**retag 完成后必须立刻用 artifacts-webhook 登记目标 tag**，不要只改 `repos/gitops/apps/` 本地工作副本（工作区改动即未发布）。
 - artifacts-webhook 的受控 E2E 测试（泳道 upsert/DELETE、repo-server overlay、分支回读）见 `efficiency/skills/test-artifacts-webhook-e2e/SKILL.md`（只允许 ali-dev + `ai/apps.git`）。

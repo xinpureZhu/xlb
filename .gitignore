@@ -8,7 +8,6 @@ tmp-images/
 __pycache__/
 *.pyc
 .qoder/scheduled_tasks.lock
-.qoder/skills/daily-inspection/scripts/state/
 
 # Cloudflare 文档站点：docs/ 的暂存副本与 wrangler 本地状态，不入库
 skills/cloudflare-docs-deploy/worker/public/

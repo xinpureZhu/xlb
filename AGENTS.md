@@ -61,7 +61,7 @@ XLB 零售平台代码仓的 Agent 指引。本文件会被 CLI 作为常驻 mem
 
 根目录 `skills/` 放置跨子项目复用的操作型 skill（每个 skill 一个目录，含 `SKILL.md` 与可选 `scripts/`）。涉及下列操作时**先读对应 SKILL.md 再动手**：
 
-- [`skills/acr-image-retag/SKILL.md`](skills/acr-image-retag/SKILL.md)：ACR 镜像 tag 跨仓库精确复制（retag / 建 `mart-*` 镜像），要求目标 digest 与源一致时的做法与校验口径。
+- [`skills/acr-image-retag/SKILL.md`](skills/acr-image-retag/SKILL.md)：ACR 镜像 tag 跨仓库精确复制（retag / 建 `mart-*` 镜像），要求目标 digest 与源一致时的做法与校验口径。**retag 完成后必须用 artifacts-webhook API 更新目标组 `artifacts.libsonnet` 记录**（写 GitOps 属发布动作，命令交人执行）。
 - [`skills/artifacts-libsonnet-update/SKILL.md`](skills/artifacts-libsonnet-update/SKILL.md)：写入/更新 GitOps `<group>/artifacts.libsonnet`（新组补镜像、按环境发布），含 artifacts-webhook 契约、分支语义与发布前的中间件耦合检查。
 - [`skills/cloudflare-docs-deploy/SKILL.md`](skills/cloudflare-docs-deploy/SKILL.md)：把根目录 `docs/` 静态文档站部署到 Cloudflare Workers（`xlb-docs`，带 Basic Auth 访问口令）。**docs/ 更新后必须跑 `skills/cloudflare-docs-deploy/scripts/deploy_docs.sh` 同步部署**，否则线上仍是旧版。
 

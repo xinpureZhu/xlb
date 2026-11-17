@@ -54,7 +54,8 @@ printf 'ACR_USER=%s\nACR_PW=%s\n' "$USER" "$PASS" > /tmp/.acr_env && chmod 600 /
 4. **dry-run**：`--dry-run` 打印逐条映射（不触网）。
 5. **执行**：`--plan` 批量执行；单个 tag 用 `--src/--dst/--tag`。单条失败不会中断其余条目。
 6. **校验**：`--verify-only` 回读目标 manifest 原字节算 sha256，与源比对 + media type 相同 + 引用 blob 全部在位。**不要用 PUT/POST 的回显 digest 当结论**（PUT 响应里的 `Docker-Content-Digest` 带 `sha256:` 前缀，直接比较会误判失败）。
-7. **清理**：删除临时凭据文件与临时 blob 文件；禁止把口令写进日志、文档或提交。
+7. **登记 artifacts（retag 的固定收尾，见「关联」）**：把刚复制过去的 tag 通过 **artifacts-webhook API** 写进目标组 `artifacts.libsonnet`；只输出命令交人执行，不要手改本地工作副本代替。
+8. **清理**：删除临时凭据文件与临时 blob 文件；禁止把口令写进日志、文档或提交。
 
 ## 命令
 
@@ -94,5 +95,7 @@ printf 'ACR_USER=%s\nACR_PW=%s\n' "$USER" "$PASS" > /tmp/.acr_env && chmod 600 /
 
 ## 关联
 
-- 镜像同步完后通常还需要把 tag 写进 GitOps：见 skill `artifacts-libsonnet-update`（`skills/artifacts-libsonnet-update/SKILL.md`）。
+- **retag 后必须登记 artifacts（固定收尾，不可跳过）**：用 **artifacts-webhook API** 把同一个 tag 写进目标组 `artifacts.libsonnet`，`namespace`/`group` = 目标组（如 `mart-goods`）、`docker` = 目标 ACR 仓库名（如 `mart-pc-bff`）、`branch` = 环境键、`image_tag` = 刚复制过去的完整 tag。不要用「手改本地 `repos/gitops/apps/` 工作副本」代替这个动作——工作区改动即未发布。契约、端点、回读校验见 skill `artifacts-libsonnet-update`（`skills/artifacts-libsonnet-update/SKILL.md`）。
+  - 按根 `AGENTS.md`「发布一律交人执行」，webhook 写入属真实 GitOps 变更：**只输出 curl/脚本命令 + 影响说明，由人用 `!` 前缀执行**，不要自行 POST。
+  - webhook 只写 `artifacts-<group>` 并合并到该实例的目标分支（ali-test = `test`），**不会写 `prod` 分支**；`prod`/`prod-gray` 键要真正生效仍需 `artifacts-<group> → prod` 发布 MR。
 - 部署侧拉取用 VPC 域名、推送侧用公网域名的约定见 `agent-square/agent-square-server/docs/dev-quick-build.md`。
