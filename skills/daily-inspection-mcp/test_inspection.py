@@ -5,6 +5,7 @@ path the fix targets, using stubs (no network/cloud calls).
 Run: python3 skills/daily-inspection-mcp/test_inspection.py
 """
 
+import collections
 import datetime
 import json
 import os
@@ -210,15 +211,15 @@ def test_build_red_on_dead_cron():
                        "resident": True, "alive": False, "detail": "无 Running Pod"}])
     d = rp.build("goods", k, [], [], [], [], [], [])
     check("build: dead CronJob => red + issue row",
-          d["level"] == "red" and any(cat == "CronJob" for cat, _ in d["issues"]),
+          d["level"] == "red" and any(i["cat"] == "CronJob" for i in d["issues"]),
           "level=%s" % d["level"])
 
     k2 = blank_k(notready=["goods-6cf4648b9-htrks"])
     d2 = rp.build("goods", k2, [], [], [], [], [], [])
     check("build: NotReady names the pod, stays orange",
           d2["level"] == "orange"
-          and any(cat == "稳定性" and "goods-6cf4648b9-htrks" in t
-                  for cat, t in d2["issues"]), d2["level"])
+          and any(i["cat"] == "稳定性" and "goods-6cf4648b9-htrks" in i["text"]
+                  for i in d2["issues"]), d2["level"])
 
 
 # ------------------------------------------------------------------ 5. recurrence
@@ -226,13 +227,13 @@ def test_mark_recurrence():
     state = tempfile.mkdtemp()
     today = c.now_cst().date()
     yesterday = (today - datetime.timedelta(days=1)).isoformat()
-    issues = [("突刺", "`erp-store-sync` P99 峰值 29.55s"),
-              ("积压", "`prod_erp_stock_detail` 中位 71")]
+    issues = [rp.item("突刺", "`erp-store-sync` P99 突刺"),
+              rp.item("积压", "`prod_erp_stock_detail` 持续积压")]
 
     d1 = rp.mark_recurrence({"ns": "t", "issues": list(issues)}, persist=True,
                             state_dir=state)
     check("recurrence: first day has no tag",
-          not any("已连续" in t for _, t in d1["issues"]))
+          not any("已连续" in i["text"] for i in d1["issues"]))
 
     spath = os.path.join(state, "t.recurrence.json")
     prev = json.load(open(spath))
@@ -240,17 +241,17 @@ def test_mark_recurrence():
     d2 = rp.mark_recurrence({"ns": "t", "issues": list(issues)}, persist=True,
                             state_dir=state)
     check("recurrence: second day tagged 已连续 2 天",
-          all("已连续 2 天" in t for _, t in d2["issues"]), str(d2["issues"]))
+          all("已连续 2 天" in i["text"] for i in d2["issues"]), str(d2["issues"]))
 
     d3 = rp.mark_recurrence({"ns": "t", "issues": list(issues)}, persist=True,
                             state_dir=state)
     check("recurrence: same-day rerun keeps streak 2",
-          all("已连续 2 天" in t for _, t in d3["issues"]))
+          all("已连续 2 天" in i["text"] for i in d3["issues"]))
 
-    d4 = rp.mark_recurrence({"ns": "t", "issues": [("突刺", "`other-svc` x")]},
+    d4 = rp.mark_recurrence({"ns": "t", "issues": [rp.item("突刺", "`other-svc` 突刺")]},
                             persist=True, state_dir=state)
     check("recurrence: new issue starts at 1 (no tag)",
-          "已连续" not in d4["issues"][0][1])
+          "已连续" not in d4["issues"][0]["text"])
 
 
 def test_recurrence_persist_isolation():
@@ -264,7 +265,7 @@ def test_recurrence_persist_isolation():
     json.dump({"date": yesterday, "keys": {"突刺|svcA": 3, "积压|groupB": 3}},
               open(spath, "w"), ensure_ascii=False)
 
-    rp.mark_recurrence({"ns": "t", "issues": [("突刺", "`svcA` x")]},
+    rp.mark_recurrence({"ns": "t", "issues": [rp.item("突刺", "`svcA` 突刺")]},
                        persist=False, state_dir=state)
     saved = json.load(open(spath))
     check("recurrence: preview does not write state",
@@ -272,7 +273,7 @@ def test_recurrence_persist_isolation():
                                                            "积压|groupB": 3},
           json.dumps(saved["keys"], ensure_ascii=False))
 
-    out = rp.mark_recurrence({"ns": "t", "issues": [("突刺", "`svcA` x")]},
+    out = rp.mark_recurrence({"ns": "t", "issues": [rp.item("突刺", "`svcA` 突刺")]},
                              persist=True, state_dir=state)
     saved2 = json.load(open(spath))
     check("recurrence: authoritative run advances streak",
@@ -280,9 +281,9 @@ def test_recurrence_persist_isolation():
     check("recurrence: cross-day resolved issue is dropped (not stale-kept)",
           "积压|groupB" not in saved2["keys"], str(saved2["keys"]))
     check("recurrence: tagged 已连续 4 天",
-          "已连续 4 天" in out["issues"][0][1], out["issues"][0][1])
+          "已连续 4 天" in out["issues"][0]["text"], out["issues"][0]["text"])
 
-    rp.mark_recurrence({"ns": "t", "issues": [("积压", "`groupB` y")]},
+    rp.mark_recurrence({"ns": "t", "issues": [rp.item("积压", "`groupB` 积压")]},
                        persist=True, state_dir=state)
     saved3 = json.load(open(spath))
     check("recurrence: same-day persist merges both keys",
@@ -301,7 +302,7 @@ def test_unverified_categories_carry_over():
     json.dump({"date": yesterday, "keys": {"突刺|svcA": 3, "积压|groupB": 5}},
               open(spath, "w"), ensure_ascii=False)
 
-    rp.mark_recurrence({"ns": "t", "issues": [("突刺", "`svcA` x")]},
+    rp.mark_recurrence({"ns": "t", "issues": [rp.item("突刺", "`svcA` 突刺")]},
                        persist=True, unverified=("积压",), state_dir=state)
     saved = json.load(open(spath))
     check("unverified: skipped category keeps its streak",
@@ -311,7 +312,7 @@ def test_unverified_categories_carry_over():
 
     json.dump({"date": yesterday, "keys": {"突刺|svcA": 3, "积压|groupB": 5}},
               open(spath, "w"), ensure_ascii=False)
-    rp.mark_recurrence({"ns": "t", "issues": [("突刺", "`svcA` x")]},
+    rp.mark_recurrence({"ns": "t", "issues": [rp.item("突刺", "`svcA` 突刺")]},
                        persist=True, unverified=(), state_dir=state)
     saved2 = json.load(open(spath))
     check("verified: genuinely resolved category is dropped",
@@ -327,14 +328,14 @@ def test_card_never_false_green():
     d = rp.build("goods", blank_k(), [], [], [], [], [], [])
     assert d["level"] == "green"
 
-    card = rp.render_card(d)
+    card = rp.render_card(d, "1.0")
     check("card: clean run stays green with ✅",
           card["header"]["template"] == "green"
           and any("无需处置" in json.dumps(e, ensure_ascii=False)
                   for e in card["elements"]))
 
     prom.WARN.append("range query failed: SSL UNEXPECTED_EOF")
-    card2 = rp.render_card(d)
+    card2 = rp.render_card(d, "1.0")
     blob = json.dumps(card2, ensure_ascii=False)
     check("card: green downgraded when checks failed",
           card2["header"]["template"] == "orange", card2["header"]["template"])
@@ -353,14 +354,15 @@ def test_card_never_false_green():
                         "resident": True, "alive": False, "detail": "无 Running Pod"}])
     d2 = rp.build("goods", k2, [], [], [], [], [], [])
     check("card: red/orange severity preserved with warnings",
-          rp.render_card(d2)["header"]["template"] == d2["level"], d2["level"])
+          rp.render_card(d2, "1.0")["header"]["template"] == d2["level"]
+          and rp.render_card(d2)["header"]["template"] == d2["level"], d2["level"])
     prom.WARN.clear()
 
 
 def test_merged_card_content():
-    """The merged card must carry both halves: the health snapshot (5xx / P99 /
-    restarts / alert rules) and the capacity block (peak QPS / middleware / MQ),
-    with a sample-size guard instead of a false 0.000% on low traffic."""
+    """The merged card must carry both halves: the health snapshot (alerts / 5xx /
+    restarts) and the capacity block (P99 / peak QPS / middleware / MQ), with a
+    sample-size guard instead of a false 0.000% on low traffic."""
     prom.WARN.clear()
     k = blank_k(
         alerts=37, alerts_prev=38, rules={("HpaMaxedOut", "warning"): 37},
@@ -371,28 +373,148 @@ def test_merged_card_content():
                         "ratio": 187.0},
               "prev": {"peak": 800.0, "peak_at": 1762900000, "trough": 4.0,
                        "ratio": 200.0}},
-        spikes=[])
+        spikes=[{"svc": "goods", "kind": "P99", "peak": 2.10, "median": 0.05,
+                 "at": 1763000000, "unit": "s", "ratio": 42,
+                 "points": 145, "total": 288, "share": 0.5}])
     mongo = [{"name": "m", "shards": [{"cpu": 0.0, "mem": 2.0},
                                       {"cpu": 13.0, "mem": 59.0}], "note": []}]
     redis = [{"name": "r", "cpu": 3.57, "mem": 34.0, "note": []}]
-    backlog = [{"group": "self_takeaway_stock_sync_group", "topic": "prod_dfp_sync",
-                "peak": 4356, "peak_at": 1763000000, "median": 0, "last": 0}]
+    backlog = [{"group": "prod_goods_dfp_sync", "topic": "prod_dfp_sync",
+                "peak": 779071, "peak_at": 1763000000, "median": 0, "last": 0},
+               {"group": "small_group", "topic": "x", "peak": 4356,
+                "peak_at": 1763000000, "median": 0, "last": 0}]
     d = rp.build("goods", k, mongo, redis, [], [], [], backlog)
-    blob = json.dumps(rp.render_card(d), ensure_ascii=False)
-    for label in ("5xx（1h）", "重启 / OOM（24h）", "NotReady", "告警规则",
-                  "P99 Top3（1h）", "峰值 QPS（24h）", "中间件峰值（24h）", "MQ 积压"):
-        check("merged card: field %s" % label, label in blob)
-    check("merged card: 5xx ratio rendered", "0.000%" in blob, blob[:120])
-    check("merged card: alert rule breakdown rendered", "HpaMaxedOut" in blob)
-    check("merged card: middleware peak rendered", "分片2 CPU 13%" in blob)
-    check("merged card: 24h backlog peak rendered", "4356" in blob)
+
+    card = rp.render_card(d)
+    blob = json.dumps(card, ensure_ascii=False)
+    check("card2: declared schema 2.0 + fill width",
+          card.get("schema") == "2.0" and card["config"]["width_mode"] == "fill")
+    for label in ("待处置", "告警", "5xx", "重启 / OOM"):
+        check("card2: KPI tile %s" % label, label in blob)
+    bisect = [e for e in card["body"]["elements"]
+              if e.get("tag") == "column_set" and e.get("flex_mode") == "bisect"]
+    check("card2: KPI is 2 per row (phone-safe)",
+          len(bisect) == 2 and all(len(e["columns"]) == 2 for e in bisect),
+          "bisect=%d" % len(bisect))
+    # a soft issue (spike, no paging) must not paint the header red
+    tiles = []
+    for e in card["body"]["elements"]:
+        if e.get("tag") == "column_set" and e.get("flex_mode") == "bisect":
+            for c in e["columns"]:
+                els = c["elements"]
+                label = (els[0].get("content")
+                         or els[0].get("text", {}).get("content"))
+                tiles.append((label.replace("**", ""), els[2]["text"]["content"]))
+    check("card2: every KPI tile is 指标名 / 数值 / 时间窗+说明",
+          len(tiles) == 4
+          and all("·" not in label for label, _ in tiles)
+          and all(sub.startswith(("今日", "当前", "1h", "24h"))
+                  for _, sub in tiles), str(tiles))
+
+    check("card2: attention header is wathet, not muddy orange",
+          d["level"] == "orange" and card["header"]["template"] == "wathet",
+          "%s/%s" % (d["level"], card["header"]["template"]))
+    check("card2: 5xx ratio rendered", "0.000%" in blob, blob[:120])
+    check("card2: alert rule breakdown rendered", "HpaMaxedOut" in blob)
+    check("card2: issue row carries the value", "2.1 s" in blob)
+    check("card2: spike row shows breach share", "50% 点超阈" in blob)
+    rare = dict(k, spikes=[{"svc": "goods", "kind": "P99", "peak": 1.4,
+                            "median": 0.044, "at": 1763000000, "unit": "s",
+                            "ratio": 31, "points": 1, "total": 288, "share": 0.0035}])
+    rare_blob = json.dumps(rp.render_card(rp.build("goods", rare, [], [], [], [], None, [])),
+                           ensure_ascii=False)
+    check("card2: a single breach reads <1%, never 0%",
+          "<1% 点超阈" in rare_blob and "0% 点超阈" not in rare_blob)
+    check("card2: middleware peak rendered with field label on the left",
+          "分片2" in blob and "CPU / 内存" in blob and "13% / 59%" in blob)
+    heads = [e["content"] for e in card["body"]["elements"]
+             if e.get("tag") == "markdown" and e.get("text_size") == "heading-4"]
+    check("card2: every section title uses one shape (bold ▎name · grey suffix)",
+          heads and all(h.startswith("**▎") and h.count("**") == 2 for h in heads)
+          and all(" <font color='grey'>· " in h
+                  for h in heads if "<font" in h),
+          str(heads)[:160])
+    sums = [e["content"] for e in card["body"]["elements"]
+            if e.get("tag") == "markdown" and e.get("text_size") == "normal"
+            and "<font color='grey'>" in (e.get("content") or "")]
+    check("card2: spike section says who, how bad, and blip vs chronic",
+          any("最大 ×42" in t and "goods 有 50% 的 5 分钟点超阈" in t for t in sums),
+          str(sums)[:160])
+    check("card2: backlog section states drained vs alive",
+          any("24h 峰值超过 1 万" in t and ("清空" in t or "仍有积压" in t) for t in sums),
+          str(sums)[:120])
+    check("card2: middleware section states the waterline verdict",
+          any("中间件最高水位" in t and ("预警线" in t) for t in sums), str(sums)[:120])
+    check("card2: significant 24h backlog peak rendered", "779071" in blob)
+    check("card2: drained small backlog peak stays out of the card",
+          "4356" not in blob)
+    check("card2: peak QPS rendered with trough ratio", "651" in blob and "187" in blob)
+    check("card2: rows put context on its own grey line",
+          "<br>" not in json.dumps(card["body"]["elements"], ensure_ascii=False)
+          and any(e.get("tag") == "column_set" and any(
+              len(c.get("elements", [])) == 2 and c["elements"][1].get("tag") == "div"
+              for c in e.get("columns", []))
+              for e in card["body"]["elements"]))
+    check("card2: P99 rows right-aligned",
+          any(c.get("horizontal_align") == "right"
+              for c in card["body"]["elements"] if c.get("tag") == "column_set"
+              for c in c.get("columns", [])))
+
+    # the 1.0 fallback still renders the same facts
+    blob1 = json.dumps(rp.render_card(d, "1.0"), ensure_ascii=False)
+    for label in ("5xx（1h）", "重启 / OOM（24h）", "P99 Top3（1h）",
+                  "峰值 QPS（24h）", "中间件峰值（24h）", "MQ 积压"):
+        check("card1: field %s" % label, label in blob1)
+
+    # REGRESSION (2026-11-17): a markdown-formatted value ("**651**") rendered
+    # literally in the right column because plain_text does not parse markdown.
+    plain = []
+
+    def collect_plain(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "plain_text":
+                plain.append(node.get("content") or "")
+            for v in node.values():
+                collect_plain(v)
+        elif isinstance(node, list):
+            for v in node:
+                collect_plain(v)
+    collect_plain(card)
+    check("card2: plain_text cells carry no markdown decoration",
+          not [t for t in plain if "**" in t or "`" in t],
+          str([t for t in plain if "**" in t or "`" in t])[:120])
 
     # low-traffic hour: a ratio over a handful of requests is noise, not 0.000%
     k2 = dict(k, red={"bad": 0, "all": 42, "ratio": 0.0, "sampled": False, "p99": []})
     d2 = rp.build("goods", k2, [], [], [], [], [], [])
-    blob2 = json.dumps(rp.render_card(d2), ensure_ascii=False)
-    check("merged card: low sample => UNKNOWN not 0.000%",
-          "UNKNOWN" in blob2 and "样本不足" in blob2)
+    check("card2: low sample => UNKNOWN not 0.000%",
+          "UNKNOWN" in json.dumps(rp.render_card(d2), ensure_ascii=False))
+
+    # REGRESSION (2026-11-17): Feishu rejects a card over 200 components with
+    # `element exceeds the limit` — a 40-group backlog alone blew the budget.
+    heavy = dict(k, spikes=[{"svc": "s%d" % i, "kind": "P99", "peak": 2.0,
+                             "median": 0.1, "at": 1763000000, "unit": "s"}
+                            for i in range(30)])
+    lots = [{"group": "g%d" % i, "topic": "t", "peak": 1000 + i,
+             "peak_at": 1763000000, "median": 60, "last": 5} for i in range(40)]
+    dh = rp.build("goods", heavy, mongo, redis, [], [], None, lots)
+    card_h = rp.render_card(dh)
+    counts = collections.Counter()
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "tag" in node:
+                counts[node["tag"]] += 1
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(card_h)
+    check("card2: component budget stays under Feishu's 200 cap",
+          sum(counts.values()) <= 200, "components=%d" % sum(counts.values()))
+    check("card2: issue rows are capped with a remainder line",
+          "另" in json.dumps(card_h, ensure_ascii=False))
 
 
 def test_sls_unreachable_is_not_healthy():
@@ -438,10 +560,11 @@ def test_pods_without_ip():
           "%s %smin" % (out[0]["pod"], out[0]["mins"]))
 
     d = rp.build("goods", blank_k(no_ip=out), [], [], [], [], [], [])
-    nets = [t for cat, t in d["issues"] if cat == "网络"]
+    nets = [i["text"] for i in d["issues"] if i["cat"] == "网络"]
     check("no-ip: aggregated per node, not one row per pod", len(nets) == 2, str(len(nets)))
     check("no-ip: row names the node and pod count",
-          any("node-1" in t and "2 个 Pod" in t for t in nets), str(nets))
+          any("node-1" in i["meta"] and i["value"] == "2 个"
+              for i in d["issues"] if i["cat"] == "网络"), str(d["issues"]))
     check("no-ip: escalates report to red", d["level"] == "red", d["level"])
 
     def by_fresh(expr, keys, at="now"):

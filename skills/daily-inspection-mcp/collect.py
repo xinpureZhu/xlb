@@ -625,11 +625,17 @@ def service_spikes(p, ns, hours=24):
             med = statistics.median(nums)
             i = max(range(len(nums)), key=lambda x: nums[x])
             peak, at = nums[i], vals[i][0]
+            thr = abs_th if med <= 0.02 else max(abs_th, med * 3)
+            hits = [t for t, v in vals if v >= thr]
             spiky = peak >= abs_th and (med <= 0.02 or peak >= med * 3)
             if spiky:
+                # How many 5-min buckets breached, and over what span: one blip
+                # and a 40-minute flap read very differently the next morning.
                 out.append({"svc": svc, "kind": label, "peak": peak, "at": at,
                             "median": med, "unit": unit,
-                            "ratio": (peak / med) if med > 0 else None})
+                            "ratio": (peak / med) if med > 0 else None,
+                            "points": len(hits), "total": len(vals),
+                            "share": (len(hits) / len(vals)) if vals else 0.0})
     out.sort(key=lambda x: -(x["ratio"] or 1e9))
     return out
 

@@ -61,8 +61,16 @@ def build_report(ns, skip_cloud=False):
 
 
 def send_card(d, date, ns, key=None):
-    info = fc.send(rp.render_card(d), USER_ID,
-                   key or "xlb-daily-%s-%s" % (ns, date))
+    key = key or "xlb-daily-%s-%s" % (ns, date)
+    try:
+        info = fc.send(rp.render_card(d), USER_ID, key)
+    except RuntimeError as e:
+        # A schema the server rejects must not cost the day's report: fall back
+        # to the 1.0 layout with a distinct key so the retry is not deduped.
+        if rp.CARD_SCHEMA == "1.0":
+            raise
+        print("[warn] 2.0 card rejected（%s），回退 1.0 卡片" % str(e)[:120])
+        info = fc.send(rp.render_card(d, "1.0"), USER_ID, key + "-v1")
     print("[sent] message_id=%s" % info.get("message_id"))
 
 
