@@ -86,7 +86,6 @@ XLB 零售平台代码仓的 Agent 指引。本文件会被 CLI 作为常驻 mem
 - [`skills/acr-image-retag/SKILL.md`](skills/acr-image-retag/SKILL.md)：ACR 镜像 tag 跨仓库精确复制（retag / 建 `mart-*` 镜像），要求目标 digest 与源一致时的做法与校验口径。**retag 完成后必须用 artifacts-webhook API 更新目标组 `artifacts.libsonnet` 记录**（写 GitOps 属发布动作，命令交人执行）。
 - [`skills/artifacts-libsonnet-update/SKILL.md`](skills/artifacts-libsonnet-update/SKILL.md)：写入/更新 GitOps `<group>/artifacts.libsonnet`（新组补镜像、按环境发布），含 artifacts-webhook 契约、分支语义与发布前的中间件耦合检查。
 - [`skills/cloudflare-docs-deploy/SKILL.md`](skills/cloudflare-docs-deploy/SKILL.md)：把根目录 `docs/` 静态文档站部署到 Cloudflare Workers（`xlb-docs`，带 Basic Auth 访问口令）。**docs/ 更新后必须跑 `skills/cloudflare-docs-deploy/scripts/deploy_docs.sh` 同步部署**，否则线上仍是旧版。
-- [`skills/call-sentinel/SKILL.md`](skills/call-sentinel/SKILL.md)：用户说 `call sentinel`（或「问问 Sentinel / 让 Sentinel 查一下」）时，以本人飞书身份在群里 @Sentinel 提问并取回结论卡片。
 
 索引与通用约定见 [`skills/README.md`](skills/README.md)；`repos/efficiency/skills/` 是效能平台专项 skill，与本目录互不重叠。
 
