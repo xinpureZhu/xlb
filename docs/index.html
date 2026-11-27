@@ -62,6 +62,7 @@
       <a href="31-k6-landing-playbook.html">k6 落地手册</a>
       <a href="32-k6-rollout-schedule.html">k6 落地排期</a>
       <a href="33-wms-analysis.html">WMS 业务与技术架构</a>
+      <a href="35-erp-stock-formulas.html">ERP 库存公式</a>
     </nav>
   </div>
   <!-- DOC_HEADER_END -->
@@ -124,6 +125,10 @@
       <h2><span class="num">02</span>专题深度分析 <em>10 篇 · 覆盖 31 个代码仓</em></h2>
       <p>与 07 篇同级的代码级深读：还原真实实现、核对文档与代码的偏差，并给出 Critical / High / Medium 分级风险清单。</p>
       <div class="grid cols-3">
+        <a class="tile" href="35-erp-stock-formulas.html">
+          <h3>ERP 库存同步计算公式 <span class="badge new">新增</span> <span class="badge rust">Rust</span></h3>
+          <p>prod 口径的完整推导：item 可用量 → 成分总量 → 组合品 <code>min(Q/配比)</code> 取整 → 渠道乘 P 减 LOCKED → Redis/Mongo 双落库与售罄迁移。含标准品/组合品/重复成分行三个算例、三层跳过规则、11 条已知坑，以及与 20261209 迭代分支的逐项差异。</p>
+        </a>
         <a class="tile" href="33-wms-analysis.html">
           <h3>WMS 仓储管理 <span class="badge java">Java</span> <span class="badge legacy">两代并行</span></h3>
           <p>单体 wms + 6 个 DDD 新服务共享 new_wms：入库/出库/库存/基础/策略/自动化全域能力、单据链、动态多租户与 P0 风险。</p>

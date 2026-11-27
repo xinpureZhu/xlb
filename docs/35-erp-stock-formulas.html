@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<!--DOC_META
+{
+  "eyebrow": "XLB 零售平台 · 文档中心",
+  "title": "ERP 库存同步计算公式（prod 口径）",
+  "navLabel": "ERP 库存公式",
+  "subtitle": "erp-stock-sync 在 prod 上对标准品 / 组合品 / 各渠道的库存计算口径：公式、取整、跳过规则、Mongo 表达式与已知坑。",
+  "meta": "最后更新：2026-11-27 · 数据来源：goods_consumer prod 分支源码静态分析",
+  "footer": "XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。"
+}
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ERP 库存同步计算公式（prod 口径） · XLB 零售平台</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <!-- DOC_HEADER_START -->
+  <div class="doc-top">
+    <header class="doc-header">
+      <p class="eyebrow">XLB 零售平台 · 文档中心</p>
+      <h1>ERP 库存同步计算公式（prod 口径）</h1>
+      <p class="subtitle">erp-stock-sync 在 prod 上对标准品 / 组合品 / 各渠道的库存计算口径：公式、取整、跳过规则、Mongo 表达式与已知坑。</p>
+      <p class="meta">最后更新：2026-11-27 · 数据来源：goods_consumer prod 分支源码静态分析</p>
+    </header>
+
+    <nav class="doc-nav">
+      <a href="index.html">首页</a>
+      <a href="01-architecture-overview.html">架构总览</a>
+      <a href="02-service-catalog.html">服务清单</a>
+      <a href="03-business-capabilities.html">业务能力</a>
+      <a href="04-tech-stack.html">技术栈</a>
+      <a href="05-infrastructure-deployment.html">部署拓扑</a>
+      <a href="06-integrations-messaging.html">集成与消息</a>
+      <a href="07-oms-plateform-analysis.html">oms-plateform</a>
+      <a href="08-retail-new-analysis.html">retail-new</a>
+      <a href="09-retail-monolith-analysis.html">retail 单体</a>
+      <a href="10-marketing-center-analysis.html">营销活动中心</a>
+      <a href="11-goods-inventory-analysis.html">门店商品库存</a>
+      <a href="12-rust-services-analysis.html">Rust 服务群</a>
+      <a href="13-nestjs-bff-analysis.html">NestJS BFF</a>
+      <a href="14-frontend-apps-analysis.html">前端与端应用</a>
+      <a href="15-platform-ops-analysis.html">平台运维</a>
+      <a href="16-review-center-analysis.html">评价中心</a>
+      <a href="17-efficiency-api-manual.html">效能平台接口手册</a>
+      <a href="18-agent-square-analysis.html">Agent Square</a>
+      <a href="19-pos-qt-analysis.html">POS Qt 客户端</a>
+      <a href="20-domain-model-anemic-vs-rich.html">贫血 vs 充血</a>
+      <a href="21-waypoint-duplicate-request-incident.html">Waypoint 重复请求</a>
+      <a href="22-worktool-analysis.html">worktool 机器人</a>
+      <a href="23-mobilerun-analysis.html">mobilerun 移动 Agent</a>
+      <a href="24-mobile-automation-comparison.html">自动化方案对比</a>
+      <a href="25-k6-cicd-integration.html">k6 冒烟与性能门禁</a>
+      <a href="26-rerail-test-code-analysis.html">rerail-test-code 实验室</a>
+      <a href="27-k6-repo-local-cases.html">k6 用例归仓与统一执行</a>
+      <a href="28-wms-cross-cluster-503-incident.html">wms.wms 跨集群 503</a>
+      <a href="29-jd-miaosong-callback-500-incident.html">京东秒送回调 500</a>
+      <a href="30-502-504-issue-analysis.html">502 / 504 问题分析</a>
+      <a href="31-k6-landing-playbook.html">k6 落地手册</a>
+      <a href="32-k6-rollout-schedule.html">k6 落地排期</a>
+      <a href="33-wms-analysis.html">WMS 业务与技术架构</a>
+      <a href="35-erp-stock-formulas.html" class="active">ERP 库存公式</a>
+    </nav>
+  </div>
+  <!-- DOC_HEADER_END -->
+
+  <main class="doc-body">
+    <section class="card" id="s1">
+      <h2><span class="num">01</span>分析基准与结论 <em>prod 只有一条公式主干 · 差异全在渠道层与取整</em></h2>
+
+      <div class="toc">
+        <b>目录</b>
+        <ol>
+          <li><a href="#s1">分析基准与结论</a></li>
+          <li><a href="#s2">数据模型</a></li>
+          <li><a href="#s3">商品形态与库存类型</a></li>
+          <li><a href="#s4">第一层：item 可用量</a></li>
+          <li><a href="#s5">第二层：成分总量与可售套数</a></li>
+          <li><a href="#s6">第三层：渠道可用量</a></li>
+          <li><a href="#s7">售罄迁移</a></li>
+          <li><a href="#s8">精度、取整与负数</a></li>
+          <li><a href="#s9">三个算例</a></li>
+          <li><a href="#s10">已知坑与边界</a></li>
+          <li><a href="#s11">与 20261209 迭代分支的差异</a></li>
+        </ol>
+      </div>
+
+      <div class="callout">
+        <p><b>分析基准</b>：仓库 <code>goods_consumer</code>（服务 <code>erp-stock-sync</code>），分支 <code>prod</code>，
+        提交 <code>dac1aa6</code>，提交日期 <code>2026-07-28</code>，与远端 <code>origin/prod</code> 差距 <b>0 / 0</b>（一致）。
+        工作副本位于 <code>repos/goods_consumer</code>，为只读克隆。</p>
+        <p>本文记录的是 <b>prod 现行口径</b>。2026-12-09 迭代分支上的改动与 prod 的差异单独列在 §11，不与本文口径混用。</p>
+      </div>
+
+      <p>一句话结论：<b>所有商品（标准品与组合品）共用同一条主干</b>——把 item 的可用量按库房/批次求和成「成分总量」，
+      按配比相除取最小值得到「可售套数」，再对每个启用渠道乘安全比例、减锁定库存，分别写 Redis 与 Mongo。
+      标准品只是「只有一个成分、配比为 1」的特例；<b>真正的分支判断都在渠道层</b>（门店库存类型、渠道库存类型、渠道白名单）。</p>
+
+      <p>数量一律用 <code>f64</code> 承载（落 Redis 时格式化成 4 位小数），套数落库前 <code>floor</code> 成整数。
+      组合品取 min、向下取整、负可用量合法，是理解线上数字的三条底线。</p>
+
+      <div class="grid cols-4">
+        <div class="stat"><span class="n">1</span><span class="l">条公式主干</span></div>
+        <div class="stat"><span class="n">4</span><span class="l">类 Redis 键参与计算</span></div>
+        <div class="stat"><span class="n">3</span><span class="l">层跳过规则</span></div>
+        <div class="stat"><span class="n">2</span><span class="l">处落库（Redis + Mongo）</span></div>
+      </div>
+    </section>
+
+    <section class="card" id="s2">
+      <h2><span class="num">02</span>数据模型 <em>4 类 Redis 键 + 2 张 Mongo 集合</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  ERP["ERP MySQL stock_detail"] --> DTS["DTS 列变更"] --> QNH["Kafka qnh topic"]
+  QNH --> SVC["erp-stock-sync 副本"]
+  SVC --> ITEM["Redis 门店 item hash"]
+  SVC --> IDX["Redis 组合品索引"]
+  SVC --> CH["Redis 渠道状态 hash"]
+  SVC --> INV["Mongo goods inventory"]
+  SVC --> SO["Kafka official product sync"]
+  SO --> PLT["各渠道 售罄状态"]
+        </pre>
+        <p class="arch-title">图 1 · 数据流：ERP 单表变更驱动全量重算，结果落 Redis 与 Mongo</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>键 / 集合</th><th>类型</th><th>内容</th><th>参与哪一步</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>{store}:{item}</code></td><td>hash</td><td>field <code>{storehouse}</code> 或 <code>{storehouse}:{batch}</code> → <code>"数量:更新时间"</code></td><td>成分总量求和（§04）</td></tr>
+            <tr><td><code>{store}:C</code></td><td>hash</td><td><code>T</code> 门店库存类型（<code>"0"</code>=实时）、<code>P</code> 门店安全比例</td><td>库存类型 / 默认 P</td></tr>
+            <tr><td><code>{store}:EC</code></td><td>hash</td><td>渠道名 → <code>"true"</code> / <code>"false"</code></td><td>启用渠道枚举</td></tr>
+            <tr><td><code>{SI}:{item}:S</code></td><td>set</td><td>sku_id</td><td>item 变更 → 受影响 sku</td></tr>
+            <tr><td><code>{SI}:{sku}:I</code></td><td>set</td><td><code>"item_id:ratio"</code></td><td>组合品成分与配比</td></tr>
+            <tr><td><code>{store}:{channel}:{sku}</code></td><td>hash</td><td>读写 <code>AVAILABLE</code>；读 <code>LOCKED</code> / <code>T</code> / <code>P</code></td><td>渠道层（§06）</td></tr>
+            <tr><td><code>INVENTORY:{point}:{sku}</code></td><td>hash</td><td><code>STOCK_TYPE</code>（<code>"1"</code>=实时）、<code>P</code></td><td>积分渠道全局配置</td></tr>
+            <tr><td><code>{store}:{point}:{sku}</code></td><td>hash</td><td><code>AVAILABLE</code> / <code>LOCKED</code></td><td>积分渠道门店库存</td></tr>
+            <tr><td><code>goods.inventory</code></td><td>Mongo</td><td>每 (sku_id, store_id) 一条，含 <code>quantity</code>、<code>overwrite_channels.*</code></td><td>落库结果（§06）</td></tr>
+            <tr><td><code>goods.product</code></td><td>Mongo</td><td>读 <code>overwrite_channels.official.catalogs[]</code></td><td>售罄迁移（§07）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <p>键里的花括号是 Redis Cluster 的哈希标签：<code>{store}:xxx</code> 与 <code>INVENTORY:{point}:xxx</code> 落在
+        <b>不同 slot</b>。所以积分渠道的读写天然跨 slot，prod 用独立的 pipeline 单独写入，
+        这与其它渠道"同一 slot 内一次写完"是两套路径。</p>
+      </div>
+
+      <div class="loc">goods_consumer@prod · erp_stock_sync/src/main.rs:414-425（一次性读 store 配置 / 启用渠道 / 受影响 sku）</div>
+    </section>
+
+    <section class="card" id="s3">
+      <h2><span class="num">03</span>商品形态与库存类型 <em>公式只有一条，分支全在"要不要写这个渠道"</em></h2>
+
+      <p>ERP 同步链路里<b>没有"商品类型（虚拟/实物）"的概念</b>，只有库存类型。判断依据分散在三处：</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>判断对象</th><th>取值来源</th><th>判定</th><th>影响</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>门店库存类型</td><td><code>{store}:C</code> 的 <code>T</code></td><td><code>T == "0"</code> → 实时；其余（含缺失）→ 虚拟</td><td>决定 <code>viola_tricolor</code> 是否被跳过</td></tr>
+            <tr><td>普通渠道库存类型</td><td>渠道 hash 的 <code>T</code></td><td><code>T == "0"</code> → 实时；其余 → 虚拟</td><td>决定售罄迁移是否参与</td></tr>
+            <tr><td>积分渠道库存类型</td><td><code>INVENTORY:{point}:{sku}</code> 的 <code>STOCK_TYPE</code></td><td><code>"1"</code> → 实时；其余 → 虚拟</td><td>虚拟时整条积分渠道不写</td></tr>
+            <tr><td>标准品 / 组合品</td><td><code>{SI}:{sku}:I</code> 的成员数</td><td>1 行且配比 1 → 等价标准品；多行 → 组合品</td><td><b>不改公式</b>，只改 min 的项数</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>于是"各种商品"的差异收敛成一句话：<b>组合品是多成分取 min，标准品是单成分取自身；虚拟/实时只决定某个渠道写不写、售罄发不发。</b></p>
+
+      <div class="loc">erp_stock_sync/src/main.rs:426-436（门店 T / P）· :749-760（渠道 T / STOCK_TYPE）· :770-775（虚拟跳过规则）</div>
+    </section>
+
+    <section class="card" id="s4">
+      <h2><span class="num">04</span>第一层：item 可用量 <em>每个库房（或库房+批次）一行，带时间守卫</em></h2>
+
+      <p>ERP 的 <code>stock_detail</code> 变更逐行映射成 Redis hash 的一个字段：</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项</th><th>公式 / 规则</th></tr></thead>
+          <tbody>
+            <tr><td>Redis key</td><td><code>{store_id}:{item_id}</code></td></tr>
+            <tr><td>field</td><td><code>batch_number</code> 非空 → <code>{storehouse_id}:{batch_number}</code>；否则 <code>{storehouse_id}</code></td></tr>
+            <tr><td>value</td><td><code>format!("{:.4}", basic_quantity - lock_basic_quantity) + ":" + epoch(update_time)</code></td></tr>
+            <tr><td>缺省</td><td><code>lock_basic_quantity</code> 缺失或非法 → 0.0；<code>update_time</code> 解析失败 → <code>0</code></td></tr>
+            <tr><td>时间守卫</td><td><code>new_time &lt; old_time</code> → 返回 <code>EXPIRED</code>，整条记录丢弃（不重算）</td></tr>
+            <tr><td>DELETE</td><td>直接 <code>HDEL</code> 该字段（<b>水位随字段消失</b>，见 §10 第 5 条）</td></tr>
+            <tr><td>健康度</td><td><code>HLEN &gt;= 500</code> warn、<code>&gt;= 5000</code> error（只打日志，不清洗）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>注意可用量<b>可以是负数</b>（ERP 允许负库存/超卖回填），后续所有公式都按有符号处理，不做 <code>max(0, ·)</code>。</p>
+
+      <div class="loc">erp_stock_sync/src/main.rs:338-380（组字段、算可用量、调用 Lua）· goods_redis.rs:23-59（ERP_STOCK_LUA）</div>
+    </section>
+
+    <section class="card" id="s5">
+      <h2><span class="num">05</span>第二层：成分总量与可售套数 <em>Σ 求总量 · min 除配比 · 向下取整</em></h2>
+
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  A["一条消息的 data 行"] --> B["写 item 字段 带时间守卫"]
+  B --> C{"new_time 小于 old_time"}
+  C -->|是| X["EXPIRED 跳过重算"]
+  C -->|否| D["反查 SI item S 得到受影响 sku"]
+  D --> E["每个 sku 读 SI sku I 得到成分与配比"]
+  E --> F["每个成分 求和其 item hash 得到 Q"]
+  F --> G["套数 = min 对每行取 Q 除 ratio 后 floor"]
+  G --> H["每个启用渠道 乘 P 再减 LOCKED"]
+  H --> I["Redis 渠道 AVAILABLE"]
+  H --> J["Mongo overwrite_channels 加顶层 quantity"]
+  I --> K["official 且实时 判售罄迁移"]
+  K --> L["按 catalogs 发 official product sync"]
+        </pre>
+        <p class="arch-title">图 2 · 计算流水线：从一条 ERP 行到渠道可用量与售罄事件</p>
+      </div>
+
+      <p><b>成分总量</b>（对某个门店与某个 item）：</p>
+      <pre><code>Q(item) = Σ  parse_qty(value)          value 遍历 {store}:{item} 的所有字段
+parse_qty(v) = v.split(':')[0].parse::&lt;f64&gt;().unwrap_or(0.0)</code></pre>
+      <p>即：同一 item 的<b>所有库房与批次行一律相加</b>；字段值取冒号前的数量部分。item hash 不存在时 <code>Q = 0</code>。</p>
+
+      <p><b>可售套数</b>（对某个门店与某个 sku）：</p>
+      <pre><code>units = floor( min over 每个成员 e of  Q(item_e) / ratio_e )
+
+ratio 缺失 / 非数字 → 1.0            ratio 为 0 → Q/0 = +inf（在 min 中等于被忽略）
+任一项为 NaN → 视为最大（不参与 min）  全部为 NaN → 结果 0.0</code></pre>
+
+      <div class="callout warn">
+        <p><b>同一成分出现多行时，prod 用「最大配比」而不是「配比相加」。</b>例如成分集合是
+        <code>A:1</code>、<code>A:2</code>、<code>B:1</code>，A 总量 100、B 总量 100：</p>
+        <ul>
+          <li>prod：<code>min(100/1, 100/2, 100/1) = 50</code> 套；</li>
+          <li>若把同一 item 的配比相加（<code>A:3</code>）：<code>min(100/3, 100/1) = 33</code> 套。</li>
+        </ul>
+        <p>也就是 prod 口径<b>更乐观</b>。这是复现线上数字时必须照抄的细节，2026-12-09 迭代分支已按此对齐。</p>
+      </div>
+
+      <p>标准品就是这个公式的特例：<code>{SI}:{sku}:I</code> 只有一行 <code>"item:1"</code>，于是 <code>units = floor(Q(item))</code>。</p>
+
+      <div class="loc">erp_stock_sync/src/main.rs:455-490（sku 循环与 min/floor）· :713-718（parse_quantity）</div>
+    </section>
+
+    <section class="card" id="s6">
+      <h2><span class="num">06</span>第三层：渠道可用量 <em>乘 P → 减 Redis LOCKED → 分别落 Redis 与 Mongo</em></h2>
+
+      <p>对每个 sku，遍历该门店所有启用渠道（<code>{store}:EC</code> 中值不为 <code>"false"</code> 的键）：</p>
+
+      <pre><code>ch_qty   = (units * P) / 100                       // i64 整数除法，向零截断
+ch_avail = ch_qty - LOCKED_redis                   // Redis 侧判售罄与写 AVAILABLE 用它
+
+Redis:  HSET  {store}:{channel}:{sku}  AVAILABLE  ch_avail
+        HSET  {store}:{point}:{sku}    AVAILABLE  ch_avail      // 积分渠道写这把键
+Mongo:  overwrite_channels.{ch}.quantity           = ch_qty
+        overwrite_channels.{ch}.available_quantity = ch_qty - ifNull(locked_quantity_mongo, 0)
+        quantity = available_quantity              = units</code></pre>
+
+      <div class="callout">
+        <p><b>两个 locked 来源不同</b>：Redis 的 <code>AVAILABLE</code> 用 <b>Redis 里的 <code>LOCKED</code></b>；
+        Mongo 的 <code>available_quantity</code> 用 <b>Mongo 文档自己的 <code>locked_quantity</code></b>（由 Mongo 聚合表达式现算）。
+        两者不同步时同一 sku 会在 Redis 与 Mongo 里显示不同可用量——这是设计如此，不是 bug。</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>渠道层细节</th><th>规则</th></tr></thead>
+          <tbody>
+            <tr><td>P 取值</td><td>渠道 hash 的 <code>P</code>；缺失 → 门店 <code>{store}:C</code> 的 <code>P</code>；再缺失 → 100。积分渠道的 P 取自 <code>INVENTORY:{point}:{sku}</code></td></tr>
+            <tr><td>LOCKED 取值</td><td>普通渠道取该渠道 hash 的 <code>LOCKED</code>；积分渠道取 <code>{store}:{point}:{sku}</code> 的 <code>LOCKED</code>（缺失 → 0）</td></tr>
+            <tr><td>跳过 1：门店虚拟 + <code>viola_tricolor</code></td><td>整条渠道不写</td></tr>
+            <tr><td>跳过 2：sku 的积分库存类型为虚拟</td><td>积分渠道不写（其它渠道不受影响）</td></tr>
+            <tr><td>跳过 3：未知渠道名且不安全</td><td>名字为空 / 以 <code>$</code> 开头 / 含 <code>.</code> → 跳过并 warn（防止污染 Mongo dot-path）。已知渠道名不受限</td></tr>
+            <tr><td>写入粒度</td><td>该门店<b>全部启用渠道覆盖式写入</b>，不是增量：一个 sku 一次重算会写它的每个渠道</td></tr>
+            <tr><td>Mongo upsert</td><td>filter <code>{sku_id, store_id}</code>，<code>upsert=true</code>；<code>created_at/created_by</code> 用 <code>$ifNull</code> 只在首次插入时生效</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <p>即使该 sku <b>没有任何渠道可写</b>（全被跳过或门店未配置渠道），prod 仍会把顶层
+        <code>quantity</code> / <code>available_quantity</code> / <code>updated_at</code> 写进 Mongo。
+        所以"门店渠道全关"的商品在 Mongo 里依然是被维护的。</p>
+      </div>
+
+      <div class="loc">erp_stock_sync/src/main.rs:496-616（渠道循环与跳过规则）· :617-634（顶层 Mongo 字段）· :781-812（P 与 Mongo 表达式）</div>
+    </section>
+
+    <section class="card" id="s7">
+      <h2><span class="num">07</span>售罄迁移 <em>只认 official 且实时库存，基于"写前旧值"判方向</em></h2>
+
+      <p>渠道层算完之后，只有满足 <code>channel == official</code> 且该渠道库存类型为实时时才判售罄：</p>
+
+      <pre><code>old = 写入前 Redis 里的 AVAILABLE（读渠道 hash 得到；积分渠道不参与）
+new = ch_avail
+
+old &gt; 0  且 new &lt;= 0  →  SoldOut
+old &lt;= 0 且 new &gt;  0  →  InStock
+其余                   →  不发消息</code></pre>
+
+      <p>命中迁移后：从 <code>goods.product</code> 读该 sku 的 <code>overwrite_channels.official.catalogs[]</code>，
+      <b>每个 catalog 发一条</b> <code>UPDATE</code> 到 <code>GOODS__KAFKA__TOPIC__OFFICIAL_PRODUCT_SYNC</code>，
+      key = <code>{sku_id}-{store_id}</code>。没有 catalogs（或没有 official 节点）就什么也不发。</p>
+
+      <div class="callout warn">
+        <p>旧值是"写入前读到的 Redis 值"，与写入不是原子的：同一 sku 被并发重算时可能漏发或多发一次迁移。
+        这是 prod 的已知薄弱点，新版本已改为用写入脚本返回的旧值判定。</p>
+      </div>
+
+      <div class="loc">erp_stock_sync/src/main.rs:599-615（判定）· :929-1010（update_sold_out）</div>
+    </section>
+
+    <section class="card" id="s8">
+      <h2><span class="num">08</span>精度、取整与负数 <em>f64 求和 · floor 向 -∞ · 整数除法向零</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>位置</th><th>类型 / 规则</th><th>例子</th></tr></thead>
+          <tbody>
+            <tr><td>ERP 原始数量</td><td>字符串 4 位小数，按 <code>f64</code> 解析</td><td><code>"-6.0000"</code> → -6.0</td></tr>
+            <tr><td>item 落 Redis</td><td><code>format!("{:.4}")</code></td><td>-6.0 → <code>"-6.0000"</code></td></tr>
+            <tr><td>成分求和</td><td><code>f64</code> 累加（二进制浮点，非十进制精确）</td><td>多个 4 位小数量相加可能落在整数下方一点点</td></tr>
+            <tr><td>套数取整</td><td><code>f64::floor()</code>，向 <b>-∞</b></td><td>2.9 → 2；-2.1 → -3</td></tr>
+            <tr><td>安全比例</td><td><code>i64</code> 乘法后整数除法，向 <b>零</b> 截断</td><td><code>(-3 * 50) / 100 = -1</code>（不是 -2）</td></tr>
+            <tr><td>P 的语义</td><td>百分数：100 = 不打折；大于 100 会<b>放大</b>库存</td><td>units=3、P=90 → 2</td></tr>
+            <tr><td>LOCKED</td><td><code>i64</code>，直接相减</td><td>2 - 5 → -3（可负）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>这三条取整规则方向不同（floor 向 -∞、整数除法向零、f64 累加误差），复现线上数字时最容易踩坑的就是
+      "边界值差 1"——它来自 f64 累加/除法，而不是业务规则。</p>
+    </section>
+
+    <section class="card" id="s9">
+      <h2><span class="num">09</span>三个算例 <em>标准品 / 组合品 / 重复成分行</em></h2>
+
+      <div class="grid cols-3">
+        <div class="mech m1">
+          <h4><span class="num">A</span>标准品 · 实时门店</h4>
+          <p>门店 <code>S</code>：<code>T=0</code>、<code>P=100</code>；item <code>I</code> 库房 <code>W</code> 无批次。</p>
+          <p>ERP 行：<code>basic=-6.0000</code>、<code>lock=0.0000</code> → 字段 <code>W = "-6.0000:ts"</code>。</p>
+          <p><code>{SI}:sku:I = ["I:1"]</code> → <code>units = floor(-6/1) = -6</code>。</p>
+          <p>official：<code>ch_qty = (-6*100)/100 = -6</code>，<code>LOCKED=2</code> → <b><code>AVAILABLE = -8</code></b>。</p>
+          <p>Mongo：<code>quantity</code> = <code>available_quantity</code> = <b>-6</b>；渠道 <code>quantity=-6</code>、
+          <code>available_quantity = -6 - MongoDoc.locked_quantity</code>。</p>
+        </div>
+        <div class="mech m2">
+          <h4><span class="num">B</span>组合品 · 虚拟门店</h4>
+          <p>门店 <code>T=1</code>（虚拟）、<code>P=90</code>；sku 成分 <code>A:2</code>、<code>B:1</code>。</p>
+          <p><code>Q(A)=10</code>、<code>Q(B)=3</code> → <code>units = min(10/2, 3/1) = 3</code>。</p>
+          <p><code>ch_qty = (3*90)/100 = 2</code>（整数截断）；<code>LOCKED=0</code> → <b><code>AVAILABLE = 2</code></b>。</p>
+          <p>渠道分支：official（渠道 <code>T=0</code>）→ 写；<code>viola_tricolor</code> → 门店虚拟 → 跳过；
+          积分渠道（<code>STOCK_TYPE≠1</code>）→ 虚拟 → 跳过。</p>
+        </div>
+        <div class="mech m3">
+          <h4><span class="num">C</span>重复成分行</h4>
+          <p>成分集合 <code>A:1</code>、<code>A:2</code>、<code>B:1</code>；<code>Q(A)=100</code>、<code>Q(B)=100</code>。</p>
+          <p>prod：<code>min(100/1, 100/2, 100/1) = 50</code> 套。</p>
+          <p>若改成"同一 item 配比相加"：<code>min(100/3, 100/1) = 33</code> 套。</p>
+          <p><b>差 17 套。</b>复现线上数字必须按前者。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="s10">
+      <h2><span class="num">10</span>已知坑与边界 <em>11 条，按"会不会改变线上数字"排序</em></h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>现象</th><th>后果 / 建议</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>配比为 <code>0</code> 且是唯一成分</td><td><code>Q/0 = +inf</code>，<code>inf as i64</code> 饱和成 <code>i64::MAX</code> → 渠道写入天文数字库存。<b>数据清洗项</b>，不是公式能兜住的</td></tr>
+            <tr><td>2</td><td>同一成分多行、配比不同</td><td>按 <code>max(ratio)</code> 计，偏乐观（可能超卖）。需确认线上是否存在这种数据</td></tr>
+            <tr><td>3</td><td>f64 累加/除法落在整数下方</td><td>套数比"精确计算"少 1（如 <code>0.3/0.1 → 2.999…</code> → 2）。只在边界值可见；迭代分支 2026-11-27 已回退到同一行为</td></tr>
+            <tr><td>4</td><td><code>update_time</code> 解析失败</td><td>按 <code>0</code> 处理 → 守卫判 <code>EXPIRED</code> → <b>该记录静默丢弃</b>（只有 info 日志）</td></tr>
+            <tr><td>5</td><td>DELETE 用 <code>HDEL</code></td><td>字段连同时间戳一起消失 → 之后迟到的旧 UPDATE 能通过守卫把库存写回（幽灵库存）</td></tr>
+            <tr><td>6</td><td>批处理 <code>BATCH_TIMEOUT=60s</code> 超时</td><td>整批不提交 offset，下一批把空洞一起越过 → 静默丢记录（迭代分支已改为按分区水位 + 有界放行）</td></tr>
+            <tr><td>7</td><td>Redis 与 Mongo 的 locked 来源不同</td><td>同一 sku 两处显示不同；排查时先确认读的是哪个存储</td></tr>
+            <tr><td>8</td><td>积分渠道跨 slot</td><td>不能与门店其它渠道一次脚本写完；prod 用两条 pipeline，非原子</td></tr>
+            <tr><td>9</td><td>渠道名不安全（<code>$</code>/<code>.</code>）</td><td>整条渠道被跳过并 warn；线上若出现该日志，说明 <code>{store}:EC</code> 有脏键</td></tr>
+            <tr><td>10</td><td><code>HLEN &gt;= 5000</code> 只告警</td><td>item hash 无界增长（批次数多），大 key 会拖慢 HGETALL 与槽迁移</td></tr>
+            <tr><td>11</td><td>启动探针写生产 keyspace</td><td><code>client_init</code> 会 <code>SET foo bar</code> 再 <code>GET</code>，prod 每次启动都往业务库写一个键（迭代分支已移除）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="loc">goods_consumer@prod · erp_stock_sync/src/{main.rs,goods_redis.rs} 对应行号见各节</div>
+    </section>
+
+    <section class="card" id="s11">
+      <h2><span class="num">11</span>与 20261209 迭代分支的差异 <em>非 prod 口径 · 仅作对照</em></h2>
+
+      <div class="callout warn">
+        <p>以下内容属于分支 <code>iter-erp-stock-sync-2339-I20261209</code>（及需求分支 <code>feature-goods-erp-stock-sync-R7174443371-1124</code>），
+        <b>不是 prod 现行行为</b>。标"已对齐"的项已在 2026-11-27 改回 prod 口径，
+        其中包括数值表示：组合品计算已从定点 <code>i64</code>（1e8）改回 <code>f64</code> + <code>floor</code>，
+        因此 <b>§08 与 §10 第 3 条描述的 f64 边界行为同样适用于迭代分支</b>。</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>环节</th><th>prod</th><th>迭代分支</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td>数值表示</td><td><code>f64</code></td><td>曾是定点 <code>i64</code>（1e8）</td><td><span class="badge ok">已对齐 prod</span></td></tr>
+            <tr><td>重复成分行</td><td>按行 min = <code>max(ratio)</code></td><td>曾改为配比相加</td><td><span class="badge ok">已对齐 prod</span></td></tr>
+            <tr><td>非法配比</td><td>按 1；<code>0</code> → +inf</td><td>曾丢弃 / 相加</td><td><span class="badge ok">已对齐 prod</span></td></tr>
+            <tr><td>零渠道 sku</td><td>仍刷 Mongo 顶层</td><td>曾整条跳过</td><td><span class="badge ok">已对齐 prod</span></td></tr>
+            <tr><td>积分渠道键</td><td><code>{store}:{point}:{sku}</code></td><td>曾写 <code>{store}:point:{sku}</code></td><td><span class="badge ok">已修回 prod</span></td></tr>
+            <tr><td>渠道写入保护</td><td>无</td><td><code>REV = Σ__v</code> 守卫，旧结果被拒</td><td>刻意不同（防跨 pod 覆盖）</td></tr>
+            <tr><td>DELETE</td><td><code>HDEL</code></td><td>墓碑 <code>0.0000:ts</code> + 推进版本</td><td>刻意不同（保水位）</td></tr>
+            <tr><td>售罄旧值</td><td>写前读 Redis</td><td>写入脚本返回的旧值（原子）</td><td>刻意不同</td></tr>
+            <tr><td>offset 提交</td><td>整批最大 offset，60s 超时整批跳过</td><td>分区连续水位，单条 60s 放行</td><td>刻意不同（丢的粒度更小）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>复现 prod 数字请只看 §04–§09；评估升级影响时再看本节的"刻意不同"四行。</p>
+    </section>
+  </main>
+
+  <!-- DOC_FOOTER_START -->
+  <footer class="doc-footer">
+    XLB 零售平台文档中心 · 本文档由源码静态分析生成，仅供架构参考。
+  </footer>
+  <!-- DOC_FOOTER_END -->
+
+  <script src="assets/mermaid.min.js"></script>
+  <script src="assets/diagram-init.js"></script>
+</body>
+</html>
